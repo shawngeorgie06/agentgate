@@ -1,0 +1,5 @@
+fastmcp>=2.0
+cryptography>=42.0
+argon2-cffi>=23.1
+PyYAML>=6.0
+pytest>=8.0

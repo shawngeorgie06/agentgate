@@ -74,7 +74,7 @@ class PolicyEngine:
                     try:
                         _parse_hhmm(tw["start"])
                         _parse_hhmm(tw["end"])
-                    except (ValueError, AttributeError):
+                    except (ValueError, AttributeError, TypeError):
                         errors.append(f"policy '{pol.get('name', i)}' time_window must use HH:MM")
         return errors
 

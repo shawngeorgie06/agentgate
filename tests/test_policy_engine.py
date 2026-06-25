@@ -143,3 +143,17 @@ def test_validate_file_returns_errors_without_raising(tmp_path):
     p.write_text("policies:\n  - name: broken\n    agent: a\n")
     errors = PolicyEngine.validate_file(str(p))
     assert errors  # non-empty
+
+
+def test_validate_file_rejects_non_string_time_without_raising(tmp_path):
+    p = tmp_path / "policies.yaml"
+    p.write_text(
+        "policies:\n"
+        "  - name: bad-time\n"
+        "    agent: a\n"
+        "    credential: k\n"
+        "    auto_approve: true\n"
+        "    time_window: {start: 900, end: 1700}\n"
+    )
+    errors = PolicyEngine.validate_file(str(p))  # must not raise
+    assert errors  # non-empty: the malformed time_window is reported

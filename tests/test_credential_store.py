@@ -50,3 +50,13 @@ def test_salt_persists_across_instances(tmp_path):
     CredentialStore(str(path), "pw").store("k", "v")
     # New instance, same password, must decrypt existing data.
     assert CredentialStore(str(path), "pw").retrieve("k") == "v"
+
+
+def test_store_uses_fresh_nonce_each_call(tmp_path):
+    path = tmp_path / "creds.json"
+    store = CredentialStore(str(path), "pw")
+    store.store("k", "v")
+    nonce1 = json.loads(path.read_text())["credentials"]["k"]["nonce"]
+    store.store("k", "v")
+    nonce2 = json.loads(path.read_text())["credentials"]["k"]["nonce"]
+    assert nonce1 != nonce2

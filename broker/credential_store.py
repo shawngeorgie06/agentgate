@@ -34,17 +34,18 @@ class CredentialStore:
     def __init__(self, path: str, master_password: str) -> None:
         self._path = path
         self._password = master_password.encode("utf-8")
+        is_new = not os.path.exists(self._path)
         self._data = self._load()
         self._key = self._derive_key(_b64d(self._data["salt"]))
+        if is_new:
+            self._write(self._data)
 
     # --- persistence -----------------------------------------------------
     def _load(self) -> Dict:
         if os.path.exists(self._path):
             with open(self._path, "r", encoding="utf-8") as fh:
                 return json.load(fh)
-        data = {"salt": _b64e(os.urandom(_SALT_LEN)), "credentials": {}}
-        self._write(data)
-        return data
+        return {"salt": _b64e(os.urandom(_SALT_LEN)), "credentials": {}}
 
     def _write(self, data: Dict) -> None:
         os.makedirs(os.path.dirname(os.path.abspath(self._path)), exist_ok=True)

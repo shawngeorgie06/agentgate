@@ -40,10 +40,10 @@ python -m cli.commands cred-store anthropic-api-key <your-api-key>
 python -m broker.main
 ```
 
-The broker starts a FastMCP server (stdin/stdout transport) and begins listening for credential requests via `request_credential` RPC calls.
+The broker starts a FastMCP server (stdin/stdout transport) and begins listening for credential requests via `credential.request` RPC calls.
 
 **Request credentials from agents:**
-Agents connect to AgentGate via MCP and call `request_credential(agent_name, credential_name)`. The broker consults policies and audit state to approve or escalate the request.
+Agents connect to AgentGate via MCP and call `credential.request(agent, credential)`. The broker consults policies and audit state to approve or escalate the request.
 
 **Toggle approval mode:**
 Once the CLI is running, press `s` to toggle between AUTO and MANUAL approval modes. The decision is persisted to `state/mode.json` and read on every request (never cached).
@@ -99,15 +99,15 @@ The first matching policy wins. Policies are evaluated in order.
 
 AgentGate exposes 5 MCP tools for agent integration:
 
-1. **`request_credential`** — Request a credential by agent name and credential name. Returns `{granted: bool, token: str, token_expiry: int, value: str, reason: str}`.
+1. **`credential.request`** — Request a credential by agent name and credential name. Returns `{granted: bool, token: str, token_expiry: int, value: str, reason: str}`.
 
-2. **`list_credentials`** — List stored credential names (no values returned). Returns `{credentials: [str]}`.
+2. **`policy.list`** — List all policies and their current status. Returns `{policies: [{name, agent, credential, auto_approve, escalate, ...}]}`.
 
-3. **`policy_list`** — List all policies and their current status. Returns `{policies: [{name, agent, credential, auto_approve, escalate, ...}]}`.
+3. **`policy.validate`** — Validate the policy file without applying it. Returns `{valid: bool, errors: [str]}`.
 
-4. **`policy_add`** — Add a new policy. **Always escalates to CLI operator for approval.** Once approved, the policy is persisted to `policies/policies.yaml`.
+4. **`policy.add`** — Add a new policy. **Always escalates to CLI operator for approval, regardless of mode.** Once approved, the policy is persisted to `policies/policies.yaml`.
 
-5. **`audit_log`** — Fetch the audit trail. Returns `{entries: [{timestamp, agent, credential, decision, reason, ...}]}`. Credential values are never included.
+5. **`broker.status`** — Get current broker status: mode, policy count, request/escalation counts, and uptime. Returns `{mode: str, policies: int, requests: int, escalated: int, uptime_seconds: int}`.
 
 ## Approval Modes
 
@@ -168,8 +168,9 @@ Granted credentials include a `token_expiry` timestamp (configurable via `TOKEN_
 - Audit logger (immutable append-only log)
 
 **CLI** (`cli/commands.py`):
-- Credential management (`cred-store`, `cred-list`, `cred-delete`)
-- Policy administration (`policy-add`, `policy-list`, `policy-remove`)
+- Credential management (`cred-store`, `cred-delete`, `cred-list`)
+- Policy administration (`policy-validate`)
+- Broker status (`status`)
 - Approval prompt (interactive decision queue)
 - Mode toggle (`s` key)
 
@@ -191,4 +192,3 @@ Expected: 41 passing tests covering:
 - Two-tier approval workflows
 - Audit logging (values never logged)
 - MCP tool interface
-- Docker Compose integration

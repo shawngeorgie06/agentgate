@@ -99,6 +99,48 @@ async def test_add_policy_always_escalates(tmp_path):
     assert res["added"] is True
 
 
+@pytest.mark.asyncio
+async def test_add_policy_rejects_invalid_policy_without_corrupting_file(tmp_path):
+    broker = _make_broker(tmp_path, _AUTO_POLICY)
+    # Capture original file content before any mutation attempt.
+    original_content = open(broker.config.policies_path, "r", encoding="utf-8").read()
+
+    # Submit a malformed policy (missing required 'credential' field).
+    task = asyncio.create_task(broker.add_policy({
+        "name": "bad", "agent": "x", "auto_approve": True,
+    }))
+    await asyncio.sleep(0)
+    pending = broker.approvals.get_pending()
+    assert pending is not None
+    broker.approvals.resolve(pending, True)
+    res = await task
+
+    assert res["added"] is False
+    # File must be byte-for-byte unchanged.
+    assert open(broker.config.policies_path, "r", encoding="utf-8").read() == original_content
+    # Engine must still work: returns the original 2 policies.
+    assert len(broker.list_policies()) == 2
+
+
+@pytest.mark.asyncio
+async def test_add_policy_persists_valid_policy(tmp_path):
+    broker = _make_broker(tmp_path, _AUTO_POLICY)
+    task = asyncio.create_task(broker.add_policy({
+        "name": "new", "agent": "x", "credential": "y", "auto_approve": True,
+    }))
+    await asyncio.sleep(0)
+    pending = broker.approvals.get_pending()
+    assert pending is not None
+    broker.approvals.resolve(pending, True)
+    res = await task
+
+    assert res["added"] is True
+    names = [p["name"] for p in broker.list_policies()]
+    assert "new" in names
+    decision = broker.engine.evaluate("x", "y")
+    assert decision.policy_name == "new"
+
+
 def test_status_reports_mode_and_counts(tmp_path):
     broker = _make_broker(tmp_path, _AUTO_POLICY)
     s = broker.status()

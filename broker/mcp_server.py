@@ -124,12 +124,25 @@ class Broker:
         approved = await self.approvals.submit("SYSTEM", f"policy.add:{policy.get('name')}")
         if not approved:
             return {"added": False, "reason": "policy change denied by operator"}
+
+        # Build the candidate doc in memory.
         with open(self.config.policies_path, "r", encoding="utf-8") as fh:
             doc = yaml.safe_load(fh) or {"policies": []}
         doc["policies"].insert(0, policy)
-        tmp = f"{self.config.policies_path}.tmp"
+
+        # Write the candidate to a temp file in the SAME directory (atomic replace).
+        policies_dir = os.path.dirname(os.path.abspath(self.config.policies_path))
+        tmp = os.path.join(policies_dir, f".policies_candidate_{os.getpid()}.tmp")
         with open(tmp, "w", encoding="utf-8") as fh:
             yaml.safe_dump(doc, fh)
+
+        # Validate BEFORE touching the real file.
+        errors = PolicyEngine.validate_file(tmp)
+        if errors:
+            os.remove(tmp)
+            return {"added": False, "reason": f"invalid policy: {errors}"}
+
+        # Validation passed — atomically replace the real file and reload the engine.
         os.replace(tmp, self.config.policies_path)
         self.engine = PolicyEngine.from_file(self.config.policies_path)
         return {"added": True, "reason": f"policy '{policy.get('name')}' added"}

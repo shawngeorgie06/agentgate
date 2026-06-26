@@ -1,0 +1,16 @@
+services:
+  agentgate:
+    build: .
+    stdin_open: true
+    tty: true
+    env_file: .env
+    environment:
+      POLICIES_PATH: /app/policies/policies.yaml
+      STATE_PATH: /app/state/mode.json
+      LOGS_PATH: /app/logs/audit.log
+      CREDENTIALS_PATH: /app/data/credentials.json
+    volumes:
+      - ./policies:/app/policies
+      - ./state:/app/state
+      - ./logs:/app/logs
+      - ./data:/app/data

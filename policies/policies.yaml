@@ -1,0 +1,15 @@
+policies:
+  - name: claude-code-anthropic
+    agent: claude-code
+    credential: anthropic-api-key
+    access: read
+    time_window:
+      start: "09:00"
+      end: "23:00"
+    auto_approve: true
+
+  - name: default-deny
+    agent: "*"
+    credential: "*"
+    auto_approve: false
+    escalate: true

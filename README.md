@@ -31,8 +31,13 @@ cp .env.example .env
 Edit `.env` and set `AGENTGATE_MASTER_PASSWORD` to a secure value (or it will prompt via `getpass` on CLI startup).
 
 **Seed a credential:**
+The credential value is read from stdin or the `AGENTGATE_CRED_VALUE` env var (never passed as a command-line argument, so it won't leak into process listings):
 ```bash
-python -m cli.commands cred-store anthropic-api-key <your-api-key>
+# value piped via stdin
+echo "<your-api-key>" | python -m cli.commands cred-store anthropic-api-key
+
+# or via env var
+AGENTGATE_CRED_VALUE="<your-api-key>" python -m cli.commands cred-store anthropic-api-key
 ```
 
 **Run the broker:**

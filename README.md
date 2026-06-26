@@ -125,17 +125,20 @@ Toggle modes by pressing `s` while the CLI is running. The mode is persisted to 
 
 ## Audit Log
 
-All credential requests are logged to `logs/audit.log`. Each entry includes:
-- Timestamp (ISO 8601)
-- Agent name
-- Credential name
-- Decision (AUTO/MANUAL/DENIED)
-- Reason (policy match, time-window rejection, operator decision)
-- Request signature (no credential value)
+All credential decisions are logged to `logs/audit.log`, one JSON object per line. Each entry includes:
+- `timestamp` — ISO-8601, local time
+- `agent` — requesting agent name
+- `credential_requested` — credential name (never the value)
+- `policy_matched` — the policy that decided the request
+- `decision` — one of `approved`, `denied`, `escalated`
+- `mode` — the broker mode at decision time (`auto` or `manual`)
+- `token_expiry` — expiry of the issued token, or `null` when no token was issued
+
+The credential value and the issued token are never written to the audit log.
 
 Example:
 ```
-{"timestamp": "2026-06-24T14:32:05Z", "agent": "claude-code", "credential": "anthropic-api-key", "decision": "AUTO", "policy": "claude-code-anthropic", "reason": "auto_approve within time window [09:00-23:00]"}
+{"timestamp": "2026-06-24T14:32:05", "agent": "claude-code", "credential_requested": "anthropic-api-key", "policy_matched": "claude-code-anthropic", "decision": "approved", "mode": "auto", "token_expiry": "2026-06-24T15:32:05"}
 ```
 
 ## ECS Migration

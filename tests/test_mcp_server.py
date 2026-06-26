@@ -105,4 +105,5 @@ def test_status_reports_mode_and_counts(tmp_path):
     assert s["mode"] in ("auto", "manual")
     assert s["policies"] == 2
     assert s["requests"] == 0
+    assert s["escalated"] == 0
     assert "uptime_seconds" in s

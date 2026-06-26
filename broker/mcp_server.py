@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import datetime
 import os
-from typing import List, Optional
+from typing import List
 
 import yaml
 from fastmcp import FastMCP

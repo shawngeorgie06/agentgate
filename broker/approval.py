@@ -20,7 +20,7 @@ def issue_token(ttl_minutes: int, now: Optional[datetime.datetime] = None) -> Tu
 class PendingRequest:
     agent: str
     credential: str
-    future: "asyncio.Future[bool]" = field(default=None)  # set in submit
+    future: Optional["asyncio.Future[bool]"] = field(default=None)  # set in submit
 
 
 class ApprovalQueue:

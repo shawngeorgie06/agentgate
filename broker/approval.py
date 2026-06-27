@@ -27,11 +27,20 @@ class ApprovalQueue:
     def __init__(self) -> None:
         self._queue: Deque[PendingRequest] = deque()
 
-    async def submit(self, agent: str, credential: str) -> bool:
+    async def submit(
+        self, agent: str, credential: str, timeout: Optional[float] = None
+    ) -> bool:
         loop = asyncio.get_running_loop()
         req = PendingRequest(agent=agent, credential=credential, future=loop.create_future())
         self._queue.append(req)
-        return await req.future
+        if timeout is None:
+            return await req.future
+        try:
+            return await asyncio.wait_for(req.future, timeout)
+        except asyncio.TimeoutError:
+            # Fail closed: drop the request so it never lingers as phantom-pending.
+            self._remove(req)
+            raise
 
     def get_pending(self) -> Optional[PendingRequest]:
         for req in self._queue:
@@ -39,13 +48,16 @@ class ApprovalQueue:
                 return req
         return None
 
-    def resolve(self, request: PendingRequest, approved: bool) -> None:
-        if not request.future.done():
-            request.future.set_result(approved)
+    def _remove(self, request: PendingRequest) -> None:
         try:
             self._queue.remove(request)
         except ValueError:
             pass
+
+    def resolve(self, request: PendingRequest, approved: bool) -> None:
+        if not request.future.done():
+            request.future.set_result(approved)
+        self._remove(request)
 
     def pending_count(self) -> int:
         return sum(1 for r in self._queue if not r.future.done())

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import base64
+import datetime
 import hashlib
 import secrets
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from urllib.parse import urlencode
 
@@ -72,3 +74,98 @@ def build_auth_url(
     }
     params.update(preset.extra_auth_params)
     return f"{preset.auth_url}?{urlencode(params)}"
+
+
+PostForm = Callable[[str, dict], Awaitable[dict]]
+
+
+async def _default_post_form(url: str, data: dict) -> dict:
+    import httpx
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(url, data=data, headers={"Accept": "application/json"})
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _expires_at(payload: dict) -> str:
+    seconds = int(payload.get("expires_in", 3600))
+    return (datetime.datetime.now() + datetime.timedelta(seconds=seconds)).isoformat(
+        timespec="seconds"
+    )
+
+
+def _scopes(payload: dict) -> list[str]:
+    scope = payload.get("scope", "")
+    return scope.split() if scope else []
+
+
+def _require_no_error(payload: dict) -> None:
+    if "error" in payload:
+        raise OAuthError(f"token endpoint error: {payload.get('error')}")
+
+
+async def exchange_code(
+    *,
+    token_url: str,
+    client_id: str,
+    client_secret: str,
+    code: str,
+    redirect_uri: str,
+    verifier: str,
+    post_form: PostForm | None = None,
+) -> dict:
+    post_form = post_form or _default_post_form
+    payload = await post_form(
+        token_url,
+        {
+            "grant_type": "authorization_code",
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "code": code,
+            "redirect_uri": redirect_uri,
+            "code_verifier": verifier,
+        },
+    )
+    _require_no_error(payload)
+    if "access_token" not in payload:
+        raise OAuthError("token endpoint returned no access_token")
+    return {
+        "access_token": payload["access_token"],
+        "refresh_token": payload.get("refresh_token", ""),
+        "expires_at": _expires_at(payload),
+        "scopes": _scopes(payload),
+    }
+
+
+async def refresh_access_token(
+    *,
+    token_url: str,
+    client_id: str,
+    client_secret: str,
+    refresh_token: str,
+    post_form: PostForm | None = None,
+) -> dict:
+    post_form = post_form or _default_post_form
+    payload = await post_form(
+        token_url,
+        {
+            "grant_type": "refresh_token",
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "refresh_token": refresh_token,
+        },
+    )
+    _require_no_error(payload)
+    if "access_token" not in payload:
+        raise OAuthError("token endpoint returned no access_token on refresh")
+    return {
+        "access_token": payload["access_token"],
+        "expires_at": _expires_at(payload),
+        "scopes": _scopes(payload),
+    }
+
+
+async def revoke(*, revoke_url: str, token: str, post_form: PostForm | None = None) -> None:
+    post_form = post_form or _default_post_form
+    await post_form(revoke_url, {"token": token})

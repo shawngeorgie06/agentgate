@@ -90,3 +90,28 @@ def test_defaults_are_all_valid():
     assert cfg.token_ttl_minutes == 60
     assert cfg.escalation_timeout_seconds == 0
     assert cfg.state_path  # non-empty
+
+
+def test_oauth_defaults():
+    from broker.config import Config
+    env = {
+        "POLICIES_PATH": "p", "STATE_PATH": "s", "LOGS_PATH": "l",
+        "CREDENTIALS_PATH": "c",
+    }
+    cfg = Config.from_env(env)
+    assert cfg.connections_path.endswith("connections.json")
+    assert cfg.oauth_redirect_port == 8765
+
+
+def test_oauth_redirect_port_override_and_validation():
+    import pytest
+    from broker.config import Config, ConfigError
+    base = {
+        "POLICIES_PATH": "p", "STATE_PATH": "s", "LOGS_PATH": "l",
+        "CREDENTIALS_PATH": "c",
+    }
+    assert Config.from_env({**base, "OAUTH_REDIRECT_PORT": "9000"}).oauth_redirect_port == 9000
+    with pytest.raises(ConfigError):
+        Config.from_env({**base, "OAUTH_REDIRECT_PORT": "0"})
+    with pytest.raises(ConfigError):
+        Config.from_env({**base, "OAUTH_REDIRECT_PORT": "notaport"})

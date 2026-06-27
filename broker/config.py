@@ -9,6 +9,8 @@ _DEFAULTS = {
     "STATE_PATH": os.path.join("state", "mode.json"),
     "LOGS_PATH": os.path.join("logs", "audit.log"),
     "CREDENTIALS_PATH": os.path.join("data", "credentials.json"),
+    "CONNECTIONS_PATH": os.path.join("data", "connections.json"),
+    "OAUTH_REDIRECT_PORT": "8765",
     "TOKEN_TTL_MINUTES": "60",
     "ESCALATION_TIMEOUT_SECONDS": "0",
 }
@@ -46,6 +48,8 @@ class Config:
     token_ttl_minutes: int
     escalation_timeout_seconds: int
     master_password: str | None
+    connections_path: str = os.path.join("data", "connections.json")
+    oauth_redirect_port: int = 8765
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Config":
@@ -64,4 +68,8 @@ class Config:
                 0, _require_int(get("ESCALATION_TIMEOUT_SECONDS"), "ESCALATION_TIMEOUT_SECONDS")
             ),
             master_password=env.get("AGENTGATE_MASTER_PASSWORD"),
+            connections_path=_require_non_empty(get("CONNECTIONS_PATH"), "CONNECTIONS_PATH"),
+            oauth_redirect_port=_require_int(
+                get("OAUTH_REDIRECT_PORT"), "OAUTH_REDIRECT_PORT", minimum=1
+            ),
         )

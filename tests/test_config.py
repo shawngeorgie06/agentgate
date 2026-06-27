@@ -1,4 +1,5 @@
-from broker.config import Config
+import pytest
+from broker.config import Config, ConfigError
 
 
 def test_from_env_uses_defaults_when_unset():
@@ -41,3 +42,51 @@ def test_escalation_timeout_reads_override():
 def test_escalation_timeout_clamps_negative_to_zero():
     cfg = Config.from_env({"ESCALATION_TIMEOUT_SECONDS": "-5"})
     assert cfg.escalation_timeout_seconds == 0
+
+
+def test_config_error_is_a_valueerror():
+    assert issubclass(ConfigError, ValueError)
+
+
+def test_token_ttl_non_numeric_raises_naming_the_var():
+    with pytest.raises(ConfigError) as exc:
+        Config.from_env({"TOKEN_TTL_MINUTES": "abc"})
+    assert "TOKEN_TTL_MINUTES" in str(exc.value)
+    assert "abc" in str(exc.value)
+
+
+def test_token_ttl_zero_raises():
+    with pytest.raises(ConfigError):
+        Config.from_env({"TOKEN_TTL_MINUTES": "0"})
+
+
+def test_token_ttl_negative_raises():
+    with pytest.raises(ConfigError):
+        Config.from_env({"TOKEN_TTL_MINUTES": "-1"})
+
+
+def test_token_ttl_valid_passes():
+    assert Config.from_env({"TOKEN_TTL_MINUTES": "30"}).token_ttl_minutes == 30
+
+
+def test_escalation_non_numeric_raises_naming_the_var():
+    with pytest.raises(ConfigError) as exc:
+        Config.from_env({"ESCALATION_TIMEOUT_SECONDS": "soon"})
+    assert "ESCALATION_TIMEOUT_SECONDS" in str(exc.value)
+
+
+def test_escalation_negative_still_clamps_to_zero():
+    assert Config.from_env({"ESCALATION_TIMEOUT_SECONDS": "-5"}).escalation_timeout_seconds == 0
+
+
+def test_empty_path_raises_naming_the_var():
+    with pytest.raises(ConfigError) as exc:
+        Config.from_env({"STATE_PATH": ""})
+    assert "STATE_PATH" in str(exc.value)
+
+
+def test_defaults_are_all_valid():
+    cfg = Config.from_env({})
+    assert cfg.token_ttl_minutes == 60
+    assert cfg.escalation_timeout_seconds == 0
+    assert cfg.state_path  # non-empty

@@ -14,6 +14,29 @@ _DEFAULTS = {
 }
 
 
+class ConfigError(ValueError):
+    """Raised when an environment value is missing, malformed, or out of range."""
+
+
+def _require_int(value: str, var: str, minimum: Optional[int] = None) -> int:
+    positive = minimum is not None and minimum > 0
+    kind = "a positive integer" if positive else "an integer"
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        raise ConfigError(f"{var} must be {kind}, got {value!r}") from None
+    if minimum is not None and n < minimum:
+        kind = "a positive integer" if positive else f">= {minimum}"
+        raise ConfigError(f"{var} must be {kind}, got {value!r}")
+    return n
+
+
+def _require_non_empty(value: str, var: str) -> str:
+    if not value:
+        raise ConfigError(f"{var} must not be empty")
+    return value
+
+
 @dataclass(frozen=True)
 class Config:
     policies_path: str
@@ -32,11 +55,13 @@ class Config:
             return env.get(key, _DEFAULTS[key])
 
         return cls(
-            policies_path=get("POLICIES_PATH"),
-            state_path=get("STATE_PATH"),
-            logs_path=get("LOGS_PATH"),
-            credentials_path=get("CREDENTIALS_PATH"),
-            token_ttl_minutes=int(get("TOKEN_TTL_MINUTES")),
-            escalation_timeout_seconds=max(0, int(get("ESCALATION_TIMEOUT_SECONDS"))),
+            policies_path=_require_non_empty(get("POLICIES_PATH"), "POLICIES_PATH"),
+            state_path=_require_non_empty(get("STATE_PATH"), "STATE_PATH"),
+            logs_path=_require_non_empty(get("LOGS_PATH"), "LOGS_PATH"),
+            credentials_path=_require_non_empty(get("CREDENTIALS_PATH"), "CREDENTIALS_PATH"),
+            token_ttl_minutes=_require_int(get("TOKEN_TTL_MINUTES"), "TOKEN_TTL_MINUTES", minimum=1),
+            escalation_timeout_seconds=max(
+                0, _require_int(get("ESCALATION_TIMEOUT_SECONDS"), "ESCALATION_TIMEOUT_SECONDS")
+            ),
             master_password=env.get("AGENTGATE_MASTER_PASSWORD"),
         )

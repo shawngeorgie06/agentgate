@@ -7,7 +7,7 @@ import sys
 from typing import List, Optional
 
 from broker import state
-from broker.config import Config
+from broker.config import Config, ConfigError
 from broker.credential_store import CredentialStore
 from broker.policy_engine import PolicyEngine
 
@@ -39,7 +39,12 @@ def run(
     config: Optional[Config] = None,
     master_password: Optional[str] = None,
 ) -> int:
-    config = config or Config.from_env()
+    if config is None:
+        try:
+            config = Config.from_env()
+        except ConfigError as exc:
+            print(f"[AgentGate] configuration error: {exc}", file=sys.stderr)
+            return 2
     args = build_parser().parse_args(argv)
 
     if args.command == "cred-store":

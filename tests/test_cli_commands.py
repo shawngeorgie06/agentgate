@@ -41,3 +41,12 @@ def test_status_prints_mode(tmp_path, capsys):
     cfg = _cfg(tmp_path)
     assert commands.run(["status"], config=cfg) == 0
     assert "auto" in capsys.readouterr().out.lower()
+
+
+def test_cli_returns_nonzero_on_invalid_config(monkeypatch, capsys):
+    # No injected config -> run() calls Config.from_env(), which reads os.environ.
+    monkeypatch.setenv("TOKEN_TTL_MINUTES", "abc")
+    rc = commands.run(["status"])  # config=None on purpose
+    assert rc != 0
+    err = capsys.readouterr().err
+    assert "TOKEN_TTL_MINUTES" in err

@@ -7,7 +7,7 @@ import sys
 from broker import state
 from broker.approval import ApprovalQueue
 from broker.audit import AuditLogger
-from broker.config import Config
+from broker.config import Config, ConfigError
 from broker.credential_store import CredentialStore
 from broker.mcp_server import Broker, build_mcp
 
@@ -83,6 +83,9 @@ async def run(config: Config | None = None) -> None:
 def main() -> None:
     try:
         asyncio.run(run())
+    except ConfigError as exc:
+        print(f"[AgentGate] configuration error: {exc}", file=sys.stderr)
+        raise SystemExit(2)
     except KeyboardInterrupt:
         print("\n[AgentGate] interrupted", file=sys.stderr)
 

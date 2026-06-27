@@ -36,3 +36,8 @@ def test_escalation_timeout_defaults_to_zero():
 def test_escalation_timeout_reads_override():
     cfg = Config.from_env({"ESCALATION_TIMEOUT_SECONDS": "30"})
     assert cfg.escalation_timeout_seconds == 30
+
+
+def test_escalation_timeout_clamps_negative_to_zero():
+    cfg = Config.from_env({"ESCALATION_TIMEOUT_SECONDS": "-5"})
+    assert cfg.escalation_timeout_seconds == 0

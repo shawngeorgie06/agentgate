@@ -37,6 +37,6 @@ class Config:
             logs_path=get("LOGS_PATH"),
             credentials_path=get("CREDENTIALS_PATH"),
             token_ttl_minutes=int(get("TOKEN_TTL_MINUTES")),
-            escalation_timeout_seconds=int(get("ESCALATION_TIMEOUT_SECONDS")),
+            escalation_timeout_seconds=max(0, int(get("ESCALATION_TIMEOUT_SECONDS"))),
             master_password=env.get("AGENTGATE_MASTER_PASSWORD"),
         )

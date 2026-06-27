@@ -168,7 +168,7 @@ Granted credentials include a `token_expiry` timestamp (configurable via `TOKEN_
 
 ## Escalation Timeout
 
-Set `ESCALATION_TIMEOUT_SECONDS` in `.env` to limit how long the broker waits for operator approval before failing closed. When the timeout elapses with no operator response, the request is denied immediately and audited as `decision="expired"`. A value of `0` (the default) disables the timeout and waits forever — suitable for interactive use. Set a positive integer (e.g. `30`) for headless or unattended deployments where a hung approval queue should not block agents indefinitely.
+Set `ESCALATION_TIMEOUT_SECONDS` in `.env` to limit how long the broker waits for operator approval before failing closed. When the timeout elapses with no operator response, the request is denied immediately and audited as `decision="expired"`. A value of `0` (the default) disables the timeout and waits forever — suitable for interactive use. Set a positive integer (e.g. `30`) for headless or unattended deployments where a hung approval queue should not block agents indefinitely. Note: while the timeout is disabled by default, pending approvals with no operator answer accumulate in memory—headless deployments should set a positive timeout to prevent unbounded memory growth.
 
 ## Architecture
 

@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import datetime
 import os
-from typing import List
 
 import yaml
 from fastmcp import FastMCP
@@ -133,10 +132,10 @@ class Broker:
             "reason": "denied by operator",
         }
 
-    def list_policies(self) -> List[dict]:
+    def list_policies(self) -> list[dict]:
         return self.engine.list_policies()
 
-    def validate_policies(self) -> List[str]:
+    def validate_policies(self) -> list[str]:
         return PolicyEngine.validate_file(self.config.policies_path)
 
     async def add_policy(self, policy: dict) -> dict:
@@ -194,7 +193,7 @@ def build_mcp(broker: Broker) -> FastMCP:
         return await broker.request_credential(agent, credential)
 
     @mcp.tool(name="policy.list")
-    def policy_list() -> List[dict]:
+    def policy_list() -> list[dict]:
         return broker.list_policies()
 
     @mcp.tool(name="policy.validate")

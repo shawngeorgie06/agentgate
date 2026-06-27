@@ -4,7 +4,6 @@ import argparse
 import getpass
 import os
 import sys
-from typing import List, Optional
 
 from broker import state
 from broker.config import Config, ConfigError
@@ -25,7 +24,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _password(master_password: Optional[str]) -> str:
+def _password(master_password: str | None) -> str:
     if master_password:
         return master_password
     env = os.environ.get("AGENTGATE_MASTER_PASSWORD")
@@ -35,9 +34,9 @@ def _password(master_password: Optional[str]) -> str:
 
 
 def run(
-    argv: List[str],
-    config: Optional[Config] = None,
-    master_password: Optional[str] = None,
+    argv: list[str],
+    config: Config | None = None,
+    master_password: str | None = None,
 ) -> int:
     if config is None:
         try:

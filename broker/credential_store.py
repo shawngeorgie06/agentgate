@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import json
 import os
-from typing import Dict
 
 from argon2.low_level import Type, hash_secret_raw
 from cryptography.exceptions import InvalidTag
@@ -41,13 +40,13 @@ class CredentialStore:
             self._write(self._data)
 
     # --- persistence -----------------------------------------------------
-    def _load(self) -> Dict:
+    def _load(self) -> dict:
         if os.path.exists(self._path):
             with open(self._path, "r", encoding="utf-8") as fh:
                 return json.load(fh)
         return {"salt": _b64e(os.urandom(_SALT_LEN)), "credentials": {}}
 
-    def _write(self, data: Dict) -> None:
+    def _write(self, data: dict) -> None:
         os.makedirs(os.path.dirname(os.path.abspath(self._path)), exist_ok=True)
         tmp = f"{self._path}.tmp"
         with open(tmp, "w", encoding="utf-8") as fh:

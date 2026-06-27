@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import datetime
 from dataclasses import dataclass
-from typing import List, Optional
 
 import yaml
 
@@ -33,7 +32,7 @@ def _in_window(now: datetime.time, start: datetime.time, end: datetime.time) -> 
 
 
 class PolicyEngine:
-    def __init__(self, policies: List[dict]) -> None:
+    def __init__(self, policies: list[dict]) -> None:
         self._policies = policies
 
     @classmethod
@@ -46,8 +45,8 @@ class PolicyEngine:
         return cls(doc["policies"])
 
     @staticmethod
-    def validate_file(path: str) -> List[str]:
-        errors: List[str] = []
+    def validate_file(path: str) -> list[str]:
+        errors: list[str] = []
         try:
             with open(path, "r", encoding="utf-8") as fh:
                 doc = yaml.safe_load(fh)
@@ -78,11 +77,11 @@ class PolicyEngine:
                         errors.append(f"policy '{pol.get('name', i)}' time_window must use HH:MM")
         return errors
 
-    def list_policies(self) -> List[dict]:
+    def list_policies(self) -> list[dict]:
         return list(self._policies)
 
     def evaluate(
-        self, agent: str, credential: str, now: Optional[datetime.time] = None
+        self, agent: str, credential: str, now: datetime.time | None = None
     ) -> Decision:
         if now is None:
             now = datetime.datetime.now().time()

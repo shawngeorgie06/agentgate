@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Mapping, Optional
 
 _DEFAULTS = {
     "POLICIES_PATH": os.path.join("policies", "policies.yaml"),
@@ -18,7 +18,7 @@ class ConfigError(ValueError):
     """Raised when an environment value is missing, malformed, or out of range."""
 
 
-def _require_int(value: str, var: str, minimum: Optional[int] = None) -> int:
+def _require_int(value: str, var: str, minimum: int | None = None) -> int:
     positive = minimum is not None and minimum > 0
     kind = "a positive integer" if positive else "an integer"
     try:
@@ -45,10 +45,10 @@ class Config:
     credentials_path: str
     token_ttl_minutes: int
     escalation_timeout_seconds: int
-    master_password: Optional[str]
+    master_password: str | None
 
     @classmethod
-    def from_env(cls, env: Optional[Mapping[str, str]] = None) -> "Config":
+    def from_env(cls, env: Mapping[str, str] | None = None) -> "Config":
         env = os.environ if env is None else env
 
         def get(key: str) -> str:

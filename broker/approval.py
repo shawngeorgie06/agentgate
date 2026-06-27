@@ -5,10 +5,9 @@ import datetime
 import secrets
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Deque, Optional, Tuple
 
 
-def issue_token(ttl_minutes: int, now: Optional[datetime.datetime] = None) -> Tuple[str, str]:
+def issue_token(ttl_minutes: int, now: datetime.datetime | None = None) -> tuple[str, str]:
     if now is None:
         now = datetime.datetime.now()
     token = secrets.token_urlsafe(32)
@@ -20,15 +19,15 @@ def issue_token(ttl_minutes: int, now: Optional[datetime.datetime] = None) -> Tu
 class PendingRequest:
     agent: str
     credential: str
-    future: Optional["asyncio.Future[bool]"] = field(default=None)  # set in submit
+    future: "asyncio.Future[bool] | None" = field(default=None)  # set in submit
 
 
 class ApprovalQueue:
     def __init__(self) -> None:
-        self._queue: Deque[PendingRequest] = deque()
+        self._queue: deque[PendingRequest] = deque()
 
     async def submit(
-        self, agent: str, credential: str, timeout: Optional[float] = None
+        self, agent: str, credential: str, timeout: float | None = None
     ) -> bool:
         loop = asyncio.get_running_loop()
         req = PendingRequest(agent=agent, credential=credential, future=loop.create_future())
@@ -42,7 +41,7 @@ class ApprovalQueue:
             self._remove(req)
             raise
 
-    def get_pending(self) -> Optional[PendingRequest]:
+    def get_pending(self) -> PendingRequest | None:
         for req in self._queue:
             if not req.future.done():
                 return req

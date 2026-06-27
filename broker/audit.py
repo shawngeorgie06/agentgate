@@ -3,7 +3,6 @@ from __future__ import annotations
 import datetime
 import json
 import os
-from typing import Optional
 
 _VALID_DECISIONS = {"approved", "denied", "escalated", "expired"}
 
@@ -21,7 +20,7 @@ class AuditLogger:
         policy_matched: str,
         decision: str,
         mode: str,
-        token_expiry: Optional[str],
+        token_expiry: str | None,
     ) -> None:
         if decision not in _VALID_DECISIONS:
             raise ValueError(f"decision must be one of {_VALID_DECISIONS}, got {decision!r}")

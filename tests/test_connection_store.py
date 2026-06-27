@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from broker.connection_store import Connection, ConnectionStore
+from broker.crypto import CryptoDecryptionError
 
 
 def _conn() -> Connection:
@@ -53,3 +54,24 @@ def test_delete_and_missing(tmp_path):
         store.get("work")
     with pytest.raises(KeyError):
         store.delete("work")
+
+
+def test_persists_across_separate_instances(tmp_path):
+    path = str(tmp_path / "connections.json")
+    ConnectionStore(path, "pw").store("work", _conn())
+    # A fresh instance over the same path must read the encrypted blob from disk.
+    reopened = ConnectionStore(path, "pw")
+    got = reopened.get("work")
+    assert got.provider == "google"
+    assert got.client_secret == "csecret-xyz"
+    assert got.refresh_token == "rt-abc"
+    assert got.scopes == ["openid", "email"]
+
+
+def test_wrong_password_get_raises(tmp_path):
+    path = str(tmp_path / "connections.json")
+    ConnectionStore(path, "pw").store("work", _conn())
+    # Opening with the wrong password derives a different key; decryption must fail.
+    wrong = ConnectionStore(path, "WRONG")
+    with pytest.raises(CryptoDecryptionError):
+        wrong.get("work")

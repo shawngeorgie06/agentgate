@@ -27,3 +27,12 @@ def test_from_env_reads_overrides():
     assert cfg.credentials_path == "/mnt/c.json"
     assert cfg.token_ttl_minutes == 15
     assert cfg.master_password == "hunter2"
+
+
+def test_escalation_timeout_defaults_to_zero():
+    assert Config.from_env({}).escalation_timeout_seconds == 0
+
+
+def test_escalation_timeout_reads_override():
+    cfg = Config.from_env({"ESCALATION_TIMEOUT_SECONDS": "30"})
+    assert cfg.escalation_timeout_seconds == 30

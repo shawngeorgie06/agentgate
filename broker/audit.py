@@ -5,7 +5,7 @@ import json
 import os
 from typing import Optional
 
-_VALID_DECISIONS = {"approved", "denied", "escalated"}
+_VALID_DECISIONS = {"approved", "denied", "escalated", "expired"}
 
 
 class AuditLogger:

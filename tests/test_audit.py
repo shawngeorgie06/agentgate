@@ -42,3 +42,18 @@ def test_log_never_contains_token_value(tmp_path):
     params = inspect.signature(AuditLogger.log).parameters
     assert "token" not in params
     assert "credential_value" not in params
+
+
+def test_log_accepts_expired_decision(tmp_path):
+    path = str(tmp_path / "audit.log")
+    logger = AuditLogger(path)
+    logger.log(
+        agent="claude-code",
+        credential_requested="anthropic-api-key",
+        policy_matched="cc-anthropic",
+        decision="expired",
+        mode="auto",
+        token_expiry=None,
+    )  # must not raise
+    entry = json.loads((tmp_path / "audit.log").read_text().strip().splitlines()[-1])
+    assert entry["decision"] == "expired"

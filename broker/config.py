@@ -10,6 +10,7 @@ _DEFAULTS = {
     "LOGS_PATH": os.path.join("logs", "audit.log"),
     "CREDENTIALS_PATH": os.path.join("data", "credentials.json"),
     "TOKEN_TTL_MINUTES": "60",
+    "ESCALATION_TIMEOUT_SECONDS": "0",
 }
 
 
@@ -20,6 +21,7 @@ class Config:
     logs_path: str
     credentials_path: str
     token_ttl_minutes: int
+    escalation_timeout_seconds: int
     master_password: Optional[str]
 
     @classmethod
@@ -35,5 +37,6 @@ class Config:
             logs_path=get("LOGS_PATH"),
             credentials_path=get("CREDENTIALS_PATH"),
             token_ttl_minutes=int(get("TOKEN_TTL_MINUTES")),
+            escalation_timeout_seconds=int(get("ESCALATION_TIMEOUT_SECONDS")),
             master_password=env.get("AGENTGATE_MASTER_PASSWORD"),
         )

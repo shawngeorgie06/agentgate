@@ -5,3 +5,6 @@ data/credentials.json
 state/mode.json
 logs/audit.log
 .pytest_cache/
+
+# Python build artifacts
+*.egg-info/

@@ -130,7 +130,7 @@ All credential decisions are logged to `logs/audit.log`, one JSON object per lin
 - `agent` — requesting agent name
 - `credential_requested` — credential name (never the value)
 - `policy_matched` — the policy that decided the request
-- `decision` — one of `approved`, `denied`, `escalated`
+- `decision` — one of `approved`, `denied`, `escalated`, `expired` (`expired` = escalated request that timed out waiting for the operator and was auto-denied)
 - `mode` — the broker mode at decision time (`auto` or `manual`)
 - `token_expiry` — expiry of the issued token, or `null` when no token was issued
 
@@ -165,6 +165,10 @@ Credentials are accessed only via authenticated MCP calls and are never logged i
 ## Token TTL
 
 Granted credentials include a `token_expiry` timestamp (configurable via `TOKEN_TTL_MINUTES` in `.env`, default 60 minutes). Agents must re-request before expiry.
+
+## Escalation Timeout
+
+Set `ESCALATION_TIMEOUT_SECONDS` in `.env` to limit how long the broker waits for operator approval before failing closed. When the timeout elapses with no operator response, the request is denied immediately and audited as `decision="expired"`. A value of `0` (the default) disables the timeout and waits forever — suitable for interactive use. Set a positive integer (e.g. `30`) for headless or unattended deployments where a hung approval queue should not block agents indefinitely.
 
 ## Architecture
 

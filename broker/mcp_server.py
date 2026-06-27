@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import datetime
 import os
 from typing import List
@@ -94,7 +95,26 @@ class Broker:
             mode=mode,
             token_expiry=None,
         )
-        approved = await self.approvals.submit(agent, credential)
+        try:
+            approved = await self.approvals.submit(
+                agent, credential, timeout=self.config.escalation_timeout_seconds or None
+            )
+        except asyncio.TimeoutError:
+            self.audit.log(
+                agent=agent,
+                credential_requested=credential,
+                policy_matched=policy_name,
+                decision="expired",
+                mode=mode,
+                token_expiry=None,
+            )
+            return {
+                "granted": False,
+                "token": None,
+                "token_expiry": None,
+                "value": None,
+                "reason": "escalation timed out",
+            }
         if approved:
             return self._grant(agent, credential, mode, f"manual:{policy_name}")
         self.audit.log(
@@ -121,7 +141,14 @@ class Broker:
 
     async def add_policy(self, policy: dict) -> dict:
         # Hard rule: policy mutation ALWAYS escalates, regardless of mode/policy.
-        approved = await self.approvals.submit("SYSTEM", f"policy.add:{policy.get('name')}")
+        try:
+            approved = await self.approvals.submit(
+                "SYSTEM",
+                f"policy.add:{policy.get('name')}",
+                timeout=self.config.escalation_timeout_seconds or None,
+            )
+        except asyncio.TimeoutError:
+            return {"added": False, "reason": "policy change escalation timed out"}
         if not approved:
             return {"added": False, "reason": "policy change denied by operator"}
 

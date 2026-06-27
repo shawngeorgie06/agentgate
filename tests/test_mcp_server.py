@@ -1,4 +1,5 @@
 import asyncio
+import dataclasses
 import pytest
 import textwrap
 from broker.config import Config
@@ -139,6 +140,32 @@ async def test_add_policy_persists_valid_policy(tmp_path):
     assert "new" in names
     decision = broker.engine.evaluate("x", "y")
     assert decision.policy_name == "new"
+
+
+@pytest.mark.asyncio
+async def test_escalation_times_out_and_denies(tmp_path):
+    broker = _make_broker(tmp_path, _AUTO_POLICY)
+    broker.config = dataclasses.replace(broker.config, escalation_timeout_seconds=0.01)
+    # "evil" agent doesn't match the auto-approve policy -> escalates; no operator resolves it.
+    res = await broker.request_credential("evil", "anthropic-api-key")
+    assert res["granted"] is False
+    assert res["value"] is None
+    assert res["token"] is None
+    log = (tmp_path / "audit.log").read_text()
+    assert '"decision": "expired"' in log
+
+
+@pytest.mark.asyncio
+async def test_add_policy_times_out_without_modifying_file(tmp_path):
+    broker = _make_broker(tmp_path, _AUTO_POLICY)
+    broker.config = dataclasses.replace(broker.config, escalation_timeout_seconds=0.01)
+    before = open(broker.config.policies_path, "r", encoding="utf-8").read()
+    res = await broker.add_policy(
+        {"name": "new", "agent": "x", "credential": "y", "auto_approve": True}
+    )
+    assert res["added"] is False
+    after = open(broker.config.policies_path, "r", encoding="utf-8").read()
+    assert before == after
 
 
 def test_status_reports_mode_and_counts(tmp_path):

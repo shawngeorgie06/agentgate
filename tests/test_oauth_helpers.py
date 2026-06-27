@@ -43,3 +43,29 @@ def test_build_auth_url_contains_params():
     assert q["code_challenge_method"] == ["S256"]
     assert q["response_type"] == ["code"]
     assert q["scope"] == ["openid email"]
+
+
+def test_google_includes_offline_github_does_not():
+    google_url = oauth.build_auth_url(
+        preset=oauth.get_preset("google"),
+        client_id="cid",
+        redirect_uri="http://localhost:8765/callback",
+        scopes=["openid", "email"],
+        state="st8",
+        challenge="chal",
+    )
+    gq = parse_qs(urlparse(google_url).query)
+    assert gq["access_type"] == ["offline"]
+    assert gq["prompt"] == ["consent"]
+
+    github_url = oauth.build_auth_url(
+        preset=oauth.get_preset("github"),
+        client_id="cid",
+        redirect_uri="http://localhost:8765/callback",
+        scopes=["read:user"],
+        state="st8",
+        challenge="chal",
+    )
+    hq = parse_qs(urlparse(github_url).query)
+    assert "access_type" not in hq
+    assert "prompt" not in hq

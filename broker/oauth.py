@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import urlencode
 
 
@@ -17,6 +17,7 @@ class ProviderPreset:
     token_url: str
     revoke_url: str | None
     default_scopes: list[str]
+    extra_auth_params: dict[str, str] = field(default_factory=dict)
 
 
 PRESETS: dict[str, ProviderPreset] = {
@@ -25,6 +26,7 @@ PRESETS: dict[str, ProviderPreset] = {
         token_url="https://oauth2.googleapis.com/token",
         revoke_url="https://oauth2.googleapis.com/revoke",
         default_scopes=["openid", "email", "profile"],
+        extra_auth_params={"access_type": "offline", "prompt": "consent"},
     ),
     "github": ProviderPreset(
         auth_url="https://github.com/login/oauth/authorize",
@@ -43,7 +45,8 @@ def get_preset(provider: str) -> ProviderPreset:
 
 
 def generate_pkce() -> tuple[str, str]:
-    verifier = secrets.token_urlsafe(64)[:96]
+    # 64 random bytes -> 86-char base64url string; well within RFC 7636 [43, 128]
+    verifier = secrets.token_urlsafe(64)
     digest = hashlib.sha256(verifier.encode("ascii")).digest()
     challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
     return verifier, challenge
@@ -66,7 +69,6 @@ def build_auth_url(
         "state": state,
         "code_challenge": challenge,
         "code_challenge_method": "S256",
-        "access_type": "offline",
-        "prompt": "consent",
     }
+    params.update(preset.extra_auth_params)
     return f"{preset.auth_url}?{urlencode(params)}"

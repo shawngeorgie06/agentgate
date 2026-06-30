@@ -21,6 +21,7 @@ class AuditLogger:
         decision: str,
         mode: str,
         token_expiry: str | None,
+        scopes: list[str] | None = None,
     ) -> None:
         if decision not in _VALID_DECISIONS:
             raise ValueError(f"decision must be one of {_VALID_DECISIONS}, got {decision!r}")
@@ -33,5 +34,7 @@ class AuditLogger:
             "mode": mode,
             "token_expiry": token_expiry,
         }
+        if scopes is not None:
+            entry["scopes"] = scopes
         with open(self._path, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry) + "\n")

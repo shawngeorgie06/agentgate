@@ -7,10 +7,11 @@ import os
 import yaml
 from fastmcp import FastMCP
 
-from broker import state
+from broker import oauth, state
 from broker.approval import ApprovalQueue, issue_token
 from broker.audit import AuditLogger
 from broker.config import Config
+from broker.connection_store import ConnectionStore
 from broker.credential_store import CredentialStore
 from broker.policy_engine import PolicyEngine, PolicyError
 
@@ -24,12 +25,15 @@ class Broker:
         engine: PolicyEngine,
         audit: AuditLogger,
         approvals: ApprovalQueue,
+        connections: ConnectionStore | None = None,
     ) -> None:
         self.config = config
         self.store = store
         self.engine = engine
         self.audit = audit
         self.approvals = approvals
+        self.connections = connections
+        self._token_cache: dict[str, dict] = {}
         self.total_requests = 0
         self.escalated_requests = 0
         self.start_time = datetime.datetime.now()
@@ -131,6 +135,88 @@ class Broker:
             "value": None,
             "reason": "denied by operator",
         }
+
+    async def request_token(self, agent: str, connection: str) -> dict:
+        self.total_requests += 1
+        mode = state.read_mode(self.config.state_path)
+
+        if mode == "manual":
+            return await self._escalate_token(agent, connection, mode, "manual-mode")
+
+        decision = self.engine.evaluate(agent, connection)
+        if decision.auto_approve:
+            return await self._grant_token(agent, connection, mode, decision.policy_name)
+        return await self._escalate_token(agent, connection, mode, decision.policy_name)
+
+    async def _grant_token(self, agent: str, connection: str, mode: str, policy_name: str) -> dict:
+        try:
+            conn = self.connections.get(connection)
+        except (AttributeError, KeyError):
+            self.audit.log(
+                agent=agent, credential_requested=connection, policy_matched=policy_name,
+                decision="denied", mode=mode, token_expiry=None,
+            )
+            return {"granted": False, "access_token": None, "token_expiry": None,
+                    "scopes": None, "reason": f"unknown connection '{connection}'"}
+
+        token = self._cached_token(connection)
+        if token is None:
+            preset = oauth.get_preset(conn.provider)
+            fresh = await oauth.refresh_access_token(
+                token_url=preset.token_url, client_id=conn.client_id,
+                client_secret=conn.client_secret, refresh_token=conn.refresh_token,
+            )
+            token = {"access_token": fresh["access_token"], "expires_at": fresh["expires_at"],
+                     "scopes": fresh["scopes"] or conn.scopes}
+            self._token_cache[connection] = token
+
+        self.audit.log(
+            agent=agent, credential_requested=connection, policy_matched=policy_name,
+            decision="approved", mode=mode, token_expiry=token["expires_at"],
+            scopes=token["scopes"],
+        )
+        return {"granted": True, "access_token": token["access_token"],
+                "token_expiry": token["expires_at"], "scopes": token["scopes"],
+                "reason": f"auto-approved by policy '{policy_name}'"}
+
+    def _cached_token(self, connection: str) -> dict | None:
+        token = self._token_cache.get(connection)
+        if token is None:
+            return None
+        try:
+            expires = datetime.datetime.fromisoformat(token["expires_at"])
+        except ValueError:
+            return None
+        if datetime.datetime.now() >= expires - datetime.timedelta(seconds=60):
+            self._token_cache.pop(connection, None)
+            return None
+        return token
+
+    async def _escalate_token(self, agent: str, connection: str, mode: str, policy_name: str) -> dict:
+        self.escalated_requests += 1
+        self.audit.log(
+            agent=agent, credential_requested=connection, policy_matched=policy_name,
+            decision="escalated", mode=mode, token_expiry=None,
+        )
+        try:
+            approved = await self.approvals.submit(
+                agent, connection, timeout=self.config.escalation_timeout_seconds or None
+            )
+        except asyncio.TimeoutError:
+            self.audit.log(
+                agent=agent, credential_requested=connection, policy_matched=policy_name,
+                decision="expired", mode=mode, token_expiry=None,
+            )
+            return {"granted": False, "access_token": None, "token_expiry": None,
+                    "scopes": None, "reason": "escalation timed out"}
+        if approved:
+            return await self._grant_token(agent, connection, mode, f"manual:{policy_name}")
+        self.audit.log(
+            agent=agent, credential_requested=connection, policy_matched=policy_name,
+            decision="denied", mode=mode, token_expiry=None,
+        )
+        return {"granted": False, "access_token": None, "token_expiry": None,
+                "scopes": None, "reason": "denied by operator"}
 
     def list_policies(self) -> list[dict]:
         return self.engine.list_policies()

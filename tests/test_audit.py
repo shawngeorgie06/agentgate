@@ -57,3 +57,18 @@ def test_log_accepts_expired_decision(tmp_path):
     )  # must not raise
     entry = json.loads((tmp_path / "audit.log").read_text().strip().splitlines()[-1])
     assert entry["decision"] == "expired"
+
+
+def test_audit_includes_scopes_when_provided(tmp_path):
+    import json
+    from broker.audit import AuditLogger
+
+    path = tmp_path / "audit.log"
+    logger = AuditLogger(str(path))
+    logger.log(
+        agent="claude-code", credential_requested="work", policy_matched="p",
+        decision="approved", mode="auto", token_expiry="2026-06-27T11:00:00",
+        scopes=["openid", "email"],
+    )
+    entry = json.loads(path.read_text(encoding="utf-8").strip())
+    assert entry["scopes"] == ["openid", "email"]

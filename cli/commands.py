@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
+import datetime
 import getpass
 import os
+import secrets
 import sys
+import webbrowser
 
+from broker import oauth
 from broker import state
 from broker.config import Config, ConfigError
+from broker.connection_store import Connection, ConnectionStore
 from broker.credential_store import CredentialStore
 from broker.policy_engine import PolicyEngine
 
@@ -21,6 +27,12 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("cred-list", help="list credential names")
     sub.add_parser("policy-validate", help="validate the policy file")
     sub.add_parser("status", help="print broker status")
+    c = sub.add_parser("connect", help="connect an OAuth provider account")
+    c.add_argument("provider")
+    c.add_argument("name", nargs="?", default=None)
+    sub.add_parser("connections", help="list connected accounts")
+    dc = sub.add_parser("disconnect", help="revoke and remove a connection")
+    dc.add_argument("name")
     return parser
 
 
@@ -81,7 +93,73 @@ def run(
         print(f"policies: {len(PolicyEngine.from_file(config.policies_path).list_policies())}")
         return 0
 
+    if args.command == "connections":
+        store = ConnectionStore(config.connections_path, _password(master_password))
+        for meta in store.list_metadata():
+            print(f"{meta['name']}  provider={meta['provider']}  "
+                  f"scopes={','.join(meta['scopes'])}  created={meta['created_at']}")
+        return 0
+
+    if args.command == "disconnect":
+        store = ConnectionStore(config.connections_path, _password(master_password))
+        try:
+            conn = store.get(args.name)
+        except KeyError:
+            print(f"no such connection '{args.name}'", file=sys.stderr)
+            return 1
+        preset = oauth.get_preset(conn.provider)
+        if preset.revoke_url:
+            asyncio.run(oauth.revoke(revoke_url=preset.revoke_url, token=conn.refresh_token))
+        store.delete(args.name)
+        print(f"disconnected '{args.name}'")
+        return 0
+
+    if args.command == "connect":
+        return _run_connect(config, _password(master_password), args.provider, args.name)
+
     return 2
+
+
+def _run_connect(config: Config, master_password: str, provider: str, name: str | None) -> int:
+    name = name or provider
+    client_id = os.environ.get("AGENTGATE_OAUTH_CLIENT_ID")
+    client_secret = os.environ.get("AGENTGATE_OAUTH_CLIENT_SECRET")
+    if not client_id or not client_secret:
+        print("set AGENTGATE_OAUTH_CLIENT_ID and AGENTGATE_OAUTH_CLIENT_SECRET "
+              "for the provider you are connecting", file=sys.stderr)
+        return 2
+    try:
+        preset = oauth.get_preset(provider)
+    except oauth.OAuthError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    redirect_uri = f"http://localhost:{config.oauth_redirect_port}/callback"
+    verifier, challenge = oauth.generate_pkce()
+    csrf_state = secrets.token_urlsafe(16)
+    url = oauth.build_auth_url(
+        preset=preset, client_id=client_id, redirect_uri=redirect_uri,
+        scopes=preset.default_scopes, state=csrf_state, challenge=challenge,
+    )
+    print(f"Opening browser to authorize {provider}. Approve access, then return here.")
+    webbrowser.open(url)
+    code = oauth.run_callback_server(port=config.oauth_redirect_port, expected_state=csrf_state)
+    tokens = asyncio.run(oauth.exchange_code(
+        token_url=preset.token_url, client_id=client_id, client_secret=client_secret,
+        code=code, redirect_uri=redirect_uri, verifier=verifier,
+    ))
+    if not tokens["refresh_token"]:
+        print("provider returned no refresh token; re-consent with offline access",
+              file=sys.stderr)
+        return 1
+    ConnectionStore(config.connections_path, master_password).store(name, Connection(
+        provider=provider, client_id=client_id, client_secret=client_secret,
+        refresh_token=tokens["refresh_token"],
+        scopes=tokens["scopes"] or preset.default_scopes,
+        created_at=datetime.datetime.now().isoformat(timespec="seconds"),
+    ))
+    print(f"connected '{name}' ({provider})")
+    return 0
 
 
 def main() -> None:

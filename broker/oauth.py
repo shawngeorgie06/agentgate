@@ -84,8 +84,15 @@ async def _default_post_form(url: str, data: dict) -> dict:
 
     async with httpx.AsyncClient() as client:
         resp = await client.post(url, data=data, headers={"Accept": "application/json"})
-    resp.raise_for_status()
-    return resp.json()
+        if resp.is_error:
+            # Sanitize: surface only the provider's `error` field, never the
+            # response body/URL (which can echo submitted secrets).
+            try:
+                error_field = resp.json().get("error", "http_error")
+            except Exception:
+                error_field = "http_error"
+            raise OAuthError(f"token endpoint error: {error_field}")
+        return resp.json()
 
 
 def _expires_at(payload: dict) -> str:

@@ -67,3 +67,51 @@ async def test_revoke_calls_endpoint():
     await oauth.revoke(revoke_url="https://r", token="rt-1", post_form=post)
     assert post.calls[0][0] == "https://r"
     assert post.calls[0][1]["token"] == "rt-1"
+
+
+def _mock_httpx(handler):
+    """Patch httpx.AsyncClient to route through a MockTransport. Returns a restore fn."""
+    import httpx
+
+    transport = httpx.MockTransport(handler)
+    orig = httpx.AsyncClient
+
+    def patched(*a, **k):
+        k["transport"] = transport
+        return orig(*a, **k)
+
+    httpx.AsyncClient = patched
+    return lambda: setattr(httpx, "AsyncClient", orig)
+
+
+async def test_default_post_form_sanitizes_http_error():
+    import httpx
+
+    def handler(request):
+        return httpx.Response(
+            400, json={"error": "invalid_grant", "error_description": "SENSITIVE-rt-xyz"}
+        )
+
+    restore = _mock_httpx(handler)
+    try:
+        with pytest.raises(oauth.OAuthError) as exc:
+            await oauth._default_post_form("https://token", {"grant_type": "x"})
+    finally:
+        restore()
+    # Only the `error` field surfaces; the sensitive description/body never does.
+    assert "invalid_grant" in str(exc.value)
+    assert "SENSITIVE" not in str(exc.value)
+
+
+async def test_default_post_form_success():
+    import httpx
+
+    def handler(request):
+        return httpx.Response(200, json={"access_token": "AT", "expires_in": 3600})
+
+    restore = _mock_httpx(handler)
+    try:
+        result = await oauth._default_post_form("https://token", {"grant_type": "x"})
+    finally:
+        restore()
+    assert result["access_token"] == "AT"

@@ -4,6 +4,7 @@ import base64
 import datetime
 import hashlib
 import secrets
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -180,11 +181,18 @@ async def revoke(*, revoke_url: str, token: str, post_form: PostForm | None = No
 
 
 def run_callback_server(*, port: int, expected_state: str, timeout: float = 300.0) -> str:
-    captured: dict = {}
+    captured: dict[str, str | None] = {}
 
     class _Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802 (http.server API)
-            query = parse_qs(urlparse(self.path).query)
+            parsed = urlparse(self.path)
+            if parsed.path != "/callback":
+                # Ignore stray requests (favicon, OS connectivity probes) so they
+                # don't consume the wait; only the real redirect populates `captured`.
+                self.send_response(404)
+                self.end_headers()
+                return
+            query = parse_qs(parsed.query)
             captured["error"] = (query.get("error") or [None])[0]
             captured["state"] = (query.get("state") or [None])[0]
             captured["code"] = (query.get("code") or [None])[0]
@@ -196,10 +204,16 @@ def run_callback_server(*, port: int, expected_state: str, timeout: float = 300.
         def log_message(self, *args) -> None:  # silence default logging
             pass
 
-    server = HTTPServer(("localhost", port), _Handler)
-    server.timeout = timeout
+    # Bind IPv4 loopback explicitly (avoid dual-stack localhost -> ::1 ambiguity).
+    server = HTTPServer(("127.0.0.1", port), _Handler)
     try:
-        server.handle_request()  # serves exactly one request (or times out)
+        deadline = time.monotonic() + timeout
+        while not captured:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            server.timeout = remaining
+            server.handle_request()  # serves one request; stray hits loop again
     finally:
         server.server_close()
 

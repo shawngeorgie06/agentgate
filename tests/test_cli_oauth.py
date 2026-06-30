@@ -1,9 +1,5 @@
 from __future__ import annotations
 
-import asyncio
-
-import pytest
-
 from broker import oauth
 from broker.config import Config
 from broker.connection_store import Connection, ConnectionStore
@@ -51,12 +47,33 @@ def test_disconnect_revokes_and_deletes(tmp_path, monkeypatch):
     assert ConnectionStore(cfg.connections_path, "pw").list_names() == []
 
 
+def test_disconnect_deletes_even_if_revoke_fails(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    ConnectionStore(cfg.connections_path, "pw").store("work", Connection(
+        provider="google", client_id="cid", client_secret="csec", refresh_token="rt",
+        scopes=["openid"], created_at="2026-06-27T10:00:00"))
+
+    async def failing_revoke(**kwargs):
+        raise oauth.OAuthError("token endpoint error: invalid_token")
+    monkeypatch.setattr(oauth, "revoke", failing_revoke)
+
+    rc = commands.run(["disconnect", "work"], config=cfg, master_password="pw")
+    # Lenient: a failed remote revoke must not block local removal.
+    assert rc == 0
+    assert ConnectionStore(cfg.connections_path, "pw").list_names() == []
+
+
 def test_connect_stores_connection(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     monkeypatch.setenv("AGENTGATE_OAUTH_CLIENT_ID", "cid")
     monkeypatch.setenv("AGENTGATE_OAUTH_CLIENT_SECRET", "csec")
     monkeypatch.setattr(commands.webbrowser, "open", lambda url: True)
-    monkeypatch.setattr(oauth, "run_callback_server", lambda **kw: "authcode")
+
+    # Assert the CSRF state token is actually handed to the callback server.
+    def fake_callback(**kw):
+        assert "expected_state" in kw and kw["expected_state"]
+        return "authcode"
+    monkeypatch.setattr(oauth, "run_callback_server", fake_callback)
 
     async def fake_exchange(**kwargs):
         return {"access_token": "AT", "refresh_token": "RT-new",

@@ -107,9 +107,15 @@ def run(
         except KeyError:
             print(f"no such connection '{args.name}'", file=sys.stderr)
             return 1
-        preset = oauth.get_preset(conn.provider)
-        if preset.revoke_url:
-            asyncio.run(oauth.revoke(revoke_url=preset.revoke_url, token=conn.refresh_token))
+        # Revoke leniently: a failed remote revoke must not block removal of the
+        # local record (and must never leave the operator with a traceback).
+        try:
+            preset = oauth.get_preset(conn.provider)
+            if preset.revoke_url:
+                asyncio.run(oauth.revoke(revoke_url=preset.revoke_url, token=conn.refresh_token))
+        except oauth.OAuthError as exc:
+            print(f"warning: provider revoke failed ({exc}); removing local record anyway",
+                  file=sys.stderr)
         store.delete(args.name)
         print(f"disconnected '{args.name}'")
         return 0
@@ -125,8 +131,8 @@ def _run_connect(config: Config, master_password: str, provider: str, name: str 
     client_id = os.environ.get("AGENTGATE_OAUTH_CLIENT_ID")
     client_secret = os.environ.get("AGENTGATE_OAUTH_CLIENT_SECRET")
     if not client_id or not client_secret:
-        print("set AGENTGATE_OAUTH_CLIENT_ID and AGENTGATE_OAUTH_CLIENT_SECRET "
-              "for the provider you are connecting", file=sys.stderr)
+        print(f"set AGENTGATE_OAUTH_CLIENT_ID and AGENTGATE_OAUTH_CLIENT_SECRET "
+              f"to connect {provider!r}", file=sys.stderr)
         return 2
     try:
         preset = oauth.get_preset(provider)

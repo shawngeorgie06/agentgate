@@ -102,17 +102,19 @@ The first matching policy wins. Policies are evaluated in order.
 
 ## MCP Tools
 
-AgentGate exposes 5 MCP tools for agent integration:
+AgentGate exposes 6 MCP tools for agent integration:
 
 1. **`credential.request`** — Request a credential by agent name and credential name. Returns `{granted: bool, token: str, token_expiry: int, value: str, reason: str}`.
 
-2. **`policy.list`** — List all policies and their current status. Returns `{policies: [{name, agent, credential, auto_approve, escalate, ...}]}`.
+2. **`token.request`** — Request a short-lived OAuth access token for a named connection (see [OAuth Broker](#oauth-broker)). Returns `{granted: bool, access_token: str, token_expiry: str, scopes: [str], reason: str}`. Governed by policy/escalation/audit exactly like `credential.request` (match on agent + connection name).
 
-3. **`policy.validate`** — Validate the policy file without applying it. Returns `{valid: bool, errors: [str]}`.
+3. **`policy.list`** — List all policies and their current status. Returns `{policies: [{name, agent, credential, auto_approve, escalate, ...}]}`.
 
-4. **`policy.add`** — Add a new policy. **Always escalates to CLI operator for approval, regardless of mode.** Once approved, the policy is persisted to `policies/policies.yaml`.
+4. **`policy.validate`** — Validate the policy file without applying it. Returns `{valid: bool, errors: [str]}`.
 
-5. **`broker.status`** — Get current broker status: mode, policy count, request/escalation counts, and uptime. Returns `{mode: str, policies: int, requests: int, escalated: int, uptime_seconds: int}`.
+5. **`policy.add`** — Add a new policy. **Always escalates to CLI operator for approval, regardless of mode.** Once approved, the policy is persisted to `policies/policies.yaml`.
+
+6. **`broker.status`** — Get current broker status: mode, policy count, request/escalation counts, and uptime. Returns `{mode: str, policies: int, requests: int, escalated: int, uptime_seconds: int}`.
 
 ## Approval Modes
 
@@ -122,6 +124,57 @@ AgentGate runs in two modes:
 - **MANUAL**: All requests (even auto-approval policies) escalate to the CLI operator for interactive approval or denial.
 
 Toggle modes by pressing `s` while the CLI is running. The mode is persisted to `state/mode.json`.
+
+## OAuth Broker
+
+Beyond static API keys, AgentGate can broker **OAuth 2.0 access** to providers like Google and GitHub. You connect a provider account once; afterward an agent asks for that connection by name and receives a **fresh, short-lived, scoped access token** minted from a refresh token it never sees. Your password is never stored — only the refresh token, encrypted at rest — and you can revoke a connection at any time.
+
+### How it works
+
+- The broker holds an encrypted **refresh token** per connection (never released to agents).
+- On `token.request`, the broker mints a short-lived **access token** (caching it in memory until shortly before expiry) and returns only that token plus its expiry and scopes.
+- Access is governed by the same YAML policy, AUTO/MANUAL mode, escalation, and audit pipeline as `credential.request` — the connection name occupies the same slot a credential name does.
+
+### One-time provider setup
+
+Interactive OAuth requires your own OAuth app (an open-source, self-hosted broker can't ship shared client secrets):
+
+1. Register an OAuth app in the provider's developer console (Google Cloud Console / GitHub Developer Settings).
+2. Set its authorized redirect URI to **`http://localhost:8765/callback`** (or your configured `OAUTH_REDIRECT_PORT`). This must match exactly.
+3. Note the **client ID** and **client secret**.
+
+Built-in presets exist for **Google** and **GitHub** (their auth/token/revoke URLs and default scopes are baked in).
+
+### Operator commands
+
+```bash
+# Provide the client ID/secret for the provider you're connecting (read from the
+# environment at connect time — never passed as a command-line argument):
+export AGENTGATE_OAUTH_CLIENT_ID=<your-client-id>
+export AGENTGATE_OAUTH_CLIENT_SECRET=<your-client-secret>
+
+# Connect an account (opens your browser to consent once; captures + encrypts the refresh token):
+agentgate connect google work        # `work` is the connection name; defaults to the provider
+
+# List connected accounts (shows name, provider, scopes, created-at — never secrets):
+agentgate connections
+
+# Revoke at the provider and remove the local record:
+agentgate disconnect work
+```
+
+> The browser consent screen is the **only** place your provider password is entered — AgentGate never sees it. `connect` opens a temporary `localhost` callback server (PKCE + `state` CSRF protection) that serves exactly the OAuth redirect, then shuts down.
+
+### Agent usage
+
+An agent requests a token over MCP:
+
+```
+token.request(agent="claude-code", connection="work")
+  -> {granted: true, access_token: "...", token_expiry: "2026-06-28T15:00:00", scopes: ["openid", "email"], reason: "..."}
+```
+
+The refresh token, client secret, and authorization code are **never** returned to an agent and **never** written to the audit log — only the access token's expiry and granted scopes are recorded.
 
 ## Audit Log
 

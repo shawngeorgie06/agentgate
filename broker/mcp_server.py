@@ -304,4 +304,8 @@ def build_mcp(broker: Broker) -> FastMCP:
     def broker_status() -> dict:
         return broker.status()
 
+    @mcp.tool(name="token.request")
+    async def token_request(agent: str, connection: str) -> dict:
+        return await broker.request_token(agent, connection)
+
     return mcp

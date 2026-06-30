@@ -8,6 +8,7 @@ from broker import state
 from broker.approval import ApprovalQueue
 from broker.audit import AuditLogger
 from broker.config import Config, ConfigError
+from broker.connection_store import ConnectionStore
 from broker.credential_store import CredentialStore
 from broker.mcp_server import Broker, build_mcp
 
@@ -27,6 +28,7 @@ def build_broker(config: Config, master_password: str) -> Broker:
         engine=PolicyEngine.from_file(config.policies_path),
         audit=AuditLogger(config.logs_path),
         approvals=ApprovalQueue(),
+        connections=ConnectionStore(config.connections_path, master_password),
     )
 
 

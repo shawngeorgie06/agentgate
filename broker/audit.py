@@ -35,6 +35,6 @@ class AuditLogger:
             "token_expiry": token_expiry,
         }
         if scopes is not None:
-            entry["scopes"] = scopes
+            entry["scopes"] = list(scopes)
         with open(self._path, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry) + "\n")

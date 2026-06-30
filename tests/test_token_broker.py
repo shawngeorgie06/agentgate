@@ -76,13 +76,31 @@ async def test_unknown_connection_denied(tmp_path, monkeypatch):
     broker, _ = _make_broker(tmp_path, _AUTO, monkeypatch)
     # 'nonexistent' hits default-deny -> escalate; resolve as approved,
     # then the missing connection makes the grant fail closed.
-    task = asyncio.ensure_future(broker.request_token("claude-code", "nonexistent"))
+    task = asyncio.create_task(broker.request_token("claude-code", "nonexistent"))
     await asyncio.sleep(0.05)
     p = broker.approvals.get_pending()
     broker.approvals.resolve(p, True)
     res = await task
     assert res["granted"] is False
     assert "nonexistent" in res["reason"]
+
+
+async def test_manual_mode_escalates_despite_auto_policy(tmp_path, monkeypatch):
+    import asyncio
+
+    from broker import state
+
+    broker, _ = _make_broker(tmp_path, _AUTO, monkeypatch)
+    # 'work' has an auto_approve policy, but MANUAL mode must escalate anyway.
+    state.write_mode(broker.config.state_path, "manual")
+    task = asyncio.create_task(broker.request_token("claude-code", "work"))
+    await asyncio.sleep(0.05)
+    pending = broker.approvals.get_pending()
+    assert pending is not None  # escalated rather than auto-granted
+    broker.approvals.resolve(pending, True)
+    res = await task
+    assert res["granted"] is True
+    assert res["access_token"] == "AT-fresh"
 
 
 async def test_audit_never_contains_secrets(tmp_path, monkeypatch):

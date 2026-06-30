@@ -149,9 +149,17 @@ class Broker:
         return await self._escalate_token(agent, connection, mode, decision.policy_name)
 
     async def _grant_token(self, agent: str, connection: str, mode: str, policy_name: str) -> dict:
-        try:
-            conn = self.connections.get(connection)
-        except (AttributeError, KeyError):
+        # Fail closed if no connections store is configured, or the name is unknown.
+        # Guard None explicitly so a real error inside ConnectionStore.get (e.g. a
+        # corrupt store) is NOT misclassified as "unknown connection".
+        if self.connections is None:
+            conn = None
+        else:
+            try:
+                conn = self.connections.get(connection)
+            except KeyError:
+                conn = None
+        if conn is None:
             self.audit.log(
                 agent=agent, credential_requested=connection, policy_matched=policy_name,
                 decision="denied", mode=mode, token_expiry=None,
@@ -166,8 +174,9 @@ class Broker:
                 token_url=preset.token_url, client_id=conn.client_id,
                 client_secret=conn.client_secret, refresh_token=conn.refresh_token,
             )
+            # Fall back to stored scopes when the provider doesn't echo them on refresh.
             token = {"access_token": fresh["access_token"], "expires_at": fresh["expires_at"],
-                     "scopes": fresh["scopes"] or conn.scopes}
+                     "scopes": fresh["scopes"] if fresh["scopes"] else conn.scopes}
             self._token_cache[connection] = token
 
         self.audit.log(
@@ -185,7 +194,7 @@ class Broker:
             return None
         try:
             expires = datetime.datetime.fromisoformat(token["expires_at"])
-        except ValueError:
+        except (ValueError, TypeError):
             return None
         if datetime.datetime.now() >= expires - datetime.timedelta(seconds=60):
             self._token_cache.pop(connection, None)

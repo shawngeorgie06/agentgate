@@ -6,7 +6,8 @@ import hashlib
 import secrets
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from urllib.parse import urlencode
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import parse_qs, urlencode, urlparse
 
 
 class OAuthError(Exception):
@@ -176,3 +177,38 @@ async def refresh_access_token(
 async def revoke(*, revoke_url: str, token: str, post_form: PostForm | None = None) -> None:
     post_form = post_form or _default_post_form
     await post_form(revoke_url, {"token": token})
+
+
+def run_callback_server(*, port: int, expected_state: str, timeout: float = 300.0) -> str:
+    captured: dict = {}
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 (http.server API)
+            query = parse_qs(urlparse(self.path).query)
+            captured["error"] = (query.get("error") or [None])[0]
+            captured["state"] = (query.get("state") or [None])[0]
+            captured["code"] = (query.get("code") or [None])[0]
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"AgentGate: you may close this tab and return to the terminal.")
+
+        def log_message(self, *args) -> None:  # silence default logging
+            pass
+
+    server = HTTPServer(("localhost", port), _Handler)
+    server.timeout = timeout
+    try:
+        server.handle_request()  # serves exactly one request (or times out)
+    finally:
+        server.server_close()
+
+    if not captured:
+        raise OAuthError("timed out waiting for the OAuth redirect")
+    if captured.get("error"):
+        raise OAuthError(f"authorization failed: {captured['error']}")
+    if captured.get("state") != expected_state:
+        raise OAuthError("state mismatch on OAuth callback (possible CSRF)")
+    if not captured.get("code"):
+        raise OAuthError("OAuth callback returned no authorization code")
+    return captured["code"]

@@ -2,9 +2,12 @@ __pycache__/
 *.pyc
 .env
 data/credentials.json
+data/connections.json
+data/*.json
 state/mode.json
 logs/audit.log
 .pytest_cache/
+*.tmp
 
 # Python build artifacts
 *.egg-info/

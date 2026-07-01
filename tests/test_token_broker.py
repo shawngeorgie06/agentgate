@@ -103,6 +103,25 @@ async def test_manual_mode_escalates_despite_auto_policy(tmp_path, monkeypatch):
     assert res["access_token"] == "AT-fresh"
 
 
+async def test_refresh_failure_fails_closed_with_audit(tmp_path, monkeypatch):
+    broker, tp = _make_broker(tmp_path, _AUTO, monkeypatch)
+    # A provider refresh failure must fail closed: structured denial + audit row,
+    # never a raw OAuthError escaping the broker.
+    async def failing_refresh(**kwargs):
+        raise oauth.OAuthError("token endpoint error: invalid_grant")
+    monkeypatch.setattr(oauth, "refresh_access_token", failing_refresh)
+
+    res = await broker.request_token("claude-code", "work")
+    assert res["granted"] is False
+    assert res["access_token"] is None and res["token_expiry"] is None and res["scopes"] is None
+    assert "work" in res["reason"]
+
+    log = (tp / "audit.log").read_text(encoding="utf-8")
+    assert "invalid_grant" not in log  # provider error detail never leaks to audit
+    entry = json.loads(log.strip().splitlines()[-1])
+    assert entry["decision"] == "denied"
+
+
 async def test_audit_never_contains_secrets(tmp_path, monkeypatch):
     broker, tp = _make_broker(tmp_path, _AUTO, monkeypatch)
     await broker.request_token("claude-code", "work")

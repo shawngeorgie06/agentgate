@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import os
 
 from argon2.low_level import Type, hash_secret_raw
@@ -53,6 +54,6 @@ def encrypt(key: bytes, plaintext: str) -> dict:
 def decrypt(key: bytes, entry: dict) -> str:
     try:
         plaintext = AESGCM(key).decrypt(b64d(entry["nonce"]), b64d(entry["ciphertext"]), None)
-    except InvalidTag as exc:
+    except (InvalidTag, KeyError, binascii.Error) as exc:
         raise CryptoDecryptionError("could not decrypt (wrong password or tampered store)") from exc
     return plaintext.decode("utf-8")

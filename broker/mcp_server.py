@@ -169,11 +169,21 @@ class Broker:
 
         token = self._cached_token(connection)
         if token is None:
-            preset = oauth.get_preset(conn.provider)
-            fresh = await oauth.refresh_access_token(
-                token_url=preset.token_url, client_id=conn.client_id,
-                client_secret=conn.client_secret, refresh_token=conn.refresh_token,
-            )
+            # A failed refresh must fail closed with an audited denial — never a raw
+            # exception (which would carry no audit row and could leak provider detail).
+            try:
+                preset = oauth.get_preset(conn.provider)
+                fresh = await oauth.refresh_access_token(
+                    token_url=preset.token_url, client_id=conn.client_id,
+                    client_secret=conn.client_secret, refresh_token=conn.refresh_token,
+                )
+            except oauth.OAuthError:
+                self.audit.log(
+                    agent=agent, credential_requested=connection, policy_matched=policy_name,
+                    decision="denied", mode=mode, token_expiry=None,
+                )
+                return {"granted": False, "access_token": None, "token_expiry": None,
+                        "scopes": None, "reason": f"could not mint token for '{connection}'"}
             # Fall back to stored scopes when the provider doesn't echo them on refresh.
             token = {"access_token": fresh["access_token"], "expires_at": fresh["expires_at"],
                      "scopes": fresh["scopes"] if fresh["scopes"] else conn.scopes}

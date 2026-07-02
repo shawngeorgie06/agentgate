@@ -8,7 +8,7 @@ _VALID_MODES = {"auto", "manual"}
 
 
 def _now() -> str:
-    return datetime.datetime.now().isoformat(timespec="seconds")
+    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
 
 
 def write_mode(path: str, mode: str, updated_by: str = "cli") -> None:

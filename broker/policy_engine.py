@@ -84,6 +84,8 @@ class PolicyEngine:
         self, agent: str, credential: str, now: datetime.time | None = None
     ) -> Decision:
         if now is None:
+            # Deliberately LOCAL time: time windows express the operator's
+            # business hours, unlike all other timestamps (which are UTC).
             now = datetime.datetime.now().time()
 
         for pol in self._policies:

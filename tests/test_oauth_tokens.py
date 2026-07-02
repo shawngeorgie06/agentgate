@@ -31,8 +31,10 @@ async def test_exchange_code_parses_tokens():
     assert result["access_token"] == "at-1"
     assert result["refresh_token"] == "rt-1"
     assert result["scopes"] == ["openid", "email"]
-    # expires_at is a future ISO timestamp
-    assert datetime.datetime.fromisoformat(result["expires_at"]) > datetime.datetime.now()
+    # expires_at is a future, timezone-aware (UTC) ISO timestamp
+    expires = datetime.datetime.fromisoformat(result["expires_at"])
+    assert expires.tzinfo is not None
+    assert expires > datetime.datetime.now(datetime.timezone.utc)
     # grant_type and PKCE verifier were sent
     _, sent = post.calls[0]
     assert sent["grant_type"] == "authorization_code"

@@ -162,7 +162,7 @@ def _run_connect(config: Config, master_password: str, provider: str, name: str 
         provider=provider, client_id=client_id, client_secret=client_secret,
         refresh_token=tokens["refresh_token"],
         scopes=tokens["scopes"] or preset.default_scopes,
-        created_at=datetime.datetime.now().isoformat(timespec="seconds"),
+        created_at=datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
     ))
     print(f"connected '{name}' ({provider})")
     return 0

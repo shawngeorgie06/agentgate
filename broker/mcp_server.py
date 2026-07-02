@@ -38,7 +38,7 @@ class Broker:
         self._policies_mtime = self._policies_file_mtime()
         self.total_requests = 0
         self.escalated_requests = 0
-        self.start_time = datetime.datetime.now()
+        self.start_time = datetime.datetime.now(datetime.timezone.utc)
 
     def _policies_file_mtime(self) -> float | None:
         try:
@@ -222,7 +222,7 @@ class Broker:
             expires = datetime.datetime.fromisoformat(token["expires_at"])
         except (ValueError, TypeError):
             return None
-        if datetime.datetime.now() >= expires - datetime.timedelta(seconds=60):
+        if datetime.datetime.now(datetime.timezone.utc) >= expires - datetime.timedelta(seconds=60):
             self._token_cache.pop(connection, None)
             return None
         return token
@@ -302,7 +302,7 @@ class Broker:
             "requests": self.total_requests,
             "escalated": self.escalated_requests,
             "uptime_seconds": int(
-                (datetime.datetime.now() - self.start_time).total_seconds()
+                (datetime.datetime.now(datetime.timezone.utc) - self.start_time).total_seconds()
             ),
         }
 

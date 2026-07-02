@@ -26,7 +26,7 @@ class AuditLogger:
         if decision not in _VALID_DECISIONS:
             raise ValueError(f"decision must be one of {_VALID_DECISIONS}, got {decision!r}")
         entry = {
-            "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
             "agent": agent,
             "credential_requested": credential_requested,
             "policy_matched": policy_matched,

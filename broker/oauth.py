@@ -99,9 +99,8 @@ async def _default_post_form(url: str, data: dict) -> dict:
 
 def _expires_at(payload: dict) -> str:
     seconds = int(payload.get("expires_in", 3600))
-    return (datetime.datetime.now() + datetime.timedelta(seconds=seconds)).isoformat(
-        timespec="seconds"
-    )
+    now = datetime.datetime.now(datetime.timezone.utc)
+    return (now + datetime.timedelta(seconds=seconds)).isoformat(timespec="seconds")
 
 
 def _scopes(payload: dict) -> list[str]:

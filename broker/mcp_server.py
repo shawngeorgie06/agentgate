@@ -13,7 +13,7 @@ from broker.approval import ApprovalQueue
 from broker.audit import AuditLogger
 from broker.config import Config
 from broker.connection_store import ConnectionStore
-from broker.credential_store import CredentialStore
+from broker.credential_store import CredentialDecryptionError, CredentialStore
 from broker.policy_engine import PolicyEngine, PolicyError
 
 
@@ -89,6 +89,9 @@ class Broker:
         return await self._escalate(agent, credential, mode, decision.policy_name)
 
     def _grant(self, agent: str, credential: str, mode: str, policy_name: str) -> dict:
+        # Both failure shapes fail closed with an audit row and a structured
+        # denial — never a raw exception (which would carry no audit entry and
+        # could leak internal detail to the agent).
         try:
             value = self.store.retrieve(credential)
         except KeyError:
@@ -104,6 +107,20 @@ class Broker:
                 "granted": False,
                 "value": None,
                 "reason": f"unknown credential '{credential}'",
+            }
+        except CredentialDecryptionError:
+            self.audit.log(
+                agent=agent,
+                credential_requested=credential,
+                policy_matched=policy_name,
+                decision="denied",
+                mode=mode,
+                token_expiry=None,
+            )
+            return {
+                "granted": False,
+                "value": None,
+                "reason": f"could not read credential '{credential}'",
             }
         self.audit.log(
             agent=agent,

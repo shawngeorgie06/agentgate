@@ -168,6 +168,24 @@ async def test_add_policy_times_out_without_modifying_file(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_decrypt_failure_fails_closed_with_audit(tmp_path, monkeypatch):
+    from broker.credential_store import CredentialDecryptionError
+    broker = _make_broker(tmp_path, _AUTO_POLICY)
+
+    def failing_retrieve(name):
+        raise CredentialDecryptionError("wrong password or tampered store detail")
+    monkeypatch.setattr(broker.store, "retrieve", failing_retrieve)
+
+    res = await broker.request_credential("claude-code", "anthropic-api-key")
+    assert res["granted"] is False
+    assert res["value"] is None
+    # Internal detail never leaks to the agent.
+    assert "tampered" not in res["reason"]
+    log = (tmp_path / "audit.log").read_text()
+    assert '"decision": "denied"' in log
+
+
+@pytest.mark.asyncio
 async def test_escalate_false_hard_denies_without_paging_operator(tmp_path):
     broker = _make_broker(tmp_path, """
         policies:

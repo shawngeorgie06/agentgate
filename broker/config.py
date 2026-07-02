@@ -16,6 +16,7 @@ _DEFAULTS = {
     "MCP_PORT": "8848",
     "MCP_ALLOWED_HOSTS": "",
     "ESCALATION_TIMEOUT_SECONDS": "0",
+    "ESCALATION_MAX_PENDING": "3",
 }
 
 
@@ -59,6 +60,9 @@ class Config:
     # always allowed). Requests with any other Host are rejected to block DNS
     # rebinding from browsers.
     mcp_allowed_hosts: str = ""
+    # Max escalations one agent may have waiting on the operator at once;
+    # further requests are denied immediately (approval-fatigue defense).
+    escalation_max_pending: int = 3
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Config":
@@ -84,4 +88,7 @@ class Config:
             mcp_host=_require_non_empty(get("MCP_HOST"), "MCP_HOST"),
             mcp_port=_require_int(get("MCP_PORT"), "MCP_PORT", minimum=1),
             mcp_allowed_hosts=get("MCP_ALLOWED_HOSTS"),
+            escalation_max_pending=_require_int(
+                get("ESCALATION_MAX_PENDING"), "ESCALATION_MAX_PENDING", minimum=1
+            ),
         )

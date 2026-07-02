@@ -358,6 +358,37 @@ async def test_invalid_policy_edit_keeps_previous_policies(tmp_path):
     assert res["granted"] is True
 
 
+@pytest.mark.asyncio
+async def test_escalation_flood_capped_per_agent(tmp_path):
+    broker = _make_broker(tmp_path, _AUTO_POLICY)
+    cap = broker.config.escalation_max_pending
+    # Stack the cap's worth of unresolved escalations from one agent...
+    tasks = [
+        asyncio.create_task(broker.request_credential(
+            "evil", broker.keys["evil"], "anthropic-api-key"))
+        for _ in range(cap)
+    ]
+    await asyncio.sleep(0.05)
+    assert broker.approvals.pending_count() == cap
+    # ...the next one is denied immediately without another prompt.
+    res = await broker.request_credential(
+        "evil", broker.keys["evil"], "anthropic-api-key")
+    assert res["granted"] is False
+    assert "pending" in res["reason"]
+    assert broker.approvals.pending_count() == cap
+    log = (tmp_path / "audit.log").read_text()
+    assert '"decision": "denied"' in log
+    # A different agent is unaffected by evil's flood.
+    other = asyncio.create_task(broker.request_credential(
+        "claude-code", broker.keys["claude-code"], "no-such-policy-cred"))
+    await asyncio.sleep(0.05)
+    assert broker.approvals.pending_count() == cap + 1
+    for t in (*tasks, other):
+        pending = broker.approvals.get_pending()
+        broker.approvals.resolve(pending, False)
+        await t
+
+
 def test_status_reports_mode_and_counts(tmp_path):
     broker = _make_broker(tmp_path, _AUTO_POLICY)
     s = broker.status()

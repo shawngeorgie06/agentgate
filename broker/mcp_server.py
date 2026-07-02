@@ -160,9 +160,26 @@ class Broker:
             "reason": f"auto-approved by policy '{policy_name}'",
         }
 
+    def _flooded(self, agent: str, subject: str, mode: str, policy_name: str) -> bool:
+        """Approval-fatigue defense: one agent may not stack unlimited pending
+        prompts on the operator; beyond the cap, requests deny immediately."""
+        if self.approvals.pending_for(agent) < self.config.escalation_max_pending:
+            return False
+        self.audit.log(
+            agent=agent, credential_requested=subject, policy_matched=policy_name,
+            decision="denied", mode=mode, token_expiry=None,
+        )
+        return True
+
     async def _escalate(
         self, agent: str, credential: str, mode: str, policy_name: str
     ) -> dict:
+        if self._flooded(agent, credential, mode, policy_name):
+            return {
+                "granted": False,
+                "value": None,
+                "reason": "too many requests pending operator approval",
+            }
         self.escalated_requests += 1
         self.audit.log(
             agent=agent,
@@ -294,6 +311,9 @@ class Broker:
         return token
 
     async def _escalate_token(self, agent: str, connection: str, mode: str, policy_name: str) -> dict:
+        if self._flooded(agent, connection, mode, policy_name):
+            return {"granted": False, "access_token": None, "token_expiry": None,
+                    "scopes": None, "reason": "too many requests pending operator approval"}
         self.escalated_requests += 1
         self.audit.log(
             agent=agent, credential_requested=connection, policy_matched=policy_name,

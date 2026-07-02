@@ -50,3 +50,6 @@ class ApprovalQueue:
 
     def pending_count(self) -> int:
         return sum(1 for r in self._queue if not r.future.done())
+
+    def pending_for(self, agent: str) -> int:
+        return sum(1 for r in self._queue if r.agent == agent and not r.future.done())

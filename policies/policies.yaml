@@ -2,7 +2,6 @@ policies:
   - name: claude-code-anthropic
     agent: claude-code
     credential: anthropic-api-key
-    access: read
     time_window:
       start: "09:00"
       end: "23:00"

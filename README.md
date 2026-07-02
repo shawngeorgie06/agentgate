@@ -72,7 +72,6 @@ policies:
   - name: <policy-name>
     agent: <agent-name or "*" for wildcard>
     credential: <credential-name or "*" for wildcard>
-    access: read|write         # access level (for future expansion)
     time_window:               # optional; omit for 24/7
       start: "HH:MM"
       end: "HH:MM"
@@ -85,7 +84,6 @@ policies:
 - name: claude-code-anthropic
   agent: claude-code
   credential: anthropic-api-key
-  access: read
   time_window:
     start: "09:00"
     end: "23:00"

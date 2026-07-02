@@ -21,7 +21,6 @@ class EncryptedStore:
         self._path = path
         is_new = not os.path.exists(self._path)
         self._data = self._read_file()
-        self._mtime = self._current_mtime()
         # Derive the key once; the password itself is deliberately not retained.
         self._key = crypto.derive_key(master_password, self._data["salt"])
         if is_new:
@@ -33,17 +32,10 @@ class EncryptedStore:
                 return json.load(fh)
         return {"salt": crypto.new_salt(), self._SECTION: {}}
 
-    def _current_mtime(self) -> float | None:
-        try:
-            return os.path.getmtime(self._path)
-        except OSError:
-            return None
-
     def _refresh(self) -> None:
-        """Re-read from disk if another process wrote the file since we did."""
-        mtime = self._current_mtime()
-        if mtime == self._mtime:
-            return
+        """Re-read from disk on every access, like mode.json: an mtime
+        short-circuit is racy (two writes in one filesystem-timestamp tick
+        hide the second), and a small local JSON read is negligible."""
         data = self._read_file()
         if data["salt"] != self._data["salt"]:
             # The derived key no longer matches; decrypting would produce
@@ -52,7 +44,6 @@ class EncryptedStore:
                 "store salt changed on disk; restart to re-derive the key"
             )
         self._data = data
-        self._mtime = mtime
 
     def _write(self, data: dict) -> None:
         os.makedirs(os.path.dirname(os.path.abspath(self._path)), exist_ok=True)
@@ -61,7 +52,6 @@ class EncryptedStore:
             json.dump(data, fh, indent=2)
         os.chmod(tmp, 0o600)
         os.replace(tmp, self._path)
-        self._mtime = self._current_mtime()
 
     def _entries(self) -> dict:
         self._refresh()

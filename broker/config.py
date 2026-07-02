@@ -12,6 +12,8 @@ _DEFAULTS = {
     "CONNECTIONS_PATH": os.path.join("data", "connections.json"),
     "AGENTS_PATH": os.path.join("data", "agents.json"),
     "OAUTH_REDIRECT_PORT": "8765",
+    "MCP_HOST": "127.0.0.1",
+    "MCP_PORT": "8848",
     "ESCALATION_TIMEOUT_SECONDS": "0",
 }
 
@@ -50,6 +52,8 @@ class Config:
     connections_path: str = os.path.join("data", "connections.json")
     oauth_redirect_port: int = 8765
     agents_path: str = os.path.join("data", "agents.json")
+    mcp_host: str = "127.0.0.1"
+    mcp_port: int = 8848
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Config":
@@ -72,4 +76,6 @@ class Config:
                 get("OAUTH_REDIRECT_PORT"), "OAUTH_REDIRECT_PORT", minimum=1
             ),
             agents_path=_require_non_empty(get("AGENTS_PATH"), "AGENTS_PATH"),
+            mcp_host=_require_non_empty(get("MCP_HOST"), "MCP_HOST"),
+            mcp_port=_require_int(get("MCP_PORT"), "MCP_PORT", minimum=1),
         )

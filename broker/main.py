@@ -75,8 +75,22 @@ async def run(config: Config | None = None) -> None:
     broker = build_broker(config, master_password)
     mcp = build_mcp(broker)
 
+    # MCP is served over HTTP so the terminal (stdin/stdout) belongs entirely
+    # to the operator CLI. A stdio MCP transport cannot coexist with an
+    # interactive approval prompt in one process: both would read stdin, and
+    # every print would corrupt the JSON-RPC stream on stdout.
+    print(
+        f"[AgentGate] MCP endpoint: http://{config.mcp_host}:{config.mcp_port}/mcp"
+    )
     cli_task = asyncio.create_task(_cli_loop(broker))
-    server_task = asyncio.create_task(mcp.run_async())
+    server_task = asyncio.create_task(
+        mcp.run_async(
+            transport="http",
+            host=config.mcp_host,
+            port=config.mcp_port,
+            show_banner=False,
+        )
+    )
     done, pending = await asyncio.wait(
         {cli_task, server_task}, return_when=asyncio.FIRST_COMPLETED
     )

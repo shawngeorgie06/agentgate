@@ -1,6 +1,8 @@
 services:
   agentgate:
     build: .
+    # The TTY belongs to the operator CLI (approval prompts, mode toggle);
+    # agents connect over the HTTP MCP endpoint published below.
     stdin_open: true
     tty: true
     env_file: .env
@@ -9,6 +11,14 @@ services:
       STATE_PATH: /app/state/mode.json
       LOGS_PATH: /app/logs/audit.log
       CREDENTIALS_PATH: /app/data/credentials.json
+      CONNECTIONS_PATH: /app/data/connections.json
+      AGENTS_PATH: /app/data/agents.json
+      # Bind all interfaces inside the container; the host mapping below
+      # still restricts access to the host's loopback only.
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: "8848"
+    ports:
+      - "127.0.0.1:8848:8848"
     volumes:
       - ./policies:/app/policies
       - ./state:/app/state

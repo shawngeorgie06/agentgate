@@ -1,17 +1,18 @@
 # AgentGate
 
-AgentGate is a production-grade credential broker and approval engine for AI agents. It enforces time-based policy gates on API key access, provides two-tier approval workflows (AUTO for trusted policies, MANUAL for escalations), and audits all credential requests with immutable logging.
+AgentGate is a credential broker and approval engine for AI agents — IAM for agents. Agents authenticate with a registered key, request named credentials or OAuth tokens over MCP, and get them only if a YAML policy (or the human operator) says yes. Every decision is written to an append-only audit log.
 
 ## V1 Scope
 
-- **Credential Storage**: Argon2id + AES-256-GCM encrypted credential storage with per-credential salts and nonces
-- **Policy Engine**: YAML-based declarative policies with time windows and auto-approval rules
-- **Two-Tier Approval**: Automatic approval for trusted agent/credential pairs; escalation to CLI operator for others
-- **Audit Logging**: Immutable audit trail with request signatures (no credential values logged)
-- **FastMCP Server**: Built-in Model Context Protocol server exposing 5 standard MCP tools for agent integration
-- **Runtime Mode Toggle**: Interactive CLI toggle between AUTO and MANUAL approval modes (state persisted to JSON)
-- **Async CLI**: Command-line interface for credential management and policy administration
-- **Docker Ready**: Docker Compose configuration with mounted state volumes for ECS migration
+- **Agent Authentication**: agents prove identity with a high-entropy key issued at registration — a name alone grants nothing
+- **Credential Storage**: Argon2id key derivation + AES-256-GCM encryption at rest (one salt per store, a fresh nonce per value), store files written owner-only (0600)
+- **Policy Engine**: YAML-based declarative policies with time windows, auto-approval, and hard-deny rules; file edits take effect without a restart
+- **Two-Tier Approval**: automatic approval for trusted agent/credential pairs; interactive CLI escalation for others; `escalate: false` denies without paging the operator
+- **OAuth Broker**: mints short-lived, scoped access tokens (Google/GitHub presets) from refresh tokens agents never see
+- **Audit Logging**: append-only JSONL of every request, approval, denial, and policy change — never any secret values
+- **HTTP MCP Server**: agents connect over HTTP (`/mcp`) while the terminal stays dedicated to the operator CLI
+- **Runtime Mode Toggle**: switch between AUTO and MANUAL approval at runtime; mode is persisted to a file and re-read on every request
+- **Docker Ready**: non-root container, Docker Compose with mounted state volumes
 
 ## Quickstart
 
@@ -28,7 +29,18 @@ cp .env.example .env
 ```
 
 **Set master password:**
-Edit `.env` and set `AGENTGATE_MASTER_PASSWORD` to a secure value (or it will prompt via `getpass` on CLI startup).
+Edit `.env` and set `AGENTGATE_MASTER_PASSWORD`, or leave it unset to be prompted via `getpass` at startup.
+
+> **Warning — key next to ciphertext:** putting the master password in `.env` on the same disk as the encrypted stores means anyone who can read both has everything; encryption at rest then only protects backups and copies of the store files alone. For anything beyond local development, leave `AGENTGATE_MASTER_PASSWORD` unset and enter it at the prompt.
+
+**Register an agent:**
+Every agent must be registered before it can request anything. Registration prints the agent's key **once** — configure it on the agent (e.g. in its MCP server config); AgentGate stores only an encrypted digest.
+```bash
+python -m cli.commands agent-add claude-code
+# registered agent 'claude-code'
+# agent key (shown once — configure it on the agent, it is not stored):
+# 3fK9...
+```
 
 **Seed a credential:**
 The credential value is read from stdin or the `AGENTGATE_CRED_VALUE` env var (never passed as a command-line argument, so it won't leak into process listings):
@@ -45,13 +57,27 @@ AGENTGATE_CRED_VALUE="<your-api-key>" python -m cli.commands cred-store anthropi
 python -m broker.main
 ```
 
-The broker starts a FastMCP server (stdin/stdout transport) and begins listening for credential requests via `credential.request` RPC calls.
+The broker serves MCP over HTTP at `http://127.0.0.1:8848/mcp` (configurable via `MCP_HOST`/`MCP_PORT`) and keeps the terminal for the operator CLI: approval prompts appear here, and mode toggling happens here.
+
+**Connect an MCP client:**
+```bash
+# Claude Code
+claude mcp add --transport http agentgate http://127.0.0.1:8848/mcp
+```
+Or in a `.mcp.json` / client config:
+```json
+{
+  "mcpServers": {
+    "agentgate": { "type": "http", "url": "http://127.0.0.1:8848/mcp" }
+  }
+}
+```
 
 **Request credentials from agents:**
-Agents connect to AgentGate via MCP and call `credential.request(agent, credential)`. The broker consults policies and audit state to approve or escalate the request.
+Agents call `credential.request(agent, agent_key, credential)`. The broker verifies the agent key first, then consults policies and mode to grant, deny, or escalate.
 
 **Toggle approval mode:**
-Once the CLI is running, press `s` to toggle between AUTO and MANUAL approval modes. The decision is persisted to `state/mode.json` and read on every request (never cached).
+In the broker terminal, type `s` and press Enter to toggle between AUTO and MANUAL modes. The decision is persisted to `state/mode.json` and re-read on every request (never cached).
 
 ### Docker Compose
 
@@ -61,7 +87,9 @@ docker compose build
 docker compose up
 ```
 
-The container mounts all state directories (`policies`, `state`, `logs`, `data`) from the host, making it suitable for ECS task definitions that mount external state volumes.
+The container runs as a non-root user, publishes the MCP endpoint on the **host's loopback only** (`127.0.0.1:8848`), and mounts all state directories (`policies`, `state`, `logs`, `data`) from the host. Approval prompts appear on the compose foreground terminal — run `docker compose up` (not `-d`) when you expect escalations, or attach with `docker attach`.
+
+Run CLI commands (registration, credential seeding) on the host against the same mounted `data/` directory, or via `docker compose exec agentgate python -m cli.commands ...`.
 
 ## Policy Schema
 
@@ -72,11 +100,12 @@ policies:
   - name: <policy-name>
     agent: <agent-name or "*" for wildcard>
     credential: <credential-name or "*" for wildcard>
-    time_window:               # optional; omit for 24/7
+    time_window:               # optional; omit for 24/7 (times are operator-local)
       start: "HH:MM"
       end: "HH:MM"
-    auto_approve: true|false   # auto-approve if time window matches
-    escalate: true             # if true, failed auto-approval escalates to CLI operator
+    auto_approve: true|false   # grant immediately when matched (in AUTO mode)
+    escalate: true|false       # on a non-auto match: true = ask the operator,
+                               # false = deny immediately without paging anyone
 ```
 
 **Example:**
@@ -89,6 +118,12 @@ policies:
     end: "23:00"
   auto_approve: true
 
+- name: never-prod
+  agent: "*"
+  credential: prod-db-password
+  auto_approve: false
+  escalate: false          # hard deny: audited, no operator prompt
+
 - name: default-deny
   agent: "*"
   credential: "*"
@@ -96,32 +131,42 @@ policies:
   escalate: true
 ```
 
-The first matching policy wins. Policies are evaluated in order.
+The first matching policy wins; policies are evaluated in order. Edits to the file are picked up automatically on the next request — an invalid edit keeps the last valid policies in effect (with a warning on the broker's stderr) rather than taking the broker down.
 
 ## MCP Tools
 
-AgentGate exposes 6 MCP tools for agent integration:
+AgentGate exposes 6 MCP tools. The three that grant or change anything require the agent's registered key; an unknown agent or wrong key gets an audited denial and never reaches a policy match or the operator.
 
-1. **`credential.request`** — Request a credential by agent name and credential name. Returns `{granted: bool, value: str, reason: str}` (`value` is `null` when denied).
+1. **`credential.request(agent, agent_key, credential)`** — Request a stored credential. Returns `{granted: bool, value: str, reason: str}`; `value` is `null` when denied. Note: the granted value **is** the raw credential — treat the response as secret.
 
-2. **`token.request`** — Request a short-lived OAuth access token for a named connection (see [OAuth Broker](#oauth-broker)). Returns `{granted: bool, access_token: str, token_expiry: str, scopes: [str], reason: str}` on success; when `granted` is `false` (denied, escalation timed out, or unknown connection), `access_token`, `token_expiry`, and `scopes` are `null`. Governed by policy/escalation/audit exactly like `credential.request` (match on agent + connection name).
+2. **`token.request(agent, agent_key, connection)`** — Request a short-lived OAuth access token for a named connection (see [OAuth Broker](#oauth-broker)). Returns `{granted: bool, access_token: str, token_expiry: str, scopes: [str], reason: str}`; when `granted` is `false`, `access_token`, `token_expiry`, and `scopes` are `null`. Governed by policy/escalation/audit exactly like `credential.request` (the connection name occupies the credential slot).
 
-3. **`policy.list`** — List all policies and their current status. Returns `{policies: [{name, agent, credential, auto_approve, escalate, ...}]}`.
+3. **`policy.list()`** — List all policies. Returns `{policies: [{name, agent, credential, auto_approve, escalate, ...}]}`.
 
-4. **`policy.validate`** — Validate the policy file without applying it. Returns `{valid: bool, errors: [str]}`.
+4. **`policy.validate()`** — Validate the policy file without applying it. Returns `{valid: bool, errors: [str]}`.
 
-5. **`policy.add`** — Add a new policy. **Always escalates to CLI operator for approval, regardless of mode.** Once approved, the policy is persisted to `policies/policies.yaml`.
+5. **`policy.add(agent, agent_key, policy)`** — Propose a new policy. **Always escalates to the CLI operator, regardless of mode**, and the operator sees the full policy body — not just its name. An approved policy is inserted **above a trailing catch-all default-deny but never ahead of existing specific policies**, so a proposed policy cannot steal precedence. Every outcome (escalated/approved/denied/expired) is audited.
 
-6. **`broker.status`** — Get current broker status: mode, policy count, request/escalation counts, and uptime. Returns `{mode: str, policies: int, requests: int, escalated: int, uptime_seconds: int}`.
+6. **`broker.status()`** — Current broker status. Returns `{mode: str, policies: int, requests: int, escalated: int, uptime_seconds: int}`.
 
 ## Approval Modes
 
 AgentGate runs in two modes:
 
-- **AUTO**: Policies with `auto_approve: true` grant credentials immediately. Policies with `auto_approve: false` still escalate to the operator.
-- **MANUAL**: All requests (even auto-approval policies) escalate to the CLI operator for interactive approval or denial.
+- **AUTO**: policies with `auto_approve: true` grant immediately; non-auto matches escalate (or hard-deny if `escalate: false`).
+- **MANUAL**: every authenticated request escalates to the CLI operator, even when a policy would auto-approve.
 
-Toggle modes by pressing `s` while the CLI is running. The mode is persisted to `state/mode.json`.
+Toggle by typing `s` + Enter in the broker terminal. The mode is persisted to `state/mode.json` and re-read on every request. A missing mode file defaults to AUTO (fresh install); a corrupt or unreadable one **fails closed to MANUAL**.
+
+## Agent Registration
+
+Agent identity is authenticated, not asserted. `agent-add` issues a random 256-bit key and stores only an encrypted SHA-256 digest — the key is never on disk and never in the audit log. Verification is constant-time.
+
+```bash
+agentgate agent-add claude-code     # prints the key once
+agentgate agent-list                # names only
+agentgate agent-remove claude-code  # revoke immediately (broker picks it up without restart)
+```
 
 ## OAuth Broker
 
@@ -131,7 +176,7 @@ Beyond static API keys, AgentGate can broker **OAuth 2.0 access** to providers l
 
 - The broker holds an encrypted **refresh token** per connection (never released to agents).
 - On `token.request`, the broker mints a short-lived **access token** (caching it in memory until shortly before expiry) and returns only that token plus its expiry and scopes.
-- Access is governed by the same YAML policy, AUTO/MANUAL mode, escalation, and audit pipeline as `credential.request` — the connection name occupies the same slot a credential name does.
+- Access is governed by the same agent authentication, YAML policy, AUTO/MANUAL mode, escalation, and audit pipeline as `credential.request`.
 
 ### One-time provider setup
 
@@ -144,6 +189,8 @@ Interactive OAuth requires your own OAuth app (an open-source, self-hosted broke
 Built-in presets exist for **Google** and **GitHub** (their auth/token/revoke URLs and default scopes are baked in).
 
 ### Operator commands
+
+`connect` needs a browser and the localhost callback, so run it **on the host** (not inside the container) against the same mounted `data/` directory:
 
 ```bash
 # Provide the client ID/secret for the provider you're connecting (read from the
@@ -168,29 +215,42 @@ agentgate disconnect work
 An agent requests a token over MCP:
 
 ```
-token.request(agent="claude-code", connection="work")
-  -> {granted: true, access_token: "...", token_expiry: "2026-06-28T15:00:00", scopes: ["openid", "email"], reason: "..."}
+token.request(agent="claude-code", agent_key="<key>", connection="work")
+  -> {granted: true, access_token: "...", token_expiry: "2026-06-28T15:00:00+00:00", scopes: ["openid", "email"], reason: "..."}
 ```
 
 The refresh token, client secret, and authorization code are **never** returned to an agent and **never** written to the audit log — only the access token's expiry and granted scopes are recorded.
 
 ## Audit Log
 
-All credential decisions are logged to `logs/audit.log`, one JSON object per line. Each entry includes:
-- `timestamp` — ISO-8601, local time
+All decisions are logged to `logs/audit.log`, one JSON object per line (append-only; the file is written owner-only). Each entry includes:
+- `timestamp` — ISO-8601, UTC
 - `agent` — requesting agent name
-- `credential_requested` — credential name (never the value)
-- `policy_matched` — the policy that decided the request
+- `credential_requested` — credential/connection name, or `policy.add:<name>` for policy proposals (never any value)
+- `policy_matched` — the policy that decided the request; `unauthenticated` when the agent key check failed
 - `decision` — one of `approved`, `denied`, `escalated`, `expired` (`expired` = escalated request that timed out waiting for the operator and was auto-denied)
 - `mode` — the broker mode at decision time (`auto` or `manual`)
-- `token_expiry` — expiry of the issued token, or `null` when no token was issued
+- `token_expiry` — expiry of the OAuth access token, or `null` when none was issued
+- `scopes` — granted OAuth scopes (token grants only)
 
-The credential value and the issued token are never written to the audit log.
+Credential values, OAuth tokens, and agent keys are never written to the audit log. The log is plain append-only JSONL — it is **not** cryptographically tamper-evident; protect it with filesystem permissions and ship it somewhere append-only if you need stronger guarantees.
 
 Example:
 ```
-{"timestamp": "2026-06-24T14:32:05", "agent": "claude-code", "credential_requested": "anthropic-api-key", "policy_matched": "claude-code-anthropic", "decision": "approved", "mode": "auto", "token_expiry": "2026-06-24T15:32:05"}
+{"timestamp": "2026-06-24T14:32:05+00:00", "agent": "claude-code", "credential_requested": "anthropic-api-key", "policy_matched": "claude-code-anthropic", "decision": "approved", "mode": "auto", "token_expiry": null}
 ```
+
+## Failure Behavior
+
+AgentGate fails closed:
+
+- unknown agent or wrong key → audited denial, no escalation
+- unknown credential/connection → audited denial
+- store decryption failure (wrong password, tampered file) → audited denial with a generic reason
+- OAuth refresh failure → audited denial, no raw provider error reaches the agent
+- corrupt mode file → MANUAL mode (everything escalates)
+- invalid policy-file edit → last valid policies stay in effect (warning on stderr)
+- escalation timeout → audited `expired`, denied
 
 ## ECS Migration
 
@@ -200,18 +260,20 @@ All runtime state is stored in environment-configured mounted volumes:
 - `STATE_PATH` → `state/mode.json` (current approval mode)
 - `LOGS_PATH` → `logs/audit.log` (audit trail)
 - `CREDENTIALS_PATH` → `data/credentials.json` (encrypted credentials)
+- `CONNECTIONS_PATH` → `data/connections.json` (encrypted OAuth connections)
+- `AGENTS_PATH` → `data/agents.json` (encrypted agent-key digests)
 
-In ECS, mount these volumes as external storage (e.g., EFS or S3-backed volumes) and inject the paths via environment variables. AgentGate will read and write state atomically, making it safe for horizontal scaling with shared state.
+In ECS, mount these as external volumes and inject the paths via environment variables. Note: AgentGate is currently a **single-instance** design — the approval queue, OAuth token cache, and request counters live in process memory, so horizontal scaling requires the V2 shared-state work (DynamoDB/S3).
 
 ## Credential Storage
 
-Credentials are encrypted at rest using:
+Secrets are encrypted at rest using:
 
-- **Key Derivation**: Argon2id (RFC 9106) with user-configured master password
-- **Encryption**: AES-256-GCM with per-credential salts and nonces
-- **Audit**: All credential requests logged without values (signatures only)
+- **Key Derivation**: Argon2id (RFC 9106) from the operator's master password, one random salt per store file
+- **Encryption**: AES-256-GCM with a fresh random nonce per value
+- **Permissions**: store files are written `0600` (owner-only)
 
-Credentials are accessed only via authenticated MCP calls and are never logged in plaintext.
+Store files are re-read on every access, so CLI writes (new credentials, revoked agents) take effect on a running broker without a restart.
 
 ## Escalation Timeout
 
@@ -220,34 +282,30 @@ Set `ESCALATION_TIMEOUT_SECONDS` in `.env` to limit how long the broker waits fo
 ## Architecture
 
 **Broker** (`broker/main.py`):
-- FastMCP server (stdin/stdout transport)
-- Credential store (encrypted JSON)
-- Policy engine (YAML parser + time-window evaluator)
+- FastMCP server (HTTP transport at `/mcp`; the terminal belongs to the operator CLI)
+- Agent registry (encrypted key digests)
+- Credential + connection stores (encrypted JSON, re-read per access)
+- Policy engine (YAML parser + time-window evaluator, hot-reloaded on file change)
 - Approval queue (pending requests awaiting operator decision)
-- Audit logger (immutable append-only log)
+- Audit logger (append-only JSONL)
 
 **CLI** (`cli/commands.py`):
+- Agent registration (`agent-add`, `agent-remove`, `agent-list`)
 - Credential management (`cred-store`, `cred-delete`, `cred-list`)
+- OAuth connections (`connect`, `connections`, `disconnect`)
 - Policy administration (`policy-validate`)
 - Broker status (`status`)
-- Approval prompt (interactive decision queue)
-- Mode toggle (`s` key)
 
 **Config** (`broker/config.py`):
-- Environment variable parsing
+- Environment variable parsing and validation
 - Master password resolution (env or `getpass`)
-- Path initialization and validation
 
 ## Testing
 
 Run the full test suite:
 ```bash
+pip install -e .[dev]
 python -m pytest -v
 ```
 
-Expected: 41 passing tests covering:
-- Credential encryption/decryption
-- Policy evaluation and time-window matching
-- Two-tier approval workflows
-- Audit logging (values never logged)
-- MCP tool interface
+Expected: 117 tests covering encryption round-trips, agent authentication, policy evaluation (time windows, hard deny, hot reload), two-tier approval, fail-closed error paths, secret-free audit output, and an end-to-end MCP call over the real HTTP transport.

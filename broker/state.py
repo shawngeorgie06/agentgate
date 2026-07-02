@@ -24,11 +24,17 @@ def write_mode(path: str, mode: str, updated_by: str = "cli") -> None:
 
 
 def read_mode(path: str) -> str:
+    """Missing file -> 'auto' (fresh install default), WITHOUT writing — a read
+    path must not have write side effects (the mount may be read-only).
+    Corrupt or unreadable state fails closed to 'manual' (everything escalates)."""
     if not os.path.exists(path):
-        write_mode(path, "auto", updated_by="init")
         return "auto"
-    with open(path, "r", encoding="utf-8") as fh:
-        return json.load(fh)["mode"]
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            mode = json.load(fh)["mode"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return "manual"
+    return mode if mode in _VALID_MODES else "manual"
 
 
 def toggle_mode(path: str, updated_by: str = "cli") -> str:

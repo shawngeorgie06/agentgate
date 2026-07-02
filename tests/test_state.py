@@ -3,14 +3,21 @@ import pytest
 from broker import state
 
 
-def test_read_mode_initializes_to_auto_when_missing(tmp_path):
+def test_read_mode_defaults_to_auto_when_missing_without_writing(tmp_path):
     path = str(tmp_path / "mode.json")
     assert state.read_mode(path) == "auto"
-    # File now exists with valid shape.
-    data = json.loads((tmp_path / "mode.json").read_text())
-    assert data["mode"] == "auto"
-    assert "updated_at" in data
-    assert "updated_by" in data
+    # A read must not create the file (the mount may be read-only).
+    assert not (tmp_path / "mode.json").exists()
+
+
+def test_read_mode_corrupt_file_fails_closed_to_manual(tmp_path):
+    path = tmp_path / "mode.json"
+    path.write_text("{not json at all")
+    assert state.read_mode(str(path)) == "manual"
+    path.write_text(json.dumps({"mode": "banana"}))
+    assert state.read_mode(str(path)) == "manual"
+    path.write_text(json.dumps({"wrong_key": "auto"}))
+    assert state.read_mode(str(path)) == "manual"
 
 
 def test_write_then_read_round_trip(tmp_path):

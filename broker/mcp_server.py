@@ -73,6 +73,19 @@ class Broker:
         decision = self._current_engine().evaluate(agent, credential)
         if decision.auto_approve:
             return self._grant(agent, credential, mode, decision.policy_name)
+        if not decision.escalate:
+            # Hard deny: the policy explicitly opted out of bothering the
+            # operator. Audited, immediate, no pending approval created.
+            self.audit.log(
+                agent=agent, credential_requested=credential,
+                policy_matched=decision.policy_name, decision="denied",
+                mode=mode, token_expiry=None,
+            )
+            return {
+                "granted": False,
+                "value": None,
+                "reason": f"denied by policy '{decision.policy_name}'",
+            }
         return await self._escalate(agent, credential, mode, decision.policy_name)
 
     def _grant(self, agent: str, credential: str, mode: str, policy_name: str) -> dict:
@@ -162,6 +175,14 @@ class Broker:
         decision = self._current_engine().evaluate(agent, connection)
         if decision.auto_approve:
             return await self._grant_token(agent, connection, mode, decision.policy_name)
+        if not decision.escalate:
+            self.audit.log(
+                agent=agent, credential_requested=connection,
+                policy_matched=decision.policy_name, decision="denied",
+                mode=mode, token_expiry=None,
+            )
+            return {"granted": False, "access_token": None, "token_expiry": None,
+                    "scopes": None, "reason": f"denied by policy '{decision.policy_name}'"}
         return await self._escalate_token(agent, connection, mode, decision.policy_name)
 
     async def _grant_token(self, agent: str, connection: str, mode: str, policy_name: str) -> dict:

@@ -168,6 +168,30 @@ async def test_add_policy_times_out_without_modifying_file(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_escalate_false_hard_denies_without_paging_operator(tmp_path):
+    broker = _make_broker(tmp_path, """
+        policies:
+          - name: hard-deny-prod
+            agent: "*"
+            credential: prod-db-password
+            auto_approve: false
+            escalate: false
+          - name: default-deny
+            agent: "*"
+            credential: "*"
+            auto_approve: false
+            escalate: true
+    """)
+    res = await broker.request_credential("claude-code", "prod-db-password")
+    assert res["granted"] is False
+    assert "hard-deny-prod" in res["reason"]
+    # No operator interruption: nothing pending in the approval queue.
+    assert broker.approvals.pending_count() == 0
+    log = (tmp_path / "audit.log").read_text()
+    assert '"decision": "denied"' in log
+
+
+@pytest.mark.asyncio
 async def test_policy_file_edit_takes_effect_without_restart(tmp_path):
     import os
     import textwrap

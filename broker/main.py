@@ -69,7 +69,21 @@ async def _cli_loop(broker: Broker) -> None:
             print(format_status_line(broker))
 
 
+def allowed_hosts(config: Config) -> list[str]:
+    """Host headers the MCP endpoint accepts. Anything else is rejected (400)
+    to block DNS rebinding: a browser rebound to 127.0.0.1 still sends the
+    attacker's hostname in the Host header."""
+    hosts = {"127.0.0.1", "localhost", "::1"}
+    if config.mcp_host not in ("0.0.0.0", "::"):
+        hosts.add(config.mcp_host)
+    hosts.update(h.strip() for h in config.mcp_allowed_hosts.split(",") if h.strip())
+    return sorted(hosts)
+
+
 async def run(config: Config | None = None) -> None:
+    from starlette.middleware import Middleware
+    from starlette.middleware.trustedhost import TrustedHostMiddleware
+
     config = config or Config.from_env()
     master_password = resolve_master_password(config)
     broker = build_broker(config, master_password)
@@ -89,6 +103,9 @@ async def run(config: Config | None = None) -> None:
             host=config.mcp_host,
             port=config.mcp_port,
             show_banner=False,
+            middleware=[
+                Middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts(config))
+            ],
         )
     )
     done, pending = await asyncio.wait(

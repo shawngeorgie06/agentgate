@@ -13,8 +13,12 @@ services:
       CREDENTIALS_PATH: /app/data/credentials.json
       CONNECTIONS_PATH: /app/data/connections.json
       AGENTS_PATH: /app/data/agents.json
-      # Bind all interfaces inside the container; the host mapping below
-      # still restricts access to the host's loopback only.
+      # 0.0.0.0 is required inside the container: Docker's port mapping
+      # forwards to the container's bridge IP, not its loopback. The mapping
+      # below publishes only on the HOST's loopback, but note that other
+      # containers on the same Docker network can still reach this port
+      # directly — agent-key auth and Host-header validation are the real
+      # boundary there.
       MCP_HOST: 0.0.0.0
       MCP_PORT: "8848"
     ports:

@@ -56,8 +56,12 @@ async def test_agent_reaches_broker_over_http_transport(tmp_path):
         agents=agents,
     )
     port = _free_port()
+    from broker.main import allowed_hosts
+    from starlette.middleware import Middleware
+    from starlette.middleware.trustedhost import TrustedHostMiddleware
     server = asyncio.create_task(build_mcp(broker).run_async(
         transport="http", host="127.0.0.1", port=port, show_banner=False,
+        middleware=[Middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts(cfg))],
     ))
     try:
         url = f"http://127.0.0.1:{port}/mcp"
@@ -77,6 +81,13 @@ async def test_agent_reaches_broker_over_http_transport(tmp_path):
             raise AssertionError(f"MCP server never became reachable: {last_exc}")
         assert res.data["granted"] is True
         assert res.data["value"] == "sk-secret"
+
+        # DNS-rebinding defense: a rebound browser reaches 127.0.0.1 but still
+        # sends the attacker's hostname in Host — the server must reject it.
+        import httpx
+        async with httpx.AsyncClient() as http:
+            resp = await http.post(url, json={}, headers={"Host": "evil.example"})
+        assert resp.status_code == 400
     finally:
         server.cancel()
         try:

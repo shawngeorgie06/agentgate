@@ -14,6 +14,7 @@ _DEFAULTS = {
     "OAUTH_REDIRECT_PORT": "8765",
     "MCP_HOST": "127.0.0.1",
     "MCP_PORT": "8848",
+    "MCP_ALLOWED_HOSTS": "",
     "ESCALATION_TIMEOUT_SECONDS": "0",
 }
 
@@ -54,6 +55,10 @@ class Config:
     agents_path: str = os.path.join("data", "agents.json")
     mcp_host: str = "127.0.0.1"
     mcp_port: int = 8848
+    # Extra Host-header values to accept, comma-separated (loopback names are
+    # always allowed). Requests with any other Host are rejected to block DNS
+    # rebinding from browsers.
+    mcp_allowed_hosts: str = ""
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Config":
@@ -78,4 +83,5 @@ class Config:
             agents_path=_require_non_empty(get("AGENTS_PATH"), "AGENTS_PATH"),
             mcp_host=_require_non_empty(get("MCP_HOST"), "MCP_HOST"),
             mcp_port=_require_int(get("MCP_PORT"), "MCP_PORT", minimum=1),
+            mcp_allowed_hosts=get("MCP_ALLOWED_HOSTS"),
         )

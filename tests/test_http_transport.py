@@ -69,7 +69,7 @@ async def test_agent_reaches_broker_over_http_transport(tmp_path):
         for _ in range(50):
             try:
                 async with Client(url) as client:
-                    res = await client.call_tool("credential.request", {
+                    res = await client.call_tool("credential_request", {
                         "agent": "claude-code", "agent_key": key,
                         "credential": "anthropic-api-key",
                     })

@@ -54,8 +54,11 @@ async def test_token_request_tool_registered_and_grants(tmp_path, monkeypatch):
     mcp = build_mcp(broker)
     async with Client(mcp) as client:
         tools = [t.name for t in await client.list_tools()]
-        assert "token.request" in tools
-        res = await client.call_tool("token.request", {
+        # MCP spec tool-name pattern (^[a-zA-Z0-9_-]{1,64}$) forbids dots.
+        import re
+        assert all(re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", t) for t in tools)
+        assert "token_request" in tools
+        res = await client.call_tool("token_request", {
             "agent": "claude-code", "agent_key": key, "connection": "work"})
         assert res.data["granted"] is True
         assert res.data["access_token"] == "AT-tool"

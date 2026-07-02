@@ -427,15 +427,15 @@ class Broker:
 def build_mcp(broker: Broker) -> FastMCP:
     mcp = FastMCP("AgentGate")
 
-    @mcp.tool(name="credential.request")
+    @mcp.tool(name="credential_request")
     async def credential_request(agent: str, agent_key: str, credential: str) -> dict:
         return await broker.request_credential(agent, agent_key, credential)
 
-    @mcp.tool(name="policy.list")
+    @mcp.tool(name="policy_list")
     def policy_list() -> list[dict]:
         return broker.list_policies()
 
-    @mcp.tool(name="policy.validate")
+    @mcp.tool(name="policy_validate")
     def policy_validate() -> dict:
         errors = broker.validate_policies()
         return {
@@ -444,15 +444,15 @@ def build_mcp(broker: Broker) -> FastMCP:
             "warnings": [] if errors else broker.lint_policies(),
         }
 
-    @mcp.tool(name="policy.add")
+    @mcp.tool(name="policy_add")
     async def policy_add(agent: str, agent_key: str, policy: dict) -> dict:
         return await broker.add_policy(agent, agent_key, policy)
 
-    @mcp.tool(name="broker.status")
+    @mcp.tool(name="broker_status")
     def broker_status() -> dict:
         return broker.status()
 
-    @mcp.tool(name="token.request")
+    @mcp.tool(name="token_request")
     async def token_request(agent: str, agent_key: str, connection: str) -> dict:
         return await broker.request_token(agent, agent_key, connection)
 

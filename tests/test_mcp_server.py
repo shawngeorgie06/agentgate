@@ -86,7 +86,7 @@ async def test_manual_mode_escalates_even_for_auto_policy(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_add_policy_always_escalates(tmp_path):
+async def test_add_policy_always_escalates_and_shows_full_body(tmp_path):
     broker = _make_broker(tmp_path, _AUTO_POLICY)
     # Even in AUTO mode, policy.add must escalate.
     task = asyncio.create_task(broker.add_policy({
@@ -95,9 +95,52 @@ async def test_add_policy_always_escalates(tmp_path):
     await asyncio.sleep(0)
     pending = broker.approvals.get_pending()
     assert pending is not None
+    # The operator prompt must carry the full policy body, not just its name —
+    # otherwise they approve blind.
+    assert '"agent": "x"' in pending.credential
+    assert '"auto_approve": true' in pending.credential
     broker.approvals.resolve(pending, True)
     res = await task
     assert res["added"] is True
+    # Both sides of the decision are audited.
+    log = (tmp_path / "audit.log").read_text()
+    assert '"credential_requested": "policy.add:new"' in log
+    assert '"decision": "escalated"' in log
+    assert '"decision": "approved"' in log
+
+
+@pytest.mark.asyncio
+async def test_add_policy_denial_is_audited(tmp_path):
+    broker = _make_broker(tmp_path, _AUTO_POLICY)
+    task = asyncio.create_task(broker.add_policy({
+        "name": "sneaky", "agent": "*", "credential": "*", "auto_approve": True,
+    }))
+    await asyncio.sleep(0)
+    broker.approvals.resolve(broker.approvals.get_pending(), False)
+    res = await task
+    assert res["added"] is False
+    log = (tmp_path / "audit.log").read_text()
+    assert '"credential_requested": "policy.add:sneaky"' in log
+    assert '"decision": "denied"' in log
+
+
+@pytest.mark.asyncio
+async def test_add_policy_never_outranks_existing_specific_policies(tmp_path):
+    broker = _make_broker(tmp_path, _AUTO_POLICY)
+    # A proposed catch-all must not jump ahead of existing specific policies.
+    task = asyncio.create_task(broker.add_policy({
+        "name": "grab-all", "agent": "*", "credential": "anthropic-api-key",
+        "auto_approve": False, "escalate": True,
+    }))
+    await asyncio.sleep(0)
+    broker.approvals.resolve(broker.approvals.get_pending(), True)
+    await task
+    names = [p["name"] for p in broker.list_policies()]
+    # Inserted above the trailing default-deny (so it is reachable) but below
+    # the existing specific policy (so it cannot steal precedence).
+    assert names == ["cc-anthropic", "grab-all", "default-deny"]
+    decision = broker.engine.evaluate("claude-code", "anthropic-api-key")
+    assert decision.policy_name == "cc-anthropic"
 
 
 @pytest.mark.asyncio

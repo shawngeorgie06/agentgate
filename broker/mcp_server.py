@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import json
 import os
 import sys
 
@@ -297,23 +298,47 @@ class Broker:
     def validate_policies(self) -> list[str]:
         return PolicyEngine.validate_file(self.config.policies_path)
 
+    def _audit_policy_add(self, policy: dict, decision: str, mode: str) -> None:
+        self.audit.log(
+            agent="SYSTEM", credential_requested=f"policy.add:{policy.get('name')}",
+            policy_matched="policy.add", decision=decision, mode=mode, token_expiry=None,
+        )
+
     async def add_policy(self, policy: dict) -> dict:
         # Hard rule: policy mutation ALWAYS escalates, regardless of mode/policy.
+        mode = state.read_mode(self.config.state_path)
+        self._audit_policy_add(policy, "escalated", mode)
         try:
             approved = await self.approvals.submit(
                 "SYSTEM",
-                f"policy.add:{policy.get('name')}",
+                # The operator must see the FULL policy body they are approving,
+                # not just its (proposer-chosen) name.
+                f"policy.add {json.dumps(policy, sort_keys=True)}",
                 timeout=self.config.escalation_timeout_seconds or None,
             )
         except asyncio.TimeoutError:
+            self._audit_policy_add(policy, "expired", mode)
             return {"added": False, "reason": "policy change escalation timed out"}
         if not approved:
+            self._audit_policy_add(policy, "denied", mode)
             return {"added": False, "reason": "policy change denied by operator"}
 
         # Build the candidate doc in memory.
         with open(self.config.policies_path, "r", encoding="utf-8") as fh:
             doc = yaml.safe_load(fh) or {"policies": []}
-        doc["policies"].insert(0, policy)
+        policies = doc["policies"]
+        # Insert above a trailing catch-all (the conventional default-deny) so
+        # the new policy is reachable — but never ahead of existing specific
+        # policies, which keep precedence under first-match-wins.
+        insert_at = len(policies)
+        if (
+            policies
+            and isinstance(policies[-1], dict)
+            and policies[-1].get("agent") == "*"
+            and policies[-1].get("credential") == "*"
+        ):
+            insert_at -= 1
+        policies.insert(insert_at, policy)
 
         # Write the candidate to a temp file in the SAME directory (atomic replace).
         policies_dir = os.path.dirname(os.path.abspath(self.config.policies_path))
@@ -325,12 +350,14 @@ class Broker:
         errors = PolicyEngine.validate_file(tmp)
         if errors:
             os.remove(tmp)
+            self._audit_policy_add(policy, "denied", mode)
             return {"added": False, "reason": f"invalid policy: {errors}"}
 
         # Validation passed — atomically replace the real file and reload the engine.
         os.replace(tmp, self.config.policies_path)
         self.engine = PolicyEngine.from_file(self.config.policies_path)
         self._policies_mtime = self._policies_file_mtime()
+        self._audit_policy_add(policy, "approved", mode)
         return {"added": True, "reason": f"policy '{policy.get('name')}' added"}
 
     def status(self) -> dict:

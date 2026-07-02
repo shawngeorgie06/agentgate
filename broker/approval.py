@@ -1,18 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-import datetime
-import secrets
 from collections import deque
 from dataclasses import dataclass, field
-
-
-def issue_token(ttl_minutes: int, now: datetime.datetime | None = None) -> tuple[str, str]:
-    if now is None:
-        now = datetime.datetime.now()
-    token = secrets.token_urlsafe(32)
-    expiry = (now + datetime.timedelta(minutes=ttl_minutes)).isoformat(timespec="seconds")
-    return token, expiry
 
 
 @dataclass

@@ -52,9 +52,9 @@ async def test_auto_approve_returns_token_and_value(tmp_path):
     broker = _make_broker(tmp_path, _AUTO_POLICY)
     res = await broker.request_credential("claude-code", "anthropic-api-key")
     assert res["granted"] is True
-    assert res["token"]
     assert res["value"] == "sk-secret"
-    assert res["token_expiry"]
+    # The raw credential is the grant; no decorative bearer token accompanies it.
+    assert "token" not in res
 
 
 @pytest.mark.asyncio
@@ -150,7 +150,6 @@ async def test_escalation_times_out_and_denies(tmp_path):
     res = await broker.request_credential("evil", "anthropic-api-key")
     assert res["granted"] is False
     assert res["value"] is None
-    assert res["token"] is None
     log = (tmp_path / "audit.log").read_text()
     assert '"decision": "expired"' in log
 

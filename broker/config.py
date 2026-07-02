@@ -11,7 +11,6 @@ _DEFAULTS = {
     "CREDENTIALS_PATH": os.path.join("data", "credentials.json"),
     "CONNECTIONS_PATH": os.path.join("data", "connections.json"),
     "OAUTH_REDIRECT_PORT": "8765",
-    "TOKEN_TTL_MINUTES": "60",
     "ESCALATION_TIMEOUT_SECONDS": "0",
 }
 
@@ -45,7 +44,6 @@ class Config:
     state_path: str
     logs_path: str
     credentials_path: str
-    token_ttl_minutes: int
     escalation_timeout_seconds: int
     master_password: str | None
     connections_path: str = os.path.join("data", "connections.json")
@@ -63,7 +61,6 @@ class Config:
             state_path=_require_non_empty(get("STATE_PATH"), "STATE_PATH"),
             logs_path=_require_non_empty(get("LOGS_PATH"), "LOGS_PATH"),
             credentials_path=_require_non_empty(get("CREDENTIALS_PATH"), "CREDENTIALS_PATH"),
-            token_ttl_minutes=_require_int(get("TOKEN_TTL_MINUTES"), "TOKEN_TTL_MINUTES", minimum=1),
             escalation_timeout_seconds=max(
                 0, _require_int(get("ESCALATION_TIMEOUT_SECONDS"), "ESCALATION_TIMEOUT_SECONDS")
             ),

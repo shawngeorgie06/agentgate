@@ -102,7 +102,7 @@ The first matching policy wins. Policies are evaluated in order.
 
 AgentGate exposes 6 MCP tools for agent integration:
 
-1. **`credential.request`** — Request a credential by agent name and credential name. Returns `{granted: bool, token: str, token_expiry: int, value: str, reason: str}`.
+1. **`credential.request`** — Request a credential by agent name and credential name. Returns `{granted: bool, value: str, reason: str}` (`value` is `null` when denied).
 
 2. **`token.request`** — Request a short-lived OAuth access token for a named connection (see [OAuth Broker](#oauth-broker)). Returns `{granted: bool, access_token: str, token_expiry: str, scopes: [str], reason: str}` on success; when `granted` is `false` (denied, escalation timed out, or unknown connection), `access_token`, `token_expiry`, and `scopes` are `null`. Governed by policy/escalation/audit exactly like `credential.request` (match on agent + connection name).
 
@@ -212,10 +212,6 @@ Credentials are encrypted at rest using:
 - **Audit**: All credential requests logged without values (signatures only)
 
 Credentials are accessed only via authenticated MCP calls and are never logged in plaintext.
-
-## Token TTL
-
-Granted credentials include a `token_expiry` timestamp (configurable via `TOKEN_TTL_MINUTES` in `.env`, default 60 minutes). Agents must re-request before expiry.
 
 ## Escalation Timeout
 

@@ -1,20 +1,6 @@
 import asyncio
-import datetime
 import pytest
-from broker.approval import issue_token, ApprovalQueue
-
-
-def test_issue_token_returns_opaque_value_and_expiry():
-    now = datetime.datetime(2026, 6, 24, 22, 14, 0)
-    token, expiry = issue_token(60, now=now)
-    assert isinstance(token, str) and len(token) >= 16
-    assert expiry == "2026-06-24T23:14:00"
-
-
-def test_issue_token_unique_each_call():
-    t1, _ = issue_token(60)
-    t2, _ = issue_token(60)
-    assert t1 != t2
+from broker.approval import ApprovalQueue
 
 
 @pytest.mark.asyncio

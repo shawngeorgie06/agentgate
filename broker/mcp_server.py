@@ -8,7 +8,7 @@ import yaml
 from fastmcp import FastMCP
 
 from broker import oauth, state
-from broker.approval import ApprovalQueue, issue_token
+from broker.approval import ApprovalQueue
 from broker.audit import AuditLogger
 from broker.config import Config
 from broker.connection_store import ConnectionStore
@@ -64,24 +64,19 @@ class Broker:
             )
             return {
                 "granted": False,
-                "token": None,
-                "token_expiry": None,
                 "value": None,
                 "reason": f"unknown credential '{credential}'",
             }
-        token, expiry = issue_token(self.config.token_ttl_minutes)
         self.audit.log(
             agent=agent,
             credential_requested=credential,
             policy_matched=policy_name,
             decision="approved",
             mode=mode,
-            token_expiry=expiry,
+            token_expiry=None,
         )
         return {
             "granted": True,
-            "token": token,
-            "token_expiry": expiry,
             "value": value,
             "reason": f"auto-approved by policy '{policy_name}'",
         }
@@ -113,8 +108,6 @@ class Broker:
             )
             return {
                 "granted": False,
-                "token": None,
-                "token_expiry": None,
                 "value": None,
                 "reason": "escalation timed out",
             }
@@ -130,8 +123,6 @@ class Broker:
         )
         return {
             "granted": False,
-            "token": None,
-            "token_expiry": None,
             "value": None,
             "reason": "denied by operator",
         }

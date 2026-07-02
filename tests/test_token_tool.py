@@ -29,6 +29,7 @@ async def test_token_request_tool_registered_and_grants(tmp_path, monkeypatch):
         "LOGS_PATH": str(tmp_path / "audit.log"),
         "CREDENTIALS_PATH": str(tmp_path / "creds.json"),
         "CONNECTIONS_PATH": str(tmp_path / "connections.json"),
+        "AGENTS_PATH": str(tmp_path / "agents.json"),
         "AGENTGATE_MASTER_PASSWORD": "pw",
     }
     cfg = Config.from_env(env)
@@ -41,16 +42,20 @@ async def test_token_request_tool_registered_and_grants(tmp_path, monkeypatch):
         return {"access_token": "AT-tool", "expires_at": "2099-01-01T00:00:00", "scopes": ["openid"]}
     monkeypatch.setattr(oauth, "refresh_access_token", fake_refresh)
 
+    from broker.agent_store import AgentStore
+    agents = AgentStore(cfg.agents_path, "pw")
+    key = agents.register("claude-code")
     broker = Broker(
         config=cfg, store=CredentialStore(cfg.credentials_path, "pw"),
         engine=PolicyEngine.from_file(cfg.policies_path),
         audit=AuditLogger(cfg.logs_path), approvals=ApprovalQueue(),
-        connections=connections,
+        connections=connections, agents=agents,
     )
     mcp = build_mcp(broker)
     async with Client(mcp) as client:
         tools = [t.name for t in await client.list_tools()]
         assert "token.request" in tools
-        res = await client.call_tool("token.request", {"agent": "claude-code", "connection": "work"})
+        res = await client.call_tool("token.request", {
+            "agent": "claude-code", "agent_key": key, "connection": "work"})
         assert res.data["granted"] is True
         assert res.data["access_token"] == "AT-tool"

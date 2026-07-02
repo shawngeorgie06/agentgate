@@ -23,6 +23,7 @@ def _make_broker(tmp_path, policy_body, monkeypatch):
         "LOGS_PATH": str(tmp_path / "audit.log"),
         "CREDENTIALS_PATH": str(tmp_path / "creds.json"),
         "CONNECTIONS_PATH": str(tmp_path / "connections.json"),
+        "AGENTS_PATH": str(tmp_path / "agents.json"),
         "AGENTGATE_MASTER_PASSWORD": "pw",
     }
     cfg = Config.from_env(env)
@@ -37,7 +38,10 @@ def _make_broker(tmp_path, policy_body, monkeypatch):
                 "scopes": ["openid", "email"]}
     monkeypatch.setattr(oauth, "refresh_access_token", fake_refresh)
 
+    from broker.agent_store import AgentStore
     from broker.credential_store import CredentialStore
+    agents = AgentStore(cfg.agents_path, "pw")
+    key = agents.register("claude-code")
     broker = Broker(
         config=cfg,
         store=CredentialStore(cfg.credentials_path, "pw"),
@@ -45,7 +49,9 @@ def _make_broker(tmp_path, policy_body, monkeypatch):
         audit=AuditLogger(cfg.logs_path),
         approvals=ApprovalQueue(),
         connections=connections,
+        agents=agents,
     )
+    broker.key = key  # test convenience: claude-code's agent key
     return broker, tmp_path
 
 
@@ -65,7 +71,7 @@ _AUTO = """
 
 async def test_auto_approve_mints_token(tmp_path, monkeypatch):
     broker, _ = _make_broker(tmp_path, _AUTO, monkeypatch)
-    res = await broker.request_token("claude-code", "work")
+    res = await broker.request_token("claude-code", broker.key, "work")
     assert res["granted"] is True
     assert res["access_token"] == "AT-fresh"
     assert res["scopes"] == ["openid", "email"]
@@ -76,7 +82,7 @@ async def test_unknown_connection_denied(tmp_path, monkeypatch):
     broker, _ = _make_broker(tmp_path, _AUTO, monkeypatch)
     # 'nonexistent' hits default-deny -> escalate; resolve as approved,
     # then the missing connection makes the grant fail closed.
-    task = asyncio.create_task(broker.request_token("claude-code", "nonexistent"))
+    task = asyncio.create_task(broker.request_token("claude-code", broker.key, "nonexistent"))
     await asyncio.sleep(0.05)
     p = broker.approvals.get_pending()
     broker.approvals.resolve(p, True)
@@ -93,7 +99,7 @@ async def test_manual_mode_escalates_despite_auto_policy(tmp_path, monkeypatch):
     broker, _ = _make_broker(tmp_path, _AUTO, monkeypatch)
     # 'work' has an auto_approve policy, but MANUAL mode must escalate anyway.
     state.write_mode(broker.config.state_path, "manual")
-    task = asyncio.create_task(broker.request_token("claude-code", "work"))
+    task = asyncio.create_task(broker.request_token("claude-code", broker.key, "work"))
     await asyncio.sleep(0.05)
     pending = broker.approvals.get_pending()
     assert pending is not None  # escalated rather than auto-granted
@@ -111,7 +117,7 @@ async def test_refresh_failure_fails_closed_with_audit(tmp_path, monkeypatch):
         raise oauth.OAuthError("token endpoint error: invalid_grant")
     monkeypatch.setattr(oauth, "refresh_access_token", failing_refresh)
 
-    res = await broker.request_token("claude-code", "work")
+    res = await broker.request_token("claude-code", broker.key, "work")
     assert res["granted"] is False
     assert res["access_token"] is None and res["token_expiry"] is None and res["scopes"] is None
     assert "work" in res["reason"]
@@ -122,12 +128,23 @@ async def test_refresh_failure_fails_closed_with_audit(tmp_path, monkeypatch):
     assert entry["decision"] == "denied"
 
 
+async def test_unauthenticated_token_request_denied(tmp_path, monkeypatch):
+    broker, tp = _make_broker(tmp_path, _AUTO, monkeypatch)
+    res = await broker.request_token("claude-code", "wrong-key", "work")
+    assert res["granted"] is False
+    assert res["access_token"] is None
+    assert broker.approvals.pending_count() == 0
+    log = (tp / "audit.log").read_text(encoding="utf-8")
+    assert '"policy_matched": "unauthenticated"' in log
+
+
 async def test_audit_never_contains_secrets(tmp_path, monkeypatch):
     broker, tp = _make_broker(tmp_path, _AUTO, monkeypatch)
-    await broker.request_token("claude-code", "work")
+    await broker.request_token("claude-code", broker.key, "work")
     log = (tp / "audit.log").read_text(encoding="utf-8")
     assert "AT-fresh" not in log   # access token value never logged
     assert "csec" not in log       # client secret never logged
+    assert broker.key not in log   # agent key never logged
     entry = json.loads(log.strip().splitlines()[-1])
     assert entry["decision"] == "approved"
     assert entry["scopes"] == ["openid", "email"]

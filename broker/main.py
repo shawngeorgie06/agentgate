@@ -5,6 +5,7 @@ import getpass
 import sys
 
 from broker import state
+from broker.agent_store import AgentStore
 from broker.approval import ApprovalQueue
 from broker.audit import AuditLogger
 from broker.config import Config, ConfigError
@@ -29,6 +30,7 @@ def build_broker(config: Config, master_password: str) -> Broker:
         audit=AuditLogger(config.logs_path),
         approvals=ApprovalQueue(),
         connections=ConnectionStore(config.connections_path, master_password),
+        agents=AgentStore(config.agents_path, master_password),
     )
 
 

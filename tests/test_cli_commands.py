@@ -18,7 +18,31 @@ def _cfg(tmp_path):
         "STATE_PATH": str(tmp_path / "mode.json"),
         "LOGS_PATH": str(tmp_path / "audit.log"),
         "CREDENTIALS_PATH": str(tmp_path / "creds.json"),
+        "AGENTS_PATH": str(tmp_path / "agents.json"),
     })
+
+
+def test_agent_add_list_remove(tmp_path, capsys):
+    from broker.agent_store import AgentStore
+    cfg = _cfg(tmp_path)
+    assert commands.run(["agent-add", "claude-code"], config=cfg, master_password="pw") == 0
+    out = capsys.readouterr().out
+    assert "claude-code" in out
+    # The printed key must actually verify against the store.
+    key = out.strip().splitlines()[-1]
+    assert AgentStore(cfg.agents_path, "pw").verify("claude-code", key)
+
+    # Re-registering the same name fails loudly.
+    assert commands.run(["agent-add", "claude-code"], config=cfg, master_password="pw") == 1
+    capsys.readouterr()
+
+    assert commands.run(["agent-list"], config=cfg, master_password="pw") == 0
+    out = capsys.readouterr().out
+    assert "claude-code" in out
+    assert key not in out  # the key is shown once at registration, never again
+
+    assert commands.run(["agent-remove", "claude-code"], config=cfg, master_password="pw") == 0
+    assert AgentStore(cfg.agents_path, "pw").list_names() == []
 
 
 def test_cred_store_list_delete(tmp_path, monkeypatch, capsys):

@@ -10,6 +10,7 @@ import yaml
 from fastmcp import FastMCP
 
 from broker import oauth, state
+from broker.agent_store import AgentStore
 from broker.approval import ApprovalQueue
 from broker.audit import AuditLogger
 from broker.config import Config
@@ -28,6 +29,7 @@ class Broker:
         audit: AuditLogger,
         approvals: ApprovalQueue,
         connections: ConnectionStore | None = None,
+        agents: AgentStore | None = None,
     ) -> None:
         self.config = config
         self.store = store
@@ -35,6 +37,7 @@ class Broker:
         self.audit = audit
         self.approvals = approvals
         self.connections = connections
+        self.agents = agents
         self._token_cache: dict[str, dict] = {}
         self._policies_mtime = self._policies_file_mtime()
         self.total_requests = 0
@@ -64,9 +67,29 @@ class Broker:
                 )
         return self.engine
 
-    async def request_credential(self, agent: str, credential: str) -> dict:
+    def _authenticate(self, agent: str, agent_key: str, subject: str, mode: str) -> bool:
+        """Authentication precedes everything — an unauthenticated caller must
+        never reach a policy match, an escalation prompt, or a grant. Fails
+        closed (deny) when no agent store is configured."""
+        ok = self.agents is not None and self.agents.verify(agent, agent_key)
+        if not ok:
+            self.audit.log(
+                agent=agent, credential_requested=subject,
+                policy_matched="unauthenticated", decision="denied",
+                mode=mode, token_expiry=None,
+            )
+        return ok
+
+    async def request_credential(self, agent: str, agent_key: str, credential: str) -> dict:
         self.total_requests += 1
         mode = state.read_mode(self.config.state_path)
+
+        if not self._authenticate(agent, agent_key, credential, mode):
+            return {
+                "granted": False,
+                "value": None,
+                "reason": "unknown agent or invalid agent key",
+            }
 
         if mode == "manual":
             return await self._escalate(agent, credential, mode, policy_name="manual-mode")
@@ -183,9 +206,13 @@ class Broker:
             "reason": "denied by operator",
         }
 
-    async def request_token(self, agent: str, connection: str) -> dict:
+    async def request_token(self, agent: str, agent_key: str, connection: str) -> dict:
         self.total_requests += 1
         mode = state.read_mode(self.config.state_path)
+
+        if not self._authenticate(agent, agent_key, connection, mode):
+            return {"granted": False, "access_token": None, "token_expiry": None,
+                    "scopes": None, "reason": "unknown agent or invalid agent key"}
 
         if mode == "manual":
             return await self._escalate_token(agent, connection, mode, "manual-mode")
@@ -298,29 +325,31 @@ class Broker:
     def validate_policies(self) -> list[str]:
         return PolicyEngine.validate_file(self.config.policies_path)
 
-    def _audit_policy_add(self, policy: dict, decision: str, mode: str) -> None:
+    def _audit_policy_add(self, agent: str, policy: dict, decision: str, mode: str) -> None:
         self.audit.log(
-            agent="SYSTEM", credential_requested=f"policy.add:{policy.get('name')}",
+            agent=agent, credential_requested=f"policy.add:{policy.get('name')}",
             policy_matched="policy.add", decision=decision, mode=mode, token_expiry=None,
         )
 
-    async def add_policy(self, policy: dict) -> dict:
+    async def add_policy(self, agent: str, agent_key: str, policy: dict) -> dict:
         # Hard rule: policy mutation ALWAYS escalates, regardless of mode/policy.
         mode = state.read_mode(self.config.state_path)
-        self._audit_policy_add(policy, "escalated", mode)
+        if not self._authenticate(agent, agent_key, f"policy.add:{policy.get('name')}", mode):
+            return {"added": False, "reason": "unknown agent or invalid agent key"}
+        self._audit_policy_add(agent, policy, "escalated", mode)
         try:
             approved = await self.approvals.submit(
-                "SYSTEM",
+                agent,
                 # The operator must see the FULL policy body they are approving,
                 # not just its (proposer-chosen) name.
                 f"policy.add {json.dumps(policy, sort_keys=True)}",
                 timeout=self.config.escalation_timeout_seconds or None,
             )
         except asyncio.TimeoutError:
-            self._audit_policy_add(policy, "expired", mode)
+            self._audit_policy_add(agent, policy, "expired", mode)
             return {"added": False, "reason": "policy change escalation timed out"}
         if not approved:
-            self._audit_policy_add(policy, "denied", mode)
+            self._audit_policy_add(agent, policy, "denied", mode)
             return {"added": False, "reason": "policy change denied by operator"}
 
         # Build the candidate doc in memory.
@@ -350,14 +379,14 @@ class Broker:
         errors = PolicyEngine.validate_file(tmp)
         if errors:
             os.remove(tmp)
-            self._audit_policy_add(policy, "denied", mode)
+            self._audit_policy_add(agent, policy, "denied", mode)
             return {"added": False, "reason": f"invalid policy: {errors}"}
 
         # Validation passed — atomically replace the real file and reload the engine.
         os.replace(tmp, self.config.policies_path)
         self.engine = PolicyEngine.from_file(self.config.policies_path)
         self._policies_mtime = self._policies_file_mtime()
-        self._audit_policy_add(policy, "approved", mode)
+        self._audit_policy_add(agent, policy, "approved", mode)
         return {"added": True, "reason": f"policy '{policy.get('name')}' added"}
 
     def status(self) -> dict:
@@ -376,8 +405,8 @@ def build_mcp(broker: Broker) -> FastMCP:
     mcp = FastMCP("AgentGate")
 
     @mcp.tool(name="credential.request")
-    async def credential_request(agent: str, credential: str) -> dict:
-        return await broker.request_credential(agent, credential)
+    async def credential_request(agent: str, agent_key: str, credential: str) -> dict:
+        return await broker.request_credential(agent, agent_key, credential)
 
     @mcp.tool(name="policy.list")
     def policy_list() -> list[dict]:
@@ -389,15 +418,15 @@ def build_mcp(broker: Broker) -> FastMCP:
         return {"valid": not errors, "errors": errors}
 
     @mcp.tool(name="policy.add")
-    async def policy_add(policy: dict) -> dict:
-        return await broker.add_policy(policy)
+    async def policy_add(agent: str, agent_key: str, policy: dict) -> dict:
+        return await broker.add_policy(agent, agent_key, policy)
 
     @mcp.tool(name="broker.status")
     def broker_status() -> dict:
         return broker.status()
 
     @mcp.tool(name="token.request")
-    async def token_request(agent: str, connection: str) -> dict:
-        return await broker.request_token(agent, connection)
+    async def token_request(agent: str, agent_key: str, connection: str) -> dict:
+        return await broker.request_token(agent, agent_key, connection)
 
     return mcp

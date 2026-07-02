@@ -11,6 +11,7 @@ import webbrowser
 
 from broker import oauth
 from broker import state
+from broker.agent_store import AgentStore
 from broker.config import Config, ConfigError
 from broker.connection_store import Connection, ConnectionStore
 from broker.credential_store import CredentialStore
@@ -33,6 +34,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("connections", help="list connected accounts")
     dc = sub.add_parser("disconnect", help="revoke and remove a connection")
     dc.add_argument("name")
+    aa = sub.add_parser("agent-add", help="register an agent; prints its key once")
+    aa.add_argument("name")
+    ar = sub.add_parser("agent-remove", help="revoke an agent's registration")
+    ar.add_argument("name")
+    sub.add_parser("agent-list", help="list registered agent names")
     return parser
 
 
@@ -122,6 +128,33 @@ def run(
 
     if args.command == "connect":
         return _run_connect(config, _password(master_password), args.provider, args.name)
+
+    if args.command == "agent-add":
+        store = AgentStore(config.agents_path, _password(master_password))
+        try:
+            agent_key = store.register(args.name)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        print(f"registered agent '{args.name}'")
+        print("agent key (shown once — configure it on the agent, it is not stored):")
+        print(agent_key)
+        return 0
+
+    if args.command == "agent-remove":
+        store = AgentStore(config.agents_path, _password(master_password))
+        try:
+            store.delete(args.name)
+        except KeyError:
+            print(f"no such agent '{args.name}'", file=sys.stderr)
+            return 1
+        print(f"removed agent '{args.name}'")
+        return 0
+
+    if args.command == "agent-list":
+        for name in AgentStore(config.agents_path, _password(master_password)).list_names():
+            print(name)
+        return 0
 
     return 2
 

@@ -10,6 +10,7 @@ _DEFAULTS = {
     "LOGS_PATH": os.path.join("logs", "audit.log"),
     "CREDENTIALS_PATH": os.path.join("data", "credentials.json"),
     "CONNECTIONS_PATH": os.path.join("data", "connections.json"),
+    "AGENTS_PATH": os.path.join("data", "agents.json"),
     "OAUTH_REDIRECT_PORT": "8765",
     "ESCALATION_TIMEOUT_SECONDS": "0",
 }
@@ -48,6 +49,7 @@ class Config:
     master_password: str | None
     connections_path: str = os.path.join("data", "connections.json")
     oauth_redirect_port: int = 8765
+    agents_path: str = os.path.join("data", "agents.json")
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Config":
@@ -69,4 +71,5 @@ class Config:
             oauth_redirect_port=_require_int(
                 get("OAUTH_REDIRECT_PORT"), "OAUTH_REDIRECT_PORT", minimum=1
             ),
+            agents_path=_require_non_empty(get("AGENTS_PATH"), "AGENTS_PATH"),
         )

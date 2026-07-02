@@ -61,6 +61,7 @@ async def _cli_loop(broker: Broker) -> None:
         cmd = answer.strip().lower()
         if cmd == "s":
             new_mode = state.toggle_mode(broker.config.state_path)
+            broker.audit.log_operator(action="mode-toggle", subject=new_mode)
             print(f"[AgentGate] switched to {new_mode.upper()} mode")
         elif cmd in ("q", "quit", "exit"):
             print("[AgentGate] shutting down")

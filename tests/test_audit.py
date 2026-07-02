@@ -59,6 +59,19 @@ def test_log_accepts_expired_decision(tmp_path):
     assert entry["decision"] == "expired"
 
 
+def test_log_operator_records_mutation_without_values(tmp_path):
+    path = tmp_path / "audit.log"
+    logger = AuditLogger(str(path))
+    logger.log_operator(action="cred-store", subject="anthropic-api-key")
+    entry = json.loads(path.read_text().strip())
+    assert entry["actor"] == "operator"
+    assert entry["action"] == "cred-store"
+    assert entry["subject"] == "anthropic-api-key"
+    assert "timestamp" in entry
+    # Shape carries no slot for a value or key.
+    assert set(entry) == {"timestamp", "actor", "action", "subject"}
+
+
 def test_audit_includes_scopes_when_provided(tmp_path):
     import json
     from broker.audit import AuditLogger

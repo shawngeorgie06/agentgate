@@ -36,6 +36,22 @@ class AuditLogger:
         }
         if scopes is not None:
             entry["scopes"] = list(scopes)
+        self._append(entry)
+
+    def log_operator(self, *, action: str, subject: str) -> None:
+        """Audit an operator-initiated mutation (credential seeded/deleted,
+        agent registered/revoked, connection added/removed, mode toggled).
+        Subjects are names only — never values or keys."""
+        self._append({
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(
+                timespec="seconds"
+            ),
+            "actor": "operator",
+            "action": action,
+            "subject": subject,
+        })
+
+    def _append(self, entry: dict) -> None:
         is_new = not os.path.exists(self._path)
         with open(self._path, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry) + "\n")

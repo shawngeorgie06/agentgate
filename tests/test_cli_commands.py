@@ -43,6 +43,11 @@ def test_agent_add_list_remove(tmp_path, capsys):
 
     assert commands.run(["agent-remove", "claude-code"], config=cfg, master_password="pw") == 0
     assert AgentStore(cfg.agents_path, "pw").list_names() == []
+    # Registration and revocation are audited; the issued key never is.
+    log = (tmp_path / "audit.log").read_text()
+    assert '"action": "agent-add"' in log
+    assert '"action": "agent-remove"' in log
+    assert key not in log
 
 
 def test_cred_store_list_delete(tmp_path, monkeypatch, capsys):
@@ -54,6 +59,11 @@ def test_cred_store_list_delete(tmp_path, monkeypatch, capsys):
     assert "k" in out
     assert "sk-secret" not in out  # value never printed
     assert commands.run(["cred-delete", "k"], config=cfg, master_password="pw") == 0
+    # Operator mutations are audited — names only, never the value.
+    log = (tmp_path / "audit.log").read_text()
+    assert '"action": "cred-store"' in log
+    assert '"action": "cred-delete"' in log
+    assert "sk-secret" not in log
 
 
 def test_policy_validate_ok(tmp_path):

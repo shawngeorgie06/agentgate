@@ -12,6 +12,7 @@ import webbrowser
 from broker import oauth
 from broker import state
 from broker.agent_store import AgentStore
+from broker.audit import AuditLogger
 from broker.config import Config, ConfigError
 from broker.connection_store import Connection, ConnectionStore
 from broker.credential_store import CredentialStore
@@ -65,8 +66,15 @@ def run(
     args = build_parser().parse_args(argv)
 
     if args.command == "cred-store":
-        value = os.environ.get("AGENTGATE_CRED_VALUE") or sys.stdin.readline().rstrip("\n")
+        value = os.environ.get("AGENTGATE_CRED_VALUE")
+        if not value:
+            if sys.stdin.isatty():
+                # Interactive: prompt rather than silently blocking on stdin.
+                value = getpass.getpass(f"value for credential '{args.name}': ")
+            else:
+                value = sys.stdin.readline().rstrip("\n")
         CredentialStore(config.credentials_path, _password(master_password)).store(args.name, value)
+        AuditLogger(config.logs_path).log_operator(action="cred-store", subject=args.name)
         print(f"stored credential '{args.name}'")
         return 0
 
@@ -76,6 +84,7 @@ def run(
         except KeyError:
             print(f"no such credential '{args.name}'", file=sys.stderr)
             return 1
+        AuditLogger(config.logs_path).log_operator(action="cred-delete", subject=args.name)
         print(f"deleted credential '{args.name}'")
         return 0
 
@@ -123,6 +132,7 @@ def run(
             print(f"warning: provider revoke failed ({exc}); removing local record anyway",
                   file=sys.stderr)
         store.delete(args.name)
+        AuditLogger(config.logs_path).log_operator(action="disconnect", subject=args.name)
         print(f"disconnected '{args.name}'")
         return 0
 
@@ -136,6 +146,7 @@ def run(
         except ValueError as exc:
             print(str(exc), file=sys.stderr)
             return 1
+        AuditLogger(config.logs_path).log_operator(action="agent-add", subject=args.name)
         print(f"registered agent '{args.name}'")
         print("agent key (shown once — configure it on the agent, it is not stored):")
         print(agent_key)
@@ -148,6 +159,7 @@ def run(
         except KeyError:
             print(f"no such agent '{args.name}'", file=sys.stderr)
             return 1
+        AuditLogger(config.logs_path).log_operator(action="agent-remove", subject=args.name)
         print(f"removed agent '{args.name}'")
         return 0
 
@@ -197,6 +209,7 @@ def _run_connect(config: Config, master_password: str, provider: str, name: str 
         scopes=tokens["scopes"] or preset.default_scopes,
         created_at=datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
     ))
+    AuditLogger(config.logs_path).log_operator(action="connect", subject=f"{name} ({provider})")
     print(f"connected '{name}' ({provider})")
     return 0
 

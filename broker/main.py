@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import getpass
+import os
 import sys
+import textwrap
 
 from broker import state
 from broker.agent_store import AgentStore
@@ -18,6 +20,25 @@ def resolve_master_password(config: Config) -> str:
     if config.master_password:
         return config.master_password
     return getpass.getpass("AgentGate master password: ")
+
+
+def ensure_policies_file(config: Config) -> bool:
+    """First-run bootstrap: create a deny-and-escalate-everything policy file
+    so a bare start is safe instead of crashing on a missing file. Returns
+    True when the file was created."""
+    if os.path.exists(config.policies_path):
+        return False
+    os.makedirs(os.path.dirname(os.path.abspath(config.policies_path)), exist_ok=True)
+    with open(config.policies_path, "w", encoding="utf-8") as fh:
+        fh.write(textwrap.dedent("""\
+            policies:
+              - name: default-deny
+                agent: "*"
+                credential: "*"
+                auto_approve: false
+                escalate: true
+        """))
+    return True
 
 
 def build_broker(config: Config, master_password: str) -> Broker:
@@ -86,6 +107,11 @@ async def run(config: Config | None = None) -> None:
     from starlette.middleware.trustedhost import TrustedHostMiddleware
 
     config = config or Config.from_env()
+    if ensure_policies_file(config):
+        print(
+            f"[AgentGate] created default policy file (deny + escalate everything) "
+            f"at {config.policies_path}"
+        )
     master_password = resolve_master_password(config)
     broker = build_broker(config, master_password)
     mcp = build_mcp(broker)

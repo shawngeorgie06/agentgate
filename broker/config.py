@@ -5,12 +5,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 _DEFAULTS = {
-    "POLICIES_PATH": os.path.join("policies", "policies.yaml"),
-    "STATE_PATH": os.path.join("state", "mode.json"),
-    "LOGS_PATH": os.path.join("logs", "audit.log"),
-    "CREDENTIALS_PATH": os.path.join("data", "credentials.json"),
-    "CONNECTIONS_PATH": os.path.join("data", "connections.json"),
-    "AGENTS_PATH": os.path.join("data", "agents.json"),
     "OAUTH_REDIRECT_PORT": "8765",
     "MCP_HOST": "127.0.0.1",
     "MCP_PORT": "8848",
@@ -18,6 +12,22 @@ _DEFAULTS = {
     "ESCALATION_TIMEOUT_SECONDS": "0",
     "ESCALATION_MAX_PENDING": "3",
 }
+
+
+def _default_paths(env: Mapping[str, str]) -> dict[str, str]:
+    """Default state paths anchor to a fixed per-user directory
+    (AGENTGATE_HOME or ~/.agentgate) rather than the current working
+    directory — CWD-relative defaults silently create fresh empty stores
+    whenever a command runs from a different directory."""
+    base = env.get("AGENTGATE_HOME") or os.path.join(os.path.expanduser("~"), ".agentgate")
+    return {
+        "POLICIES_PATH": os.path.join(base, "policies.yaml"),
+        "STATE_PATH": os.path.join(base, "mode.json"),
+        "LOGS_PATH": os.path.join(base, "audit.log"),
+        "CREDENTIALS_PATH": os.path.join(base, "credentials.json"),
+        "CONNECTIONS_PATH": os.path.join(base, "connections.json"),
+        "AGENTS_PATH": os.path.join(base, "agents.json"),
+    }
 
 
 class ConfigError(ValueError):
@@ -67,9 +77,10 @@ class Config:
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Config":
         env = os.environ if env is None else env
+        defaults = {**_DEFAULTS, **_default_paths(env)}
 
         def get(key: str) -> str:
-            return env.get(key, _DEFAULTS[key])
+            return env.get(key, defaults[key])
 
         return cls(
             policies_path=_require_non_empty(get("POLICIES_PATH"), "POLICIES_PATH"),

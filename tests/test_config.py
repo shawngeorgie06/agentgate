@@ -3,12 +3,25 @@ from broker.config import Config, ConfigError
 
 
 def test_from_env_uses_defaults_when_unset():
+    import os
     cfg = Config.from_env({})
     assert cfg.policies_path.endswith("policies.yaml")
     assert cfg.state_path.endswith("mode.json")
     assert cfg.logs_path.endswith("audit.log")
     assert cfg.credentials_path.endswith("credentials.json")
     assert cfg.master_password is None
+    # Defaults anchor to a fixed per-user dir, never the CWD (running from a
+    # different directory must not silently create fresh empty stores).
+    for p in (cfg.policies_path, cfg.state_path, cfg.logs_path, cfg.credentials_path):
+        assert os.path.isabs(p)
+        assert ".agentgate" in p
+
+
+def test_agentgate_home_overrides_default_base():
+    import os
+    cfg = Config.from_env({"AGENTGATE_HOME": os.path.join("srv", "ag")})
+    assert cfg.policies_path == os.path.join("srv", "ag", "policies.yaml")
+    assert cfg.agents_path == os.path.join("srv", "ag", "agents.json")
 
 
 def test_from_env_reads_overrides():

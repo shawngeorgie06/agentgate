@@ -145,6 +145,80 @@ def test_validate_file_returns_errors_without_raising(tmp_path):
     assert errors  # non-empty
 
 
+def test_glob_patterns_match_agent_and_credential(tmp_path):
+    path = _write(tmp_path, """
+        policies:
+          - name: all-claudes-aws
+            agent: "claude-*"
+            credential: "aws-*"
+            auto_approve: true
+          - name: default-deny
+            agent: "*"
+            credential: "*"
+            auto_approve: false
+            escalate: true
+    """)
+    eng = PolicyEngine.from_file(path)
+    assert eng.evaluate("claude-code", "aws-access-key").policy_name == "all-claudes-aws"
+    assert eng.evaluate("claude-code-2", "aws-secret-key").policy_name == "all-claudes-aws"
+    assert eng.evaluate("codex", "aws-access-key").policy_name == "default-deny"
+    assert eng.evaluate("claude-code", "anthropic-api-key").policy_name == "default-deny"
+
+
+def test_lint_flags_policy_shadowed_by_earlier_catch_all(tmp_path):
+    path = _write(tmp_path, """
+        policies:
+          - name: catch-all-first
+            agent: "*"
+            credential: "*"
+            auto_approve: false
+            escalate: true
+          - name: never-reached
+            agent: claude-code
+            credential: k
+            auto_approve: true
+    """)
+    warnings = PolicyEngine.lint_file(path)
+    assert len(warnings) == 1
+    assert "never-reached" in warnings[0] and "catch-all-first" in warnings[0]
+
+
+def test_lint_clean_for_conventional_layout(tmp_path):
+    # Specific policies first, default-deny last: nothing shadowed.
+    path = _write(tmp_path, """
+        policies:
+          - name: cc-anthropic
+            agent: claude-code
+            credential: anthropic-api-key
+            auto_approve: true
+          - name: default-deny
+            agent: "*"
+            credential: "*"
+            auto_approve: false
+            escalate: true
+    """)
+    assert PolicyEngine.lint_file(path) == []
+
+
+def test_lint_time_windowed_policy_does_not_shadow(tmp_path):
+    # A time-windowed match is not always-on; later policies still fire
+    # outside the window.
+    path = _write(tmp_path, """
+        policies:
+          - name: daytime
+            agent: claude-code
+            credential: k
+            auto_approve: true
+            time_window: {start: "09:00", end: "17:00"}
+          - name: nights
+            agent: claude-code
+            credential: k
+            auto_approve: false
+            escalate: true
+    """)
+    assert PolicyEngine.lint_file(path) == []
+
+
 def test_validate_file_rejects_non_string_time_without_raising(tmp_path):
     p = tmp_path / "policies.yaml"
     p.write_text(

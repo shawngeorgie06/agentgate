@@ -345,6 +345,9 @@ class Broker:
     def validate_policies(self) -> list[str]:
         return PolicyEngine.validate_file(self.config.policies_path)
 
+    def lint_policies(self) -> list[str]:
+        return PolicyEngine.lint_file(self.config.policies_path)
+
     def _audit_policy_add(self, agent: str, policy: dict, decision: str, mode: str) -> None:
         self.audit.log(
             agent=agent, credential_requested=f"policy.add:{policy.get('name')}",
@@ -435,7 +438,11 @@ def build_mcp(broker: Broker) -> FastMCP:
     @mcp.tool(name="policy.validate")
     def policy_validate() -> dict:
         errors = broker.validate_policies()
-        return {"valid": not errors, "errors": errors}
+        return {
+            "valid": not errors,
+            "errors": errors,
+            "warnings": [] if errors else broker.lint_policies(),
+        }
 
     @mcp.tool(name="policy.add")
     async def policy_add(agent: str, agent_key: str, policy: dict) -> dict:

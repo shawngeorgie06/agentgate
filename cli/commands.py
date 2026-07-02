@@ -101,6 +101,8 @@ def run(
                 print(f"INVALID: {e}", file=sys.stderr)
             return 1
         print("policy file is valid")
+        for w in PolicyEngine.lint_file(config.policies_path):
+            print(f"warning: {w}", file=sys.stderr)
         return 0
 
     if args.command == "status":

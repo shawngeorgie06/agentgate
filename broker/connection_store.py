@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import json
-import os
 from dataclasses import dataclass
 
 from broker import crypto
+from broker.encrypted_store import EncryptedStore
 
 
 @dataclass(frozen=True)
@@ -17,30 +16,11 @@ class Connection:
     created_at: str
 
 
-class ConnectionStore:
-    def __init__(self, path: str, master_password: str) -> None:
-        self._path = path
-        is_new = not os.path.exists(self._path)
-        self._data = self._load()
-        self._key = crypto.derive_key(master_password, self._data["salt"])
-        if is_new:
-            self._write(self._data)
-
-    def _load(self) -> dict:
-        if os.path.exists(self._path):
-            with open(self._path, "r", encoding="utf-8") as fh:
-                return json.load(fh)
-        return {"salt": crypto.new_salt(), "connections": {}}
-
-    def _write(self, data: dict) -> None:
-        os.makedirs(os.path.dirname(os.path.abspath(self._path)), exist_ok=True)
-        tmp = f"{self._path}.tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, indent=2)
-        os.replace(tmp, self._path)
+class ConnectionStore(EncryptedStore):
+    _SECTION = "connections"
 
     def store(self, name: str, conn: Connection) -> None:
-        self._data["connections"][name] = {
+        self._entries()[name] = {
             "provider": conn.provider,
             "client_id": conn.client_id,
             "client_secret": crypto.encrypt(self._key, conn.client_secret),
@@ -51,9 +31,10 @@ class ConnectionStore:
         self._write(self._data)
 
     def get(self, name: str) -> Connection:
-        if name not in self._data["connections"]:
+        entries = self._entries()
+        if name not in entries:
             raise KeyError(name)
-        rec = self._data["connections"][name]
+        rec = entries[name]
         return Connection(
             provider=rec["provider"],
             client_id=rec["client_id"],
@@ -64,13 +45,14 @@ class ConnectionStore:
         )
 
     def delete(self, name: str) -> None:
-        if name not in self._data["connections"]:
+        entries = self._entries()
+        if name not in entries:
             raise KeyError(name)
-        del self._data["connections"][name]
+        del entries[name]
         self._write(self._data)
 
     def list_names(self) -> list[str]:
-        return sorted(self._data["connections"].keys())
+        return sorted(self._entries().keys())
 
     def list_metadata(self) -> list[dict]:
         return [
@@ -80,5 +62,5 @@ class ConnectionStore:
                 "scopes": list(rec["scopes"]),
                 "created_at": rec["created_at"],
             }
-            for name, rec in sorted(self._data["connections"].items())
+            for name, rec in sorted(self._entries().items())
         ]

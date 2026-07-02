@@ -36,5 +36,8 @@ class AuditLogger:
         }
         if scopes is not None:
             entry["scopes"] = list(scopes)
+        is_new = not os.path.exists(self._path)
         with open(self._path, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry) + "\n")
+        if is_new:
+            os.chmod(self._path, 0o600)

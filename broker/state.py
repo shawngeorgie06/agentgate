@@ -19,6 +19,7 @@ def write_mode(path: str, mode: str, updated_by: str = "cli") -> None:
     tmp = f"{path}.tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(payload, fh, indent=2)
+    os.chmod(tmp, 0o600)
     os.replace(tmp, path)
 
 

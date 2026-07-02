@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import os
+import sys
 
 import yaml
 from fastmcp import FastMCP
@@ -34,9 +35,33 @@ class Broker:
         self.approvals = approvals
         self.connections = connections
         self._token_cache: dict[str, dict] = {}
+        self._policies_mtime = self._policies_file_mtime()
         self.total_requests = 0
         self.escalated_requests = 0
         self.start_time = datetime.datetime.now()
+
+    def _policies_file_mtime(self) -> float | None:
+        try:
+            return os.path.getmtime(self.config.policies_path)
+        except OSError:
+            return None
+
+    def _current_engine(self) -> PolicyEngine:
+        """Reload policies when the file changes on disk, so hand-edits take
+        effect without a restart. An invalid edit keeps the last valid engine
+        (warned once per change) rather than taking the broker down."""
+        mtime = self._policies_file_mtime()
+        if mtime != self._policies_mtime:
+            self._policies_mtime = mtime
+            try:
+                self.engine = PolicyEngine.from_file(self.config.policies_path)
+            except PolicyError as exc:
+                print(
+                    f"[AgentGate] WARNING: policies file invalid, keeping previous "
+                    f"policies: {exc}",
+                    file=sys.stderr,
+                )
+        return self.engine
 
     async def request_credential(self, agent: str, credential: str) -> dict:
         self.total_requests += 1
@@ -45,7 +70,7 @@ class Broker:
         if mode == "manual":
             return await self._escalate(agent, credential, mode, policy_name="manual-mode")
 
-        decision = self.engine.evaluate(agent, credential)
+        decision = self._current_engine().evaluate(agent, credential)
         if decision.auto_approve:
             return self._grant(agent, credential, mode, decision.policy_name)
         return await self._escalate(agent, credential, mode, decision.policy_name)
@@ -134,7 +159,7 @@ class Broker:
         if mode == "manual":
             return await self._escalate_token(agent, connection, mode, "manual-mode")
 
-        decision = self.engine.evaluate(agent, connection)
+        decision = self._current_engine().evaluate(agent, connection)
         if decision.auto_approve:
             return await self._grant_token(agent, connection, mode, decision.policy_name)
         return await self._escalate_token(agent, connection, mode, decision.policy_name)
@@ -229,7 +254,7 @@ class Broker:
                 "scopes": None, "reason": "denied by operator"}
 
     def list_policies(self) -> list[dict]:
-        return self.engine.list_policies()
+        return self._current_engine().list_policies()
 
     def validate_policies(self) -> list[str]:
         return PolicyEngine.validate_file(self.config.policies_path)
@@ -267,6 +292,7 @@ class Broker:
         # Validation passed — atomically replace the real file and reload the engine.
         os.replace(tmp, self.config.policies_path)
         self.engine = PolicyEngine.from_file(self.config.policies_path)
+        self._policies_mtime = self._policies_file_mtime()
         return {"added": True, "reason": f"policy '{policy.get('name')}' added"}
 
     def status(self) -> dict:

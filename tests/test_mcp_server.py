@@ -167,6 +167,44 @@ async def test_add_policy_times_out_without_modifying_file(tmp_path):
     assert before == after
 
 
+@pytest.mark.asyncio
+async def test_policy_file_edit_takes_effect_without_restart(tmp_path):
+    import os
+    import textwrap
+    broker = _make_broker(tmp_path, _AUTO_POLICY)
+    # Hand-edit the policy file to revoke claude-code's auto-approval.
+    pol = broker.config.policies_path
+    open(pol, "w").write(textwrap.dedent("""
+        policies:
+          - name: default-deny
+            agent: "*"
+            credential: "*"
+            auto_approve: false
+            escalate: true
+    """))
+    os.utime(pol, (os.path.getmtime(pol) + 5, os.path.getmtime(pol) + 5))
+    task = asyncio.create_task(broker.request_credential("claude-code", "anthropic-api-key"))
+    await asyncio.sleep(0.05)
+    # The edited file must govern: the request now escalates instead of auto-granting.
+    pending = broker.approvals.get_pending()
+    assert pending is not None
+    broker.approvals.resolve(pending, False)
+    res = await task
+    assert res["granted"] is False
+
+
+@pytest.mark.asyncio
+async def test_invalid_policy_edit_keeps_previous_policies(tmp_path):
+    import os
+    broker = _make_broker(tmp_path, _AUTO_POLICY)
+    pol = broker.config.policies_path
+    open(pol, "w").write("policies: [broken : yaml")
+    os.utime(pol, (os.path.getmtime(pol) + 5, os.path.getmtime(pol) + 5))
+    # Last valid engine keeps serving; the auto-approve policy still applies.
+    res = await broker.request_credential("claude-code", "anthropic-api-key")
+    assert res["granted"] is True
+
+
 def test_status_reports_mode_and_counts(tmp_path):
     broker = _make_broker(tmp_path, _AUTO_POLICY)
     s = broker.status()

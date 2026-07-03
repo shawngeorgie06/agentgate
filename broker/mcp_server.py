@@ -9,13 +9,15 @@ import sys
 import yaml
 from fastmcp import FastMCP
 
-from broker import oauth, state
+from broker import db_broker, oauth, state
 from broker.agent_store import AgentStore
 from broker.approval import ApprovalQueue
 from broker.audit import AuditLogger
 from broker.config import Config
 from broker.connection_store import ConnectionStore
 from broker.credential_store import CredentialDecryptionError, CredentialStore
+from broker.db_executor import DbExecutor
+from broker.db_resource_store import DbResourceStore
 from broker.policy_engine import PolicyEngine, PolicyError
 
 
@@ -30,6 +32,8 @@ class Broker:
         approvals: ApprovalQueue,
         connections: ConnectionStore | None = None,
         agents: AgentStore | None = None,
+        db_resources: DbResourceStore | None = None,
+        db_executor: DbExecutor | None = None,
     ) -> None:
         self.config = config
         self.store = store
@@ -38,6 +42,8 @@ class Broker:
         self.approvals = approvals
         self.connections = connections
         self.agents = agents
+        self.db_resources = db_resources
+        self.db_executor = db_executor
         self._token_cache: dict[str, dict] = {}
         self._policies_mtime = self._policies_file_mtime()
         self.total_requests = 0
@@ -339,6 +345,101 @@ class Broker:
         return {"granted": False, "access_token": None, "token_expiry": None,
                 "scopes": None, "reason": "denied by operator"}
 
+    @staticmethod
+    def _db_deny(reason: str) -> dict:
+        return {
+            "granted": False, "host": None, "port": None, "dbname": None,
+            "username": None, "password": None, "expires_at": None, "reason": reason,
+        }
+
+    async def request_db_credential(self, agent: str, agent_key: str, resource: str) -> dict:
+        self.total_requests += 1
+        mode = state.read_mode(self.config.state_path)
+
+        if not self._authenticate(agent, agent_key, resource, mode):
+            return self._db_deny("unknown agent or invalid agent key")
+
+        if mode == "manual":
+            return await self._escalate_db(agent, resource, mode, "manual-mode")
+
+        decision = self._current_engine().evaluate(agent, resource)
+        if decision.auto_approve:
+            return await self._grant_db(agent, resource, mode, decision.policy_name)
+        if not decision.escalate:
+            self.audit.log(
+                agent=agent, credential_requested=resource,
+                policy_matched=decision.policy_name, decision="denied",
+                mode=mode, token_expiry=None,
+            )
+            return self._db_deny(f"denied by policy '{decision.policy_name}'")
+        return await self._escalate_db(agent, resource, mode, decision.policy_name)
+
+    async def _grant_db(self, agent: str, resource: str, mode: str, policy_name: str) -> dict:
+        if self.db_resources is None:
+            res = None
+        else:
+            try:
+                res = self.db_resources.get(resource)
+            except KeyError:
+                res = None
+        if res is None or self.db_executor is None:
+            self.audit.log(
+                agent=agent, credential_requested=resource, policy_matched=policy_name,
+                decision="denied", mode=mode, token_expiry=None,
+            )
+            return self._db_deny(f"unknown database resource '{resource}'")
+
+        try:
+            cred = await db_broker.mint(self.db_executor, res, self.config.db_cred_ttl_minutes)
+        except Exception:
+            # Fail closed: never leak the driver/DSN error to the agent, always audit.
+            self.audit.log(
+                agent=agent, credential_requested=resource, policy_matched=policy_name,
+                decision="denied", mode=mode, token_expiry=None,
+            )
+            return self._db_deny(f"could not provision database credential for '{resource}'")
+
+        applied = []
+        for grant in res.grants:
+            applied.append(f'{grant["verb"]} ON {", ".join(grant["objects"])}')
+        self.audit.log(
+            agent=agent, credential_requested=resource, policy_matched=policy_name,
+            decision="approved", mode=mode, token_expiry=cred.expires_at,
+            username=cred.username, grants=applied,
+        )
+        return {
+            "granted": True, "host": cred.host, "port": cred.port, "dbname": cred.dbname,
+            "username": cred.username, "password": cred.password,
+            "expires_at": cred.expires_at,
+            "reason": f"auto-approved by policy '{policy_name}'",
+        }
+
+    async def _escalate_db(self, agent: str, resource: str, mode: str, policy_name: str) -> dict:
+        if self._flooded(agent, resource, mode, policy_name):
+            return self._db_deny("too many requests pending operator approval")
+        self.escalated_requests += 1
+        self.audit.log(
+            agent=agent, credential_requested=resource, policy_matched=policy_name,
+            decision="escalated", mode=mode, token_expiry=None,
+        )
+        try:
+            approved = await self.approvals.submit(
+                agent, resource, timeout=self.config.escalation_timeout_seconds or None
+            )
+        except asyncio.TimeoutError:
+            self.audit.log(
+                agent=agent, credential_requested=resource, policy_matched=policy_name,
+                decision="expired", mode=mode, token_expiry=None,
+            )
+            return self._db_deny("escalation timed out")
+        if approved:
+            return await self._grant_db(agent, resource, mode, f"manual:{policy_name}")
+        self.audit.log(
+            agent=agent, credential_requested=resource, policy_matched=policy_name,
+            decision="denied", mode=mode, token_expiry=None,
+        )
+        return self._db_deny("denied by operator")
+
     def list_policies(self) -> list[dict]:
         return self._current_engine().list_policies()
 
@@ -455,5 +556,9 @@ def build_mcp(broker: Broker) -> FastMCP:
     @mcp.tool(name="token_request")
     async def token_request(agent: str, agent_key: str, connection: str) -> dict:
         return await broker.request_token(agent, agent_key, connection)
+
+    @mcp.tool(name="db_credential_request")
+    async def db_credential_request(agent: str, agent_key: str, resource: str) -> dict:
+        return await broker.request_db_credential(agent, agent_key, resource)
 
     return mcp

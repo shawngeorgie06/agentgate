@@ -85,3 +85,29 @@ def test_audit_includes_scopes_when_provided(tmp_path):
     )
     entry = json.loads(path.read_text(encoding="utf-8").strip())
     assert entry["scopes"] == ["openid", "email"]
+
+
+def test_log_accepts_username_and_grants(tmp_path):
+    import json
+    from broker.audit import AuditLogger
+    path = tmp_path / "audit.log"
+    AuditLogger(str(path)).log(
+        agent="claude-code", credential_requested="analytics-ro", policy_matched="p",
+        decision="approved", mode="auto", token_expiry="2026-07-02T10:15:00+00:00",
+        username="agentgate_ab12", grants=['GRANT SELECT ON "public"."events" TO "agentgate_ab12"'],
+    )
+    entry = json.loads(path.read_text().strip())
+    assert entry["username"] == "agentgate_ab12"
+    assert entry["grants"] == ['GRANT SELECT ON "public"."events" TO "agentgate_ab12"']
+
+
+def test_log_omits_username_grants_when_absent(tmp_path):
+    import json
+    from broker.audit import AuditLogger
+    path = tmp_path / "audit.log"
+    AuditLogger(str(path)).log(
+        agent="a", credential_requested="k", policy_matched="p",
+        decision="denied", mode="auto", token_expiry=None,
+    )
+    entry = json.loads(path.read_text().strip())
+    assert "username" not in entry and "grants" not in entry

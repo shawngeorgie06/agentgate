@@ -11,6 +11,8 @@ _DEFAULTS = {
     "MCP_ALLOWED_HOSTS": "",
     "ESCALATION_TIMEOUT_SECONDS": "0",
     "ESCALATION_MAX_PENDING": "3",
+    "DB_CRED_TTL_MINUTES": "15",
+    "DB_REAP_INTERVAL_SECONDS": "30",
 }
 
 
@@ -27,6 +29,7 @@ def _default_paths(env: Mapping[str, str]) -> dict[str, str]:
         "CREDENTIALS_PATH": os.path.join(base, "credentials.json"),
         "CONNECTIONS_PATH": os.path.join(base, "connections.json"),
         "AGENTS_PATH": os.path.join(base, "agents.json"),
+        "DB_RESOURCES_PATH": os.path.join(base, "db_resources.json"),
     }
 
 
@@ -73,6 +76,9 @@ class Config:
     # Max escalations one agent may have waiting on the operator at once;
     # further requests are denied immediately (approval-fatigue defense).
     escalation_max_pending: int = 3
+    db_resources_path: str = os.path.join("data", "db_resources.json")
+    db_cred_ttl_minutes: int = 15
+    db_reap_interval_seconds: int = 30
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Config":
@@ -101,5 +107,10 @@ class Config:
             mcp_allowed_hosts=get("MCP_ALLOWED_HOSTS"),
             escalation_max_pending=_require_int(
                 get("ESCALATION_MAX_PENDING"), "ESCALATION_MAX_PENDING", minimum=1
+            ),
+            db_resources_path=_require_non_empty(get("DB_RESOURCES_PATH"), "DB_RESOURCES_PATH"),
+            db_cred_ttl_minutes=_require_int(get("DB_CRED_TTL_MINUTES"), "DB_CRED_TTL_MINUTES", minimum=1),
+            db_reap_interval_seconds=_require_int(
+                get("DB_REAP_INTERVAL_SECONDS"), "DB_REAP_INTERVAL_SECONDS", minimum=1
             ),
         )

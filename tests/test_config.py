@@ -103,3 +103,23 @@ def test_oauth_redirect_port_override_and_validation():
         Config.from_env({**base, "OAUTH_REDIRECT_PORT": "0"})
     with pytest.raises(ConfigError):
         Config.from_env({**base, "OAUTH_REDIRECT_PORT": "notaport"})
+
+
+def test_db_defaults():
+    cfg = Config.from_env({})
+    assert cfg.db_resources_path.endswith("db_resources.json")
+    assert cfg.db_cred_ttl_minutes == 15
+    assert cfg.db_reap_interval_seconds == 30
+
+
+def test_db_cred_ttl_must_be_positive():
+    import pytest
+    from broker.config import ConfigError
+    with pytest.raises(ConfigError):
+        Config.from_env({"DB_CRED_TTL_MINUTES": "0"})
+
+
+def test_db_resources_path_follows_agentgate_home():
+    import os
+    cfg = Config.from_env({"AGENTGATE_HOME": os.path.join("srv", "ag")})
+    assert cfg.db_resources_path == os.path.join("srv", "ag", "db_resources.json")

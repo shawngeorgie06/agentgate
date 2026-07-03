@@ -1,0 +1,5 @@
+# Keep internal planning/spec artifacts out of `git archive` exports
+# (the standalone published repo is produced via `git archive HEAD`).
+docs/ export-ignore
+.superpowers/ export-ignore
+.gitattributes export-ignore

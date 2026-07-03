@@ -23,10 +23,12 @@ AgentGate is a credential broker and approval engine for AI agents — IAM for a
 pip install -r requirements.txt
 ```
 
-**Set up environment:**
+**Set up environment (optional):**
 ```bash
 cp .env.example .env
 ```
+
+Without any configuration, all state lives under `~/.agentgate/` (override the base with `AGENTGATE_HOME`, or set individual `*_PATH` variables). On first start the broker creates a default policy file there that denies and escalates everything.
 
 **Set master password:**
 Edit `.env` and set `AGENTGATE_MASTER_PASSWORD`, or leave it unset to be prompted via `getpass` at startup.
@@ -43,8 +45,11 @@ python -m cli.commands agent-add claude-code
 ```
 
 **Seed a credential:**
-The credential value is read from stdin or the `AGENTGATE_CRED_VALUE` env var (never passed as a command-line argument, so it won't leak into process listings):
+The credential value is prompted for interactively (hidden input), or read from piped stdin / the `AGENTGATE_CRED_VALUE` env var — never passed as a command-line argument, so it won't leak into process listings:
 ```bash
+# interactive (prompts for the value)
+python -m cli.commands cred-store anthropic-api-key
+
 # value piped via stdin
 echo "<your-api-key>" | python -m cli.commands cred-store anthropic-api-key
 
@@ -74,7 +79,7 @@ Or in a `.mcp.json` / client config:
 ```
 
 **Request credentials from agents:**
-Agents call `credential.request(agent, agent_key, credential)`. The broker verifies the agent key first, then consults policies and mode to grant, deny, or escalate.
+Agents call `credential_request(agent, agent_key, credential)`. The broker verifies the agent key first, then consults policies and mode to grant, deny, or escalate.
 
 **Toggle approval mode:**
 In the broker terminal, type `s` and press Enter to toggle between AUTO and MANUAL modes. The decision is persisted to `state/mode.json` and re-read on every request (never cached).
@@ -98,8 +103,8 @@ Policies are defined in `policies/policies.yaml`. Each policy specifies:
 ```yaml
 policies:
   - name: <policy-name>
-    agent: <agent-name or "*" for wildcard>
-    credential: <credential-name or "*" for wildcard>
+    agent: <exact name or glob pattern: "*", "claude-*", "agent-?">
+    credential: <exact name or glob pattern>
     time_window:               # optional; omit for 24/7 (times are operator-local)
       start: "HH:MM"
       end: "HH:MM"
@@ -133,21 +138,23 @@ policies:
 
 The first matching policy wins; policies are evaluated in order. Edits to the file are picked up automatically on the next request — an invalid edit keeps the last valid policies in effect (with a warning on the broker's stderr) rather than taking the broker down.
 
+Because first-match-wins makes ordering a footgun, `agentgate policy-validate` (and the `policy_validate` tool) also warn about **unreachable policies** — ones fully shadowed by an earlier always-on policy.
+
 ## MCP Tools
 
 AgentGate exposes 6 MCP tools. The three that grant or change anything require the agent's registered key; an unknown agent or wrong key gets an audited denial and never reaches a policy match or the operator.
 
-1. **`credential.request(agent, agent_key, credential)`** — Request a stored credential. Returns `{granted: bool, value: str, reason: str}`; `value` is `null` when denied. Note: the granted value **is** the raw credential — treat the response as secret.
+1. **`credential_request(agent, agent_key, credential)`** — Request a stored credential. Returns `{granted: bool, value: str, reason: str}`; `value` is `null` when denied. Note: the granted value **is** the raw credential — treat the response as secret.
 
-2. **`token.request(agent, agent_key, connection)`** — Request a short-lived OAuth access token for a named connection (see [OAuth Broker](#oauth-broker)). Returns `{granted: bool, access_token: str, token_expiry: str, scopes: [str], reason: str}`; when `granted` is `false`, `access_token`, `token_expiry`, and `scopes` are `null`. Governed by policy/escalation/audit exactly like `credential.request` (the connection name occupies the credential slot).
+2. **`token_request(agent, agent_key, connection)`** — Request a short-lived OAuth access token for a named connection (see [OAuth Broker](#oauth-broker)). Returns `{granted: bool, access_token: str, token_expiry: str, scopes: [str], reason: str}`; when `granted` is `false`, `access_token`, `token_expiry`, and `scopes` are `null`. Governed by policy/escalation/audit exactly like `credential_request` (the connection name occupies the credential slot).
 
-3. **`policy.list()`** — List all policies. Returns `{policies: [{name, agent, credential, auto_approve, escalate, ...}]}`.
+3. **`policy_list()`** — List all policies. Returns `{policies: [{name, agent, credential, auto_approve, escalate, ...}]}`.
 
-4. **`policy.validate()`** — Validate the policy file without applying it. Returns `{valid: bool, errors: [str]}`.
+4. **`policy_validate()`** — Validate the policy file without applying it. Returns `{valid: bool, errors: [str], warnings: [str]}` (warnings flag unreachable/shadowed policies).
 
-5. **`policy.add(agent, agent_key, policy)`** — Propose a new policy. **Always escalates to the CLI operator, regardless of mode**, and the operator sees the full policy body — not just its name. An approved policy is inserted **above a trailing catch-all default-deny but never ahead of existing specific policies**, so a proposed policy cannot steal precedence. Every outcome (escalated/approved/denied/expired) is audited.
+5. **`policy_add(agent, agent_key, policy)`** — Propose a new policy. **Always escalates to the CLI operator, regardless of mode**, and the operator sees the full policy body — not just its name. An approved policy is inserted **above a trailing catch-all default-deny but never ahead of existing specific policies**, so a proposed policy cannot steal precedence. Every outcome (escalated/approved/denied/expired) is audited.
 
-6. **`broker.status()`** — Current broker status. Returns `{mode: str, policies: int, requests: int, escalated: int, uptime_seconds: int}`.
+6. **`broker_status()`** — Current broker status. Returns `{mode: str, policies: int, requests: int, escalated: int, uptime_seconds: int}`.
 
 ## Approval Modes
 
@@ -175,8 +182,8 @@ Beyond static API keys, AgentGate can broker **OAuth 2.0 access** to providers l
 ### How it works
 
 - The broker holds an encrypted **refresh token** per connection (never released to agents).
-- On `token.request`, the broker mints a short-lived **access token** (caching it in memory until shortly before expiry) and returns only that token plus its expiry and scopes.
-- Access is governed by the same agent authentication, YAML policy, AUTO/MANUAL mode, escalation, and audit pipeline as `credential.request`.
+- On `token_request`, the broker mints a short-lived **access token** (caching it in memory until shortly before expiry) and returns only that token plus its expiry and scopes.
+- Access is governed by the same agent authentication, YAML policy, AUTO/MANUAL mode, escalation, and audit pipeline as `credential_request`.
 
 ### One-time provider setup
 
@@ -215,7 +222,7 @@ agentgate disconnect work
 An agent requests a token over MCP:
 
 ```
-token.request(agent="claude-code", agent_key="<key>", connection="work")
+token_request(agent="claude-code", agent_key="<key>", connection="work")
   -> {granted: true, access_token: "...", token_expiry: "2026-06-28T15:00:00+00:00", scopes: ["openid", "email"], reason: "..."}
 ```
 
@@ -233,11 +240,14 @@ All decisions are logged to `logs/audit.log`, one JSON object per line (append-o
 - `token_expiry` — expiry of the OAuth access token, or `null` when none was issued
 - `scopes` — granted OAuth scopes (token grants only)
 
+Operator mutations are audited too — seeding/deleting credentials, registering/revoking agents, adding/removing OAuth connections, and mode toggles each write an `{actor: "operator", action, subject}` row (names only, never values or keys), so "when was this credential added and by whom" is answerable.
+
 Credential values, OAuth tokens, and agent keys are never written to the audit log. The log is plain append-only JSONL — it is **not** cryptographically tamper-evident; protect it with filesystem permissions and ship it somewhere append-only if you need stronger guarantees.
 
-Example:
+Examples:
 ```
 {"timestamp": "2026-06-24T14:32:05+00:00", "agent": "claude-code", "credential_requested": "anthropic-api-key", "policy_matched": "claude-code-anthropic", "decision": "approved", "mode": "auto", "token_expiry": null}
+{"timestamp": "2026-06-24T14:30:11+00:00", "actor": "operator", "action": "cred-store", "subject": "anthropic-api-key"}
 ```
 
 ## Failure Behavior
@@ -251,6 +261,8 @@ AgentGate fails closed:
 - corrupt mode file → MANUAL mode (everything escalates)
 - invalid policy-file edit → last valid policies stay in effect (warning on stderr)
 - escalation timeout → audited `expired`, denied
+- more than `ESCALATION_MAX_PENDING` (default 3) unresolved escalations from one agent → further requests denied immediately (approval-fatigue defense; other agents unaffected)
+- HTTP request with a non-allowlisted `Host` header → rejected with 400 (DNS-rebinding defense; extend the allowlist via `MCP_ALLOWED_HOSTS` if you deliberately serve beyond loopback)
 
 ## ECS Migration
 
@@ -277,7 +289,9 @@ Store files are re-read on every access, so CLI writes (new credentials, revoked
 
 ## Escalation Timeout
 
-Set `ESCALATION_TIMEOUT_SECONDS` in `.env` to limit how long the broker waits for operator approval before failing closed. When the timeout elapses with no operator response, the request is denied immediately and audited as `decision="expired"`. A value of `0` (the default) disables the timeout and waits forever — suitable for interactive use. Set a positive integer (e.g. `30`) for headless or unattended deployments where a hung approval queue should not block agents indefinitely. Note: while the timeout is disabled by default, pending approvals with no operator answer accumulate in memory—headless deployments should set a positive timeout to prevent unbounded memory growth.
+Set `ESCALATION_TIMEOUT_SECONDS` in `.env` to limit how long the broker waits for operator approval before failing closed. When the timeout elapses with no operator response, the request is denied immediately and audited as `decision="expired"`. A value of `0` (the default) disables the timeout and waits forever — suitable for interactive use. Set a positive integer (e.g. `30`) for headless or unattended deployments where a hung approval queue should not block agents indefinitely.
+
+`ESCALATION_MAX_PENDING` (default `3`) caps how many unresolved escalations a single agent may stack; beyond it, that agent's requests are denied immediately with an audit row while other agents remain unaffected. This bounds both operator prompt-fatigue and per-agent memory growth.
 
 ## Architecture
 
@@ -308,4 +322,4 @@ pip install -e .[dev]
 python -m pytest -v
 ```
 
-Expected: 117 tests covering encryption round-trips, agent authentication, policy evaluation (time windows, hard deny, hot reload), two-tier approval, fail-closed error paths, secret-free audit output, and an end-to-end MCP call over the real HTTP transport.
+Expected: 125 tests covering encryption round-trips, agent authentication, policy evaluation (globs, time windows, hard deny, hot reload, shadowing lint), two-tier approval with flood caps, fail-closed error paths, secret-free audit output, and an end-to-end MCP call over the real HTTP transport including Host-header rejection.

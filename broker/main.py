@@ -6,13 +6,15 @@ import os
 import sys
 import textwrap
 
-from broker import state
+from broker import db_broker, state
 from broker.agent_store import AgentStore
 from broker.approval import ApprovalQueue
 from broker.audit import AuditLogger
 from broker.config import Config, ConfigError
 from broker.connection_store import ConnectionStore
 from broker.credential_store import CredentialStore
+from broker.db_executor import AsyncpgExecutor
+from broker.db_resource_store import DbResourceStore
 from broker.mcp_server import Broker, build_mcp
 
 
@@ -52,6 +54,8 @@ def build_broker(config: Config, master_password: str) -> Broker:
         approvals=ApprovalQueue(),
         connections=ConnectionStore(config.connections_path, master_password),
         agents=AgentStore(config.agents_path, master_password),
+        db_resources=DbResourceStore(config.db_resources_path, master_password),
+        db_executor=AsyncpgExecutor(),
     )
 
 
@@ -91,6 +95,23 @@ async def _cli_loop(broker: Broker) -> None:
             print(format_status_line(broker))
 
 
+async def _reaper_loop(broker: Broker) -> None:
+    """Periodically drop expired agentgate_* roles for every registered
+    resource. Stateless — recovers dangling roles after a restart. Never dies
+    on a per-resource error."""
+    while True:
+        await asyncio.sleep(broker.config.db_reap_interval_seconds)
+        if broker.db_resources is None or broker.db_executor is None:
+            continue
+        for name in broker.db_resources.list_names():
+            try:
+                resource = broker.db_resources.get(name)
+                for role in await db_broker.reap(broker.db_executor, resource):
+                    broker.audit.log_operator(action="db-reap", subject=role)
+            except Exception:
+                continue
+
+
 def allowed_hosts(config: Config) -> list[str]:
     """Host headers the MCP endpoint accepts. Anything else is rejected (400)
     to block DNS rebinding: a browser rebound to 127.0.0.1 still sends the
@@ -124,6 +145,7 @@ async def run(config: Config | None = None) -> None:
         f"[AgentGate] MCP endpoint: http://{config.mcp_host}:{config.mcp_port}/mcp"
     )
     cli_task = asyncio.create_task(_cli_loop(broker))
+    reaper_task = asyncio.create_task(_reaper_loop(broker))
     server_task = asyncio.create_task(
         mcp.run_async(
             transport="http",
@@ -136,7 +158,7 @@ async def run(config: Config | None = None) -> None:
         )
     )
     done, pending = await asyncio.wait(
-        {cli_task, server_task}, return_when=asyncio.FIRST_COMPLETED
+        {cli_task, reaper_task, server_task}, return_when=asyncio.FIRST_COMPLETED
     )
     for task in pending:
         task.cancel()

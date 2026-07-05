@@ -9,9 +9,8 @@ from dataclasses import dataclass
 from broker import db_grants
 from broker.db_executor import AdminDsn, DbExecutor, SqlStatement
 from broker.db_resource_store import DbResource
+from broker.role_naming import ROLE_PREFIX, ROLE_RE as _ROLE_RE
 
-ROLE_PREFIX = "agentgate_"
-_ROLE_RE = re.compile(r"^agentgate_[0-9a-f]+$")
 _PW_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 # LIKE pattern for the reaper; underscore escaped so it is literal.
 _EXPIRED_PATTERN = r"agentgate\_%"
@@ -78,7 +77,7 @@ async def reap(executor: DbExecutor, resource: DbResource) -> list[str]:
     expired = await executor.list_expired_roles(dsn, _EXPIRED_PATTERN)
     dropped: list[str] = []
     for role in expired:
-        if not _ROLE_RE.match(role):
+        if not _ROLE_RE.fullmatch(role):
             continue  # never touch anything outside our namespace
         try:
             await executor.drop_role(dsn, role)

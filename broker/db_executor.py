@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from typing import Protocol
 
-# Mirrors broker.db_broker._ROLE_RE. Not imported from there to avoid a
-# circular import (db_broker imports from this module); role names dropped
-# here must independently be re-validated at this sink regardless of what
-# the caller already checked.
-_ROLE_RE = re.compile(r"agentgate_[0-9a-f]+")
+# Defense-in-depth: role names interpolated into DROP ROLE DDL here must be
+# re-validated at this sink regardless of what the caller already checked. The
+# canonical pattern lives in a leaf module so this sink and db_broker's cannot
+# drift onto divergent patterns.
+from broker.role_naming import ROLE_RE as _ROLE_RE
 
 
 @dataclass(frozen=True)

@@ -142,7 +142,7 @@ Because first-match-wins makes ordering a footgun, `agentgate policy-validate` (
 
 ## MCP Tools
 
-AgentGate exposes 6 MCP tools. The three that grant or change anything require the agent's registered key; an unknown agent or wrong key gets an audited denial and never reaches a policy match or the operator.
+AgentGate exposes 7 MCP tools. The four that grant or change anything require the agent's registered key; an unknown agent or wrong key gets an audited denial and never reaches a policy match or the operator.
 
 1. **`credential_request(agent, agent_key, credential)`** — Request a stored credential. Returns `{granted: bool, value: str, reason: str}`; `value` is `null` when denied. Note: the granted value **is** the raw credential — treat the response as secret.
 
@@ -155,6 +155,8 @@ AgentGate exposes 6 MCP tools. The three that grant or change anything require t
 5. **`policy_add(agent, agent_key, policy)`** — Propose a new policy. **Always escalates to the CLI operator, regardless of mode**, and the operator sees the full policy body — not just its name. An approved policy is inserted **above a trailing catch-all default-deny but never ahead of existing specific policies**, so a proposed policy cannot steal precedence. Every outcome (escalated/approved/denied/expired) is audited.
 
 6. **`broker_status()`** — Current broker status. Returns `{mode: str, policies: int, requests: int, escalated: int, uptime_seconds: int}`.
+
+7. **`db_credential_request(agent, agent_key, resource)`** — Request an ephemeral, scoped PostgreSQL credential for a named database resource (see [PostgreSQL Infra Broker](#postgresql-infra-broker)). Returns `{granted: bool, host: str, port: int, dbname: str, username: str, password: str, expires_at: str, reason: str}`; all fields but `granted`/`reason` are `null` when denied. Note: the granted `password` **is** a real, working database credential (short-lived, TTL-limited) — treat it as secret. Governed by policy/escalation/audit exactly like `credential_request` (the resource name occupies the credential slot).
 
 ## Approval Modes
 
@@ -228,6 +230,60 @@ token_request(agent="claude-code", agent_key="<key>", connection="work")
 
 The refresh token, client secret, and authorization code are **never** returned to an agent and **never** written to the audit log — only the access token's expiry and granted scopes are recorded.
 
+## PostgreSQL Infra Broker
+
+Beyond static API keys and OAuth tokens, AgentGate can broker **live database access**: an agent asks for a named resource and receives a brand-new, short-lived PostgreSQL role scoped to exactly the grants you registered — never a standing credential, never the admin connection itself.
+
+### The model
+
+- Each registered resource (`agentgate db-add`) carries its own encrypted admin DSN and a list of grants (`VERB:schema.table`, e.g. `SELECT:public.events`).
+- On `db_credential_request`, the broker creates a **fresh, randomly-named role** (`agentgate_<hex>`) with a random password, applies exactly the registered grants to it, and hands the credential to the agent. Nothing is reused across requests — every grant is a brand-new role minted for that request and torn down after its TTL.
+- The agent never sees the admin credential, and the minted role can only do what the resource's grants say (verbs are allowlisted to `SELECT`/`INSERT`/`UPDATE`/`DELETE`; object identifiers are validated against a safe-identifier pattern at `db-add` time, not request time).
+
+### One-time operator setup
+
+AgentGate needs a dedicated PostgreSQL role that can create and grant — but should not be a superuser:
+
+```sql
+CREATE ROLE agentgate_admin WITH LOGIN CREATEROLE PASSWORD '...';
+
+-- Grant it only what it may delegate, WITH GRANT OPTION so it can pass
+-- the privilege on to the ephemeral roles it mints:
+GRANT SELECT ON public.events TO agentgate_admin WITH GRANT OPTION;
+```
+
+`agentgate_admin` should **not** be granted superuser or any privilege you don't want an agent to eventually receive — it can only delegate privileges it already holds `WITH GRANT OPTION`.
+
+### Registering a resource
+
+```bash
+agentgate db-add analytics-ro --host db.internal --port 5432 --dbname analytics \
+  --admin-user agentgate_admin --grant "SELECT:public.events"
+```
+
+The admin password is read from `AGENTGATE_DB_ADMIN_PASSWORD`, interactive `getpass`, or piped stdin — never a command-line argument — and stored encrypted alongside the resource. `--grant` is repeatable for multiple verb/object pairs. `agentgate db-list` shows registered resources (host/port/dbname/grants, never the admin password); `agentgate db-remove <name>` deletes one. Both `db-add` and `db-remove` are recorded as operator actions in the audit log.
+
+### Agent usage
+
+An agent requests a credential over MCP:
+
+```
+db_credential_request(agent="claude-code", agent_key="<key>", resource="analytics-ro")
+  -> {granted: true, host: "db.internal", port: 5432, dbname: "analytics",
+      username: "agentgate_3fa9...", password: "...", expires_at: "2026-07-02T10:15:00+00:00",
+      reason: "auto-approved by policy 'analytics-read'"}
+```
+
+Access is governed by the same agent authentication, YAML policy, AUTO/MANUAL mode, escalation, and audit pipeline as `credential_request` — only `username` and the granted verbs/objects are audited, never the password.
+
+### TTL and reaping
+
+Every minted role is created with `VALID UNTIL` set to the request time plus `DB_CRED_TTL_MINUTES` (default 15). Expiry **blocks new logins** — it does not terminate sessions already open at expiry time, which end naturally when the agent disconnects. A background reaper sweeps every `DB_REAP_INTERVAL_SECONDS` (default 30), finds roles in the `agentgate_` namespace whose `VALID UNTIL` has passed, and drops them; a role still holding an open session is retried on the next sweep rather than forcibly disconnected.
+
+### Residual risk
+
+AgentGate itself holds a `CREATEROLE` credential and authors every grant it delegates — a compromise of the AgentGate host (its master password plus the encrypted resource store) is equivalent to compromising that admin role's delegable privileges, not just one resource. Scope `agentgate_admin`'s own grants as tightly as you would any credential AgentGate is trusted to hand out.
+
 ## Audit Log
 
 All decisions are logged to `logs/audit.log`, one JSON object per line (append-only; the file is written owner-only). Each entry includes:
@@ -274,6 +330,9 @@ All runtime state is stored in environment-configured mounted volumes:
 - `CREDENTIALS_PATH` → `data/credentials.json` (encrypted credentials)
 - `CONNECTIONS_PATH` → `data/connections.json` (encrypted OAuth connections)
 - `AGENTS_PATH` → `data/agents.json` (encrypted agent-key digests)
+- `DB_RESOURCES_PATH` → `data/db_resources.json` (encrypted PostgreSQL resource definitions)
+- `DB_CRED_TTL_MINUTES` → lifetime (in minutes) of a minted ephemeral database role (default `15`)
+- `DB_REAP_INTERVAL_SECONDS` → how often the background reaper sweeps for and drops expired database roles (default `30`)
 
 In ECS, mount these as external volumes and inject the paths via environment variables. Note: AgentGate is currently a **single-instance** design — the approval queue, OAuth token cache, and request counters live in process memory, so horizontal scaling requires the V2 shared-state work (DynamoDB/S3).
 

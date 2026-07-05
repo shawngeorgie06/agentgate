@@ -190,6 +190,9 @@ def run(
                 getpass.getpass(f"admin password for '{args.name}': ")
                 if sys.stdin.isatty() else sys.stdin.readline().rstrip("\n")
             )
+        if not admin_password:
+            print("admin password must not be empty", file=sys.stderr)
+            return 2
         try:
             grants = [_parse_grant(g) for g in args.grants]
         except GrantError as exc:

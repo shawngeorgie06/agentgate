@@ -264,6 +264,16 @@ class Broker:
                 conn = self.connections.get(connection)
             except KeyError:
                 conn = None
+            except Exception:
+                # A store/decryption failure must fail closed WITH an audit row and the
+                # standard deny shape — never a raw exception (no audit, wrong shape).
+                # Reason stays generic so no store internals leak to the agent.
+                self.audit.log(
+                    agent=agent, credential_requested=connection, policy_matched=policy_name,
+                    decision="denied", mode=mode, token_expiry=None,
+                )
+                return {"granted": False, "access_token": None, "token_expiry": None,
+                        "scopes": None, "reason": f"could not access connection '{connection}'"}
         if conn is None:
             self.audit.log(
                 agent=agent, credential_requested=connection, policy_matched=policy_name,
@@ -382,6 +392,15 @@ class Broker:
                 res = self.db_resources.get(resource)
             except KeyError:
                 res = None
+            except Exception:
+                # A store/decryption failure must fail closed WITH an audit row and the
+                # standard deny shape — never a raw exception (no audit, wrong shape).
+                # Reason stays generic so no store internals leak to the agent.
+                self.audit.log(
+                    agent=agent, credential_requested=resource, policy_matched=policy_name,
+                    decision="denied", mode=mode, token_expiry=None,
+                )
+                return self._db_deny(f"could not access database resource '{resource}'")
         if res is None or self.db_executor is None:
             self.audit.log(
                 agent=agent, credential_requested=resource, policy_matched=policy_name,

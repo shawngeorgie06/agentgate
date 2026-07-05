@@ -49,8 +49,10 @@ def build_mint_statements(
     # text directly. They are ALL broker-generated; asserting the safe charsets
     # guarantees no quote/backslash can appear, so the literal/identifier
     # quoting below cannot be broken out of. No agent-supplied value is used.
-    assert _ROLE_RE.match(role), "generated role name failed safe-charset check"
-    assert _PW_RE.match(password), "generated password failed safe-charset check"
+    if not _ROLE_RE.fullmatch(role):
+        raise ValueError("refusing to build DDL for a non-conforming role name")
+    if not _PW_RE.fullmatch(password):
+        raise ValueError("refusing to build DDL for a non-conforming password")
     create = SqlStatement(
         f'CREATE ROLE "{role}" LOGIN PASSWORD \'{password}\' VALID UNTIL \'{expires_at}\''
     )

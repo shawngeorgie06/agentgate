@@ -1,7 +1,14 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Protocol
+
+# Mirrors broker.db_broker._ROLE_RE. Not imported from there to avoid a
+# circular import (db_broker imports from this module); role names dropped
+# here must independently be re-validated at this sink regardless of what
+# the caller already checked.
+_ROLE_RE = re.compile(r"agentgate_[0-9a-f]+")
 
 
 @dataclass(frozen=True)
@@ -10,9 +17,13 @@ class AdminDsn:
     port: int
     dbname: str
     user: str
-    password: str
+    # Suppressed from repr so a stray log/print of an AdminDsn (or a dataclass
+    # containing one) never leaks the admin password in cleartext.
+    password: str = field(repr=False)
 
 
+# SqlStatement.sql may contain a cleartext one-time password (e.g. the minted
+# CREATE ROLE ... PASSWORD '...' statement) — never log or print it.
 @dataclass(frozen=True)
 class SqlStatement:
     sql: str
@@ -60,6 +71,10 @@ class AsyncpgExecutor:
             await conn.close()
 
     async def drop_role(self, dsn: AdminDsn, role: str) -> None:
+        # Self-guard at the SQL sink: never trust the caller. Must precede the
+        # connection attempt so a bad role name never even reaches the DB.
+        if not _ROLE_RE.fullmatch(role):
+            raise ValueError("refusing to drop a non-conforming role name")
         conn = await self._connect(dsn)
         try:
             await conn.execute(f'DROP ROLE IF EXISTS "{role}"')

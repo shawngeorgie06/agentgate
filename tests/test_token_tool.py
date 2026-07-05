@@ -11,6 +11,7 @@ from broker.audit import AuditLogger
 from broker.config import Config
 from broker.connection_store import Connection, ConnectionStore
 from broker.credential_store import CredentialStore
+from broker.crypto import CryptoDecryptionError
 from broker.mcp_server import Broker, build_mcp
 from broker.policy_engine import PolicyEngine
 
@@ -62,3 +63,47 @@ async def test_token_request_tool_registered_and_grants(tmp_path, monkeypatch):
             "agent": "claude-code", "agent_key": key, "connection": "work"})
         assert res.data["granted"] is True
         assert res.data["access_token"] == "AT-tool"
+
+
+class _CorruptConnectionStore:
+    """Stands in for a ConnectionStore whose backing file is tampered/corrupt:
+    .get() raises broker.crypto.CryptoDecryptionError (NOT KeyError)."""
+
+    def get(self, name):
+        raise CryptoDecryptionError("SENSITIVE_DECRYPT_FAILURE_DETAIL")
+
+
+async def test_token_request_decryption_failure_fails_closed(tmp_path):
+    pol = tmp_path / "policies.yaml"
+    pol.write_text(textwrap.dedent("""
+        policies:
+          - name: cc-work
+            agent: claude-code
+            credential: work
+            auto_approve: true
+    """))
+    cfg = Config.from_env({
+        "POLICIES_PATH": str(pol), "STATE_PATH": str(tmp_path / "mode.json"),
+        "LOGS_PATH": str(tmp_path / "audit.log"),
+        "CREDENTIALS_PATH": str(tmp_path / "creds.json"),
+        "AGENTS_PATH": str(tmp_path / "agents.json"),
+        "AGENTGATE_MASTER_PASSWORD": "pw",
+    })
+    from broker.agent_store import AgentStore
+    agents = AgentStore(cfg.agents_path, "pw")
+    key = agents.register("claude-code")
+    broker = Broker(
+        config=cfg, store=CredentialStore(cfg.credentials_path, "pw"),
+        engine=PolicyEngine.from_file(cfg.policies_path),
+        audit=AuditLogger(cfg.logs_path), approvals=ApprovalQueue(),
+        connections=_CorruptConnectionStore(), agents=agents,
+    )
+    res = await broker.request_token("claude-code", key, "work")
+    assert res["granted"] is False
+    assert res["access_token"] is None
+    assert res["token_expiry"] is None
+    assert res["scopes"] is None
+    assert "SENSITIVE_DECRYPT_FAILURE_DETAIL" not in res["reason"]
+    log = (tmp_path / "audit.log").read_text()
+    assert '"decision": "denied"' in log
+    assert "SENSITIVE_DECRYPT_FAILURE_DETAIL" not in log

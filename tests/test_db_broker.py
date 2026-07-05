@@ -6,7 +6,7 @@ import re
 import pytest
 
 from broker import db_broker
-from broker.db_executor import AdminDsn, SqlStatement
+from broker.db_executor import AdminDsn, AsyncpgExecutor, SqlStatement
 from broker.db_resource_store import DbResource
 
 
@@ -53,10 +53,40 @@ def test_build_mint_statements_shape():
 
 
 def test_build_mint_statements_rejects_unsafe_generated_values():
-    with pytest.raises(AssertionError):
+    # Real raises (not `assert`, which is stripped under python -O) using
+    # fullmatch (not `.match()` with a `$`-anchored pattern, which allows a
+    # trailing newline).
+    with pytest.raises(ValueError):
         db_broker.build_mint_statements("not_prefixed", "pw", _res(), "2026-07-02T10:15:00+00:00")
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError):
         db_broker.build_mint_statements("agentgate_ab12", "pw'; DROP", _res(), "2026-07-02T10:15:00+00:00")
+    with pytest.raises(ValueError):
+        # Trailing newline would slip past a `$`-anchored `.match()` but not `fullmatch()`.
+        db_broker.build_mint_statements(
+            "agentgate_ab12\n", "PW-safe_123", _res(), "2026-07-02T10:15:00+00:00")
+    with pytest.raises(ValueError):
+        db_broker.build_mint_statements(
+            "agentgate_ab12", "bad pw with space", _res(), "2026-07-02T10:15:00+00:00")
+    # Happy path still builds.
+    stmts = db_broker.build_mint_statements(
+        "agentgate_ab12", "PW-safe_123", _res(), "2026-07-02T10:15:00+00:00")
+    assert len(stmts) >= 1
+
+
+async def test_drop_role_revalidates_role_name_at_the_sink():
+    # The guard must precede any connection attempt, so this must raise
+    # without needing a live DB (no asyncpg connect is ever attempted).
+    dsn = AdminDsn(host="h", port=5432, dbname="d", user="u", password="pw")
+    executor = AsyncpgExecutor()
+    with pytest.raises(ValueError):
+        await executor.drop_role(dsn, "postgres")
+    with pytest.raises(ValueError):
+        await executor.drop_role(dsn, 'evil"; DROP')
+
+
+def test_admin_dsn_repr_never_contains_the_password():
+    dsn = AdminDsn(host="h", port=5432, dbname="d", user="u", password="SECRET")
+    assert "SECRET" not in repr(dsn)
 
 
 async def test_mint_runs_statements_and_returns_cred():

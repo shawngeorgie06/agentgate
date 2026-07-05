@@ -108,7 +108,15 @@ async def _reaper_loop(broker: Broker) -> None:
                 resource = broker.db_resources.get(name)
                 for role in await db_broker.reap(broker.db_executor, resource):
                     broker.audit.log_operator(action="db-reap", subject=role)
-            except Exception:
+            except Exception as exc:
+                # Non-sensitive diagnostic only: resource name + exception TYPE.
+                # Never str(exc) (an asyncpg error could embed a DSN/password)
+                # and never the resource's admin password.
+                print(
+                    f"[AgentGate] reaper: skipping resource {name!r} "
+                    f"({type(exc).__name__})",
+                    file=sys.stderr,
+                )
                 continue
 
 

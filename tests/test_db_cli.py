@@ -1,6 +1,7 @@
 # tests/test_db_cli.py
 from __future__ import annotations
 
+import io
 import textwrap
 
 from broker.config import Config
@@ -64,3 +65,21 @@ def test_db_add_rejects_bad_grant(tmp_path, monkeypatch):
     ], config=cfg, master_password="pw")
     assert rc == 2
     assert DbResourceStore(cfg.db_resources_path, "pw").list_names() == []
+
+
+def test_db_add_rejects_empty_admin_password(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.delenv("AGENTGATE_DB_ADMIN_PASSWORD", raising=False)
+    empty_stdin = io.StringIO("")
+    monkeypatch.setattr(empty_stdin, "isatty", lambda: False)
+    monkeypatch.setattr("sys.stdin", empty_stdin)
+    rc = commands.run([
+        "db-add", "analytics-ro", "--host", "db", "--port", "5432",
+        "--dbname", "analytics", "--admin-user", "agentgate_admin",
+        "--grant", "SELECT:public.events",
+    ], config=cfg, master_password="pw")
+    assert rc == 2
+    assert DbResourceStore(cfg.db_resources_path, "pw").list_names() == []
+    log_path = tmp_path / "audit.log"
+    log = log_path.read_text() if log_path.exists() else ""
+    assert '"action": "db-add"' not in log

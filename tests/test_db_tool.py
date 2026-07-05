@@ -12,6 +12,7 @@ from broker.approval import ApprovalQueue
 from broker.audit import AuditLogger
 from broker.config import Config
 from broker.credential_store import CredentialStore
+from broker.crypto import CryptoDecryptionError
 from broker.db_resource_store import DbResource, DbResourceStore
 from broker.mcp_server import Broker, build_mcp
 from broker.policy_engine import PolicyEngine
@@ -114,6 +115,31 @@ async def test_db_credential_request_mint_failure_fails_closed(tmp_path):
     assert "admin connection refused" not in res["reason"]  # generic reason only
     log = (tp / "audit.log").read_text()
     assert '"decision": "denied"' in log
+
+
+class _CorruptResourceStore:
+    """Stands in for a DbResourceStore whose backing file is tampered/corrupt:
+    .get() raises broker.crypto.CryptoDecryptionError (NOT KeyError)."""
+
+    def get(self, name):
+        raise CryptoDecryptionError("SENSITIVE_DECRYPT_FAILURE_DETAIL")
+
+
+async def test_db_credential_request_decryption_failure_fails_closed(tmp_path):
+    broker, key, cfg, tp = _wire(tmp_path)
+    broker.db_resources = _CorruptResourceStore()
+    res = await broker.request_db_credential("claude-code", key, "analytics-ro")
+    assert res["granted"] is False
+    assert res["host"] is None
+    assert res["port"] is None
+    assert res["dbname"] is None
+    assert res["username"] is None
+    assert res["password"] is None
+    assert res["expires_at"] is None
+    assert "SENSITIVE_DECRYPT_FAILURE_DETAIL" not in res["reason"]
+    log = (tp / "audit.log").read_text()
+    assert '"decision": "denied"' in log
+    assert "SENSITIVE_DECRYPT_FAILURE_DETAIL" not in log
 
 
 async def test_tool_registered_and_spec_compliant(tmp_path):

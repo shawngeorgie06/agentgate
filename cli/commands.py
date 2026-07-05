@@ -16,6 +16,8 @@ from broker.audit import AuditLogger
 from broker.config import Config, ConfigError
 from broker.connection_store import Connection, ConnectionStore
 from broker.credential_store import CredentialStore
+from broker.db_grants import GrantError, validate_grant
+from broker.db_resource_store import DbResource, DbResourceStore
 from broker.policy_engine import PolicyEngine
 
 
@@ -35,6 +37,17 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("connections", help="list connected accounts")
     dc = sub.add_parser("disconnect", help="revoke and remove a connection")
     dc.add_argument("name")
+    da = sub.add_parser("db-add", help="register a PostgreSQL resource")
+    da.add_argument("name")
+    da.add_argument("--host", required=True)
+    da.add_argument("--port", type=int, required=True)
+    da.add_argument("--dbname", required=True)
+    da.add_argument("--admin-user", required=True, dest="admin_user")
+    da.add_argument("--grant", action="append", default=[], dest="grants",
+                    help='repeatable, format "VERB:obj[,obj...]"')
+    sub.add_parser("db-list", help="list registered DB resources (no secrets)")
+    dr = sub.add_parser("db-remove", help="remove a DB resource")
+    dr.add_argument("name")
     aa = sub.add_parser("agent-add", help="register an agent; prints its key once")
     aa.add_argument("name")
     ar = sub.add_parser("agent-remove", help="revoke an agent's registration")
@@ -170,7 +183,53 @@ def run(
             print(name)
         return 0
 
+    if args.command == "db-add":
+        admin_password = os.environ.get("AGENTGATE_DB_ADMIN_PASSWORD")
+        if not admin_password:
+            admin_password = (
+                getpass.getpass(f"admin password for '{args.name}': ")
+                if sys.stdin.isatty() else sys.stdin.readline().rstrip("\n")
+            )
+        try:
+            grants = [_parse_grant(g) for g in args.grants]
+        except GrantError as exc:
+            print(f"invalid grant: {exc}", file=sys.stderr)
+            return 2
+        DbResourceStore(config.db_resources_path, _password(master_password)).store(DbResource(
+            name=args.name, host=args.host, port=args.port, dbname=args.dbname,
+            admin_user=args.admin_user, admin_password=admin_password, grants=grants,
+            created_at=datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+        ))
+        AuditLogger(config.logs_path).log_operator(action="db-add", subject=args.name)
+        print(f"registered db resource '{args.name}'")
+        return 0
+
+    if args.command == "db-list":
+        store = DbResourceStore(config.db_resources_path, _password(master_password))
+        for meta in store.list_metadata():
+            grants = "; ".join(f'{g["verb"]} {",".join(g["objects"])}' for g in meta["grants"])
+            print(f"{meta['name']}  {meta['host']}:{meta['port']}/{meta['dbname']}  [{grants}]")
+        return 0
+
+    if args.command == "db-remove":
+        store = DbResourceStore(config.db_resources_path, _password(master_password))
+        try:
+            store.delete(args.name)
+        except KeyError:
+            print(f"no such db resource '{args.name}'", file=sys.stderr)
+            return 1
+        AuditLogger(config.logs_path).log_operator(action="db-remove", subject=args.name)
+        print(f"removed db resource '{args.name}'")
+        return 0
+
     return 2
+
+
+def _parse_grant(raw: str) -> dict:
+    # "VERB:obj[,obj...]" -> validated {"verb", "objects"}.
+    verb, _, objs = raw.partition(":")
+    objects = [o.strip() for o in objs.split(",") if o.strip()]
+    return validate_grant({"verb": verb.strip(), "objects": objects})
 
 
 def _run_connect(config: Config, master_password: str, provider: str, name: str | None) -> int:

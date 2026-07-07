@@ -142,7 +142,7 @@ Because first-match-wins makes ordering a footgun, `agentgate policy-validate` (
 
 ## MCP Tools
 
-AgentGate exposes 7 MCP tools. The four that grant or change anything require the agent's registered key; an unknown agent or wrong key gets an audited denial and never reaches a policy match or the operator.
+AgentGate exposes 8 MCP tools. The five that grant or change anything require the agent's registered key; an unknown agent or wrong key gets an audited denial and never reaches a policy match or the operator.
 
 1. **`credential_request(agent, agent_key, credential)`** — Request a stored credential. Returns `{granted: bool, value: str, reason: str}`; `value` is `null` when denied. Note: the granted value **is** the raw credential — treat the response as secret.
 
@@ -157,6 +157,8 @@ AgentGate exposes 7 MCP tools. The four that grant or change anything require th
 6. **`broker_status()`** — Current broker status. Returns `{mode: str, policies: int, requests: int, escalated: int, uptime_seconds: int}`.
 
 7. **`db_credential_request(agent, agent_key, resource)`** — Request an ephemeral, scoped PostgreSQL credential for a named database resource (see [PostgreSQL Infra Broker](#postgresql-infra-broker)). Returns `{granted: bool, host: str, port: int, dbname: str, username: str, password: str, expires_at: str, reason: str}`; all fields but `granted`/`reason` are `null` when denied. Note: the granted `password` **is** a real, working database credential (short-lived, TTL-limited) — treat it as secret. Governed by policy/escalation/audit exactly like `credential_request` (the resource name occupies the credential slot).
+
+8. **`ssh_certificate_request(agent, agent_key, resource)`** — Request an ephemeral SSH login certificate for a named server resource (see [SSH Broker](#ssh-broker)). Returns `{granted: bool, host: str, port: int, username: str, private_key: str, certificate: str, expires_at: str, reason: str}`; all fields but `granted`/`reason` are `null` when denied. Note: the granted `private_key` **is** a working (TTL-limited) SSH key — treat the response as secret. Governed by policy/escalation/audit exactly like `credential_request` (the resource name occupies the credential slot).
 
 ## Approval Modes
 
@@ -284,6 +286,64 @@ Every minted role is created with `VALID UNTIL` set to the request time plus `DB
 
 AgentGate itself holds a `CREATEROLE` credential and authors every grant it delegates — a compromise of the AgentGate host (its master password plus the encrypted resource store) is equivalent to compromising that admin role's delegable privileges, not just one resource. Scope `agentgate_admin`'s own grants as tightly as you would any credential AgentGate is trusted to hand out.
 
+## SSH Broker
+
+Beyond static API keys, OAuth tokens, and database roles, AgentGate can broker **live SSH access**: an agent asks for a named server resource and receives a brand-new, short-lived SSH certificate — never a standing key, never a credential that outlives the request by more than a few minutes.
+
+### The model
+
+AgentGate itself acts as an **SSH certificate authority**. Instead of distributing a per-server keypair, it holds one CA keypair that every enrolled server is configured to trust, and it mints a fresh signed certificate for each grant:
+
+- Certificates are **short-lived** — `valid_before` is set to the request time plus `SSH_CERT_TTL_MINUTES` (default 15), and sshd enforces that expiry natively. There is no reaper: an expired certificate simply stops being accepted for new logins.
+- Certificates are **principal-pinned** — each registered resource carries a fixed login principal (`agentgate ssh-add ... --principal`), and every certificate issued for that resource is valid only for that principal, never whatever the agent asks for.
+- Certificates are **`permit-pty`-only** — agent/port/X11 forwarding and user-rc execution are never included as extensions, and this extension set is fixed in code, not configurable per request. A resource can also carry a `force-command`, which sshd runs in place of whatever command the client requests.
+
+### One-time setup
+
+```bash
+agentgate ssh-ca-init   # creates the CA keypair, prints its public key line
+```
+
+Install the printed public key on each server you want to enroll, then trust it in that server's `sshd_config`:
+
+```bash
+# /etc/ssh/agentgate_ca.pub  (paste the public key line printed above)
+# sshd_config:
+TrustedUserCAKeys /etc/ssh/agentgate_ca.pub
+```
+
+Reload sshd (e.g. `systemctl reload sshd`) to pick up the new trust anchor. `agentgate ssh-ca-pub` reprints the CA's public key line at any time, and `ssh-ca-init` refuses to run a second time rather than silently re-keying trust every enrolled server already relies on.
+
+### Registering a server
+
+```bash
+agentgate ssh-add web-1 --host 10.0.0.5 --port 22 --principal deploy \
+  --force-command "systemctl restart myapp"
+```
+
+`--force-command` is optional — omit it to let the certificate's holder run whatever command they pass to `ssh`. `agentgate ssh-list` shows registered resources (host/port/principal/force-command); `agentgate ssh-remove <name>` deletes one. Both are recorded as operator actions in the audit log.
+
+### Agent usage
+
+An agent requests a certificate over MCP, then uses it directly with the system `ssh` client:
+
+```
+ssh_certificate_request(agent="claude-code", agent_key="<key>", resource="web-1")
+  -> {granted: true, host: "10.0.0.5", port: 22, username: "deploy",
+      private_key: "...", certificate: "...", expires_at: "2026-07-06T15:15:00+00:00",
+      reason: "auto-approved by policy 'deploy-web'"}
+```
+
+```bash
+ssh -i agent_key -o CertificateFile=agent_key-cert.pub deploy@10.0.0.5
+```
+
+Every certificate's `key_id` is `agentgate:<agent>:<resource>` (e.g. `agentgate:claude-code:web-1`), which sshd writes to its own logs on each login — so every session traces back to the agent and resource that requested it, independent of AgentGate's own audit log.
+
+### Residual risk
+
+AgentGate holds a CA key that every enrolled server trusts — compromise of that key means access to all enrolled servers as any registered principal, until `TrustedUserCAKeys` is removed from each server's `sshd_config`. There is no pre-expiry revocation (no certificate revocation list/KRL): a certificate issued before compromise is detected remains valid until it naturally expires. The `SSH_CERT_TTL_MINUTES` window is the control — keep it short.
+
 ## Audit Log
 
 All decisions are logged to `logs/audit.log`, one JSON object per line (append-only; the file is written owner-only). Each entry includes:
@@ -333,6 +393,9 @@ All runtime state is stored in environment-configured mounted volumes:
 - `DB_RESOURCES_PATH` → `data/db_resources.json` (encrypted PostgreSQL resource definitions)
 - `DB_CRED_TTL_MINUTES` → lifetime (in minutes) of a minted ephemeral database role (default `15`)
 - `DB_REAP_INTERVAL_SECONDS` → how often the background reaper sweeps for and drops expired database roles (default `30`)
+- `SSH_CA_PATH` → `data/ssh_ca.json` (encrypted SSH certificate authority keypair)
+- `SSH_RESOURCES_PATH` → `data/ssh_resources.json` (encrypted SSH server resource definitions)
+- `SSH_CERT_TTL_MINUTES` → lifetime (in minutes) of an issued SSH certificate (default `15`)
 
 In ECS, mount these as external volumes and inject the paths via environment variables. Note: AgentGate is currently a **single-instance** design — the approval queue, OAuth token cache, and request counters live in process memory, so horizontal scaling requires the V2 shared-state work (DynamoDB/S3).
 

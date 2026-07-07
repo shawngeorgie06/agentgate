@@ -24,6 +24,8 @@ class AgentStore(EncryptedStore):
     _SECTION = "agents"
 
     def register(self, name: str) -> str:
+        if not isinstance(name, str) or not name or not name.isprintable():
+            raise ValueError("agent name must be non-empty printable text")
         entries = self._entries()
         if name in entries:
             raise ValueError(f"agent '{name}' is already registered")

@@ -34,6 +34,19 @@ def test_register_duplicate_raises(tmp_path):
         store.register("claude-code")
 
 
+def test_register_rejects_non_printable_or_empty_name(tmp_path):
+    store = AgentStore(str(tmp_path / "agents.json"), "pw")
+    with pytest.raises(ValueError):
+        store.register("x\ny")
+    with pytest.raises(ValueError):
+        store.register("")
+    assert store.list_names() == []
+    assert store.verify("x\ny", "anything") is False
+    # A normal name still registers fine after the rejected attempts.
+    key = store.register("claude-code")
+    assert store.verify("claude-code", key) is True
+
+
 def test_delete_revokes(tmp_path):
     store = AgentStore(str(tmp_path / "agents.json"), "pw")
     key = store.register("claude-code")

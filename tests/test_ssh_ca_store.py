@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from broker.ssh_ca_store import SshCaExistsError, SshCaStore

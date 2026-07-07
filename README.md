@@ -444,4 +444,4 @@ pip install -e .[dev]
 python -m pytest -v
 ```
 
-Expected: 125 tests covering encryption round-trips, agent authentication, policy evaluation (globs, time windows, hard deny, hot reload, shadowing lint), two-tier approval with flood caps, fail-closed error paths, secret-free audit output, and an end-to-end MCP call over the real HTTP transport including Host-header rejection.
+Expected: 247 passed, 3 skipped (the skips are integration tests gated on AGENTGATE_TEST_PG_DSN / AGENTGATE_TEST_SSH_HOST and a deploy-gated OAuth test), covering encryption round-trips, agent authentication, policy evaluation (globs, time windows, hard deny, hot reload, shadowing lint), two-tier approval with flood caps, fail-closed error paths, secret-free audit output, and an end-to-end MCP call over the real HTTP transport including Host-header rejection.

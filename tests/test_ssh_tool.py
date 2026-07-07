@@ -171,6 +171,23 @@ async def test_resource_store_failure_fails_closed_generic(tmp_path):
     assert "SENSITIVE_STORE_DETAIL" not in log_text
 
 
+async def test_ca_store_failure_fails_closed_generic(tmp_path):
+    broker, key, log = _make_broker(tmp_path, policies=_ALLOW)
+
+    class _Boom:
+        def load_private_pem(self):
+            raise RuntimeError("SENSITIVE_CA_DETAIL")
+
+    broker.ssh_ca = _Boom()
+    result = await broker.request_ssh_certificate("claude-code", key, "web-1")
+    _assert_denied_shape(result)
+    assert "SENSITIVE_CA_DETAIL" not in result["reason"]
+    assert "could not access ssh CA" in result["reason"]
+    log_text = log.read_text()
+    assert '"decision": "denied"' in log_text
+    assert "SENSITIVE_CA_DETAIL" not in log_text
+
+
 async def test_signing_failure_fails_closed_generic(tmp_path, monkeypatch):
     from broker import mcp_server as m
     broker, key, log = _make_broker(tmp_path, policies=_ALLOW)

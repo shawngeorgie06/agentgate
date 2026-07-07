@@ -19,6 +19,9 @@ from broker.credential_store import CredentialStore
 from broker.db_grants import GrantError, validate_grant
 from broker.db_resource_store import DbResource, DbResourceStore
 from broker.policy_engine import PolicyEngine
+from broker.ssh_ca_store import SshCaExistsError, SshCaStore
+from broker.ssh_resource_store import SshResource, SshResourceStore
+from broker.ssh_validation import SshValidationError, validate_force_command, validate_principal
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -48,6 +51,18 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("db-list", help="list registered DB resources (no secrets)")
     dr = sub.add_parser("db-remove", help="remove a DB resource")
     dr.add_argument("name")
+    sub.add_parser("ssh-ca-init", help="create the SSH certificate authority")
+    sub.add_parser("ssh-ca-pub", help="print the CA public key line for sshd_config")
+    sa = sub.add_parser("ssh-add", help="register an SSH server resource")
+    sa.add_argument("name")
+    sa.add_argument("--host", required=True)
+    sa.add_argument("--port", type=int, required=True)
+    sa.add_argument("--principal", required=True, help="login user certificates are pinned to")
+    sa.add_argument("--force-command", default=None, dest="force_command",
+                    help="restrict certificates to this single command")
+    sub.add_parser("ssh-list", help="list registered SSH resources")
+    sr = sub.add_parser("ssh-remove", help="remove an SSH resource")
+    sr.add_argument("name")
     aa = sub.add_parser("agent-add", help="register an agent; prints its key once")
     aa.add_argument("name")
     ar = sub.add_parser("agent-remove", help="revoke an agent's registration")
@@ -223,6 +238,70 @@ def run(
             return 1
         AuditLogger(config.logs_path).log_operator(action="db-remove", subject=args.name)
         print(f"removed db resource '{args.name}'")
+        return 0
+
+    if args.command == "ssh-ca-init":
+        store = SshCaStore(config.ssh_ca_path, _password(master_password))
+        try:
+            pub = store.initialize()
+        except SshCaExistsError:
+            print("ssh CA already initialized (refusing to overwrite: every "
+                  "enrolled server trusts the existing key)", file=sys.stderr)
+            return 1
+        AuditLogger(config.logs_path).log_operator(action="ssh-ca-init", subject="ssh-ca")
+        print("SSH CA created. Enroll each server by installing this public key,")
+        print("then add to /etc/ssh/sshd_config:  TrustedUserCAKeys /etc/ssh/agentgate_ca.pub")
+        print(pub)
+        return 0
+
+    if args.command == "ssh-ca-pub":
+        store = SshCaStore(config.ssh_ca_path, _password(master_password))
+        try:
+            print(store.public_line())
+        except KeyError:
+            print("ssh CA not initialized (run ssh-ca-init first)", file=sys.stderr)
+            return 1
+        return 0
+
+    if args.command == "ssh-add":
+        try:
+            principal = validate_principal(args.principal)
+            force_command = (
+                validate_force_command(args.force_command)
+                if args.force_command is not None else None
+            )
+        except SshValidationError as exc:
+            print(f"invalid ssh resource: {exc}", file=sys.stderr)
+            return 2
+        SshResourceStore(config.ssh_resources_path, _password(master_password)).store(
+            SshResource(
+                name=args.name, host=args.host, port=args.port, principal=principal,
+                force_command=force_command,
+                created_at=datetime.datetime.now(datetime.timezone.utc).isoformat(
+                    timespec="seconds"
+                ),
+            )
+        )
+        AuditLogger(config.logs_path).log_operator(action="ssh-add", subject=args.name)
+        print(f"registered ssh resource '{args.name}'")
+        return 0
+
+    if args.command == "ssh-list":
+        store = SshResourceStore(config.ssh_resources_path, _password(master_password))
+        for meta in store.list_metadata():
+            forced = f"  [force-command: {meta['force_command']}]" if meta["force_command"] else ""
+            print(f"{meta['name']}  {meta['principal']}@{meta['host']}:{meta['port']}{forced}")
+        return 0
+
+    if args.command == "ssh-remove":
+        store = SshResourceStore(config.ssh_resources_path, _password(master_password))
+        try:
+            store.delete(args.name)
+        except KeyError:
+            print(f"no such ssh resource '{args.name}'", file=sys.stderr)
+            return 1
+        AuditLogger(config.logs_path).log_operator(action="ssh-remove", subject=args.name)
+        print(f"removed ssh resource '{args.name}'")
         return 0
 
     return 2

@@ -13,6 +13,7 @@ _DEFAULTS = {
     "ESCALATION_MAX_PENDING": "3",
     "DB_CRED_TTL_MINUTES": "15",
     "DB_REAP_INTERVAL_SECONDS": "30",
+    "SSH_CERT_TTL_MINUTES": "15",
 }
 
 
@@ -30,6 +31,8 @@ def _default_paths(env: Mapping[str, str]) -> dict[str, str]:
         "CONNECTIONS_PATH": os.path.join(base, "connections.json"),
         "AGENTS_PATH": os.path.join(base, "agents.json"),
         "DB_RESOURCES_PATH": os.path.join(base, "db_resources.json"),
+        "SSH_CA_PATH": os.path.join(base, "ssh_ca.json"),
+        "SSH_RESOURCES_PATH": os.path.join(base, "ssh_resources.json"),
     }
 
 
@@ -79,6 +82,9 @@ class Config:
     db_resources_path: str = os.path.join("data", "db_resources.json")
     db_cred_ttl_minutes: int = 15
     db_reap_interval_seconds: int = 30
+    ssh_ca_path: str = os.path.join("data", "ssh_ca.json")
+    ssh_resources_path: str = os.path.join("data", "ssh_resources.json")
+    ssh_cert_ttl_minutes: int = 15
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Config":
@@ -112,5 +118,12 @@ class Config:
             db_cred_ttl_minutes=_require_int(get("DB_CRED_TTL_MINUTES"), "DB_CRED_TTL_MINUTES", minimum=1),
             db_reap_interval_seconds=_require_int(
                 get("DB_REAP_INTERVAL_SECONDS"), "DB_REAP_INTERVAL_SECONDS", minimum=1
+            ),
+            ssh_ca_path=_require_non_empty(get("SSH_CA_PATH"), "SSH_CA_PATH"),
+            ssh_resources_path=_require_non_empty(
+                get("SSH_RESOURCES_PATH"), "SSH_RESOURCES_PATH"
+            ),
+            ssh_cert_ttl_minutes=_require_int(
+                get("SSH_CERT_TTL_MINUTES"), "SSH_CERT_TTL_MINUTES", minimum=1
             ),
         )

@@ -123,3 +123,26 @@ def test_db_resources_path_follows_agentgate_home():
     import os
     cfg = Config.from_env({"AGENTGATE_HOME": os.path.join("srv", "ag")})
     assert cfg.db_resources_path == os.path.join("srv", "ag", "db_resources.json")
+
+
+def test_ssh_defaults():
+    cfg = Config.from_env({})
+    assert cfg.ssh_ca_path.endswith("ssh_ca.json")
+    assert cfg.ssh_resources_path.endswith("ssh_resources.json")
+    assert cfg.ssh_cert_ttl_minutes == 15
+
+
+def test_ssh_cert_ttl_must_be_positive():
+    import pytest
+    from broker.config import ConfigError
+    with pytest.raises(ConfigError):
+        Config.from_env({"SSH_CERT_TTL_MINUTES": "0"})
+    with pytest.raises(ConfigError):
+        Config.from_env({"SSH_CERT_TTL_MINUTES": "soon"})
+
+
+def test_ssh_paths_follow_agentgate_home():
+    import os
+    cfg = Config.from_env({"AGENTGATE_HOME": os.path.join("srv", "ag")})
+    assert cfg.ssh_ca_path == os.path.join("srv", "ag", "ssh_ca.json")
+    assert cfg.ssh_resources_path == os.path.join("srv", "ag", "ssh_resources.json")

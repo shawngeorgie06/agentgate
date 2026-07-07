@@ -111,3 +111,27 @@ def test_log_omits_username_grants_when_absent(tmp_path):
     )
     entry = json.loads(path.read_text().strip())
     assert "username" not in entry and "grants" not in entry
+
+
+def test_log_accepts_key_id(tmp_path):
+    import json
+    from broker.audit import AuditLogger
+    path = tmp_path / "audit.log"
+    AuditLogger(str(path)).log(
+        agent="claude-code", credential_requested="web-1", policy_matched="p",
+        decision="approved", mode="auto", token_expiry="2026-07-05T10:15:00+00:00",
+        username="deploy", key_id="agentgate:claude-code:web-1",
+    )
+    entry = json.loads(path.read_text().strip())
+    assert entry["key_id"] == "agentgate:claude-code:web-1"
+
+
+def test_log_omits_key_id_when_absent(tmp_path):
+    import json
+    from broker.audit import AuditLogger
+    path = tmp_path / "audit.log"
+    AuditLogger(str(path)).log(
+        agent="a", credential_requested="k", policy_matched="p",
+        decision="denied", mode="auto", token_expiry=None,
+    )
+    assert "key_id" not in json.loads(path.read_text().strip())

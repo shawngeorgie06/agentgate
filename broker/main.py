@@ -16,6 +16,8 @@ from broker.credential_store import CredentialStore
 from broker.db_executor import AsyncpgExecutor
 from broker.db_resource_store import DbResourceStore
 from broker.mcp_server import Broker, build_mcp
+from broker.ssh_ca_store import SshCaStore
+from broker.ssh_resource_store import SshResourceStore
 
 
 def resolve_master_password(config: Config) -> str:
@@ -56,6 +58,8 @@ def build_broker(config: Config, master_password: str) -> Broker:
         agents=AgentStore(config.agents_path, master_password),
         db_resources=DbResourceStore(config.db_resources_path, master_password),
         db_executor=AsyncpgExecutor(),
+        ssh_resources=SshResourceStore(config.ssh_resources_path, master_password),
+        ssh_ca=SshCaStore(config.ssh_ca_path, master_password),
     )
 
 

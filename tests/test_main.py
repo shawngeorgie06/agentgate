@@ -180,3 +180,23 @@ async def test_reaper_loop_logs_non_sensitive_line_and_continues_on_failure(
     assert "RuntimeError" in err
     assert "super-secret-admin-pw" not in err
     assert "connection refused" not in err
+
+
+def test_build_broker_wires_ssh_stores(tmp_path):
+    from broker import main as m
+    cfg = Config.from_env({
+        "POLICIES_PATH": str(tmp_path / "p.yaml"),
+        "STATE_PATH": str(tmp_path / "mode.json"),
+        "LOGS_PATH": str(tmp_path / "audit.log"),
+        "CREDENTIALS_PATH": str(tmp_path / "creds.json"),
+        "AGENTS_PATH": str(tmp_path / "agents.json"),
+        "DB_RESOURCES_PATH": str(tmp_path / "db.json"),
+        "SSH_CA_PATH": str(tmp_path / "ssh_ca.json"),
+        "SSH_RESOURCES_PATH": str(tmp_path / "ssh.json"),
+    })
+    (tmp_path / "p.yaml").write_text(
+        'policies:\n  - name: d\n    agent: "*"\n    credential: "*"\n'
+        "    auto_approve: false\n    escalate: true\n")
+    broker = m.build_broker(cfg, "pw")
+    assert broker.ssh_resources is not None
+    assert broker.ssh_ca is not None

@@ -24,6 +24,7 @@ class AuditLogger:
         scopes: list[str] | None = None,
         username: str | None = None,
         grants: list[str] | None = None,
+        key_id: str | None = None,
     ) -> None:
         if decision not in _VALID_DECISIONS:
             raise ValueError(f"decision must be one of {_VALID_DECISIONS}, got {decision!r}")
@@ -42,6 +43,8 @@ class AuditLogger:
             entry["username"] = username
         if grants is not None:
             entry["grants"] = list(grants)
+        if key_id is not None:
+            entry["key_id"] = key_id
         self._append(entry)
 
     def log_operator(self, *, action: str, subject: str) -> None:

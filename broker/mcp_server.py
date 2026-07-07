@@ -9,7 +9,7 @@ import sys
 import yaml
 from fastmcp import FastMCP
 
-from broker import db_broker, oauth, state
+from broker import db_broker, oauth, ssh_ca, state
 from broker.agent_store import AgentStore
 from broker.approval import ApprovalQueue
 from broker.audit import AuditLogger
@@ -19,6 +19,8 @@ from broker.credential_store import CredentialDecryptionError, CredentialStore
 from broker.db_executor import DbExecutor
 from broker.db_resource_store import DbResourceStore
 from broker.policy_engine import PolicyEngine, PolicyError
+from broker.ssh_ca_store import SshCaStore
+from broker.ssh_resource_store import SshResourceStore
 
 
 class Broker:
@@ -34,6 +36,8 @@ class Broker:
         agents: AgentStore | None = None,
         db_resources: DbResourceStore | None = None,
         db_executor: DbExecutor | None = None,
+        ssh_resources: SshResourceStore | None = None,
+        ssh_ca: SshCaStore | None = None,
     ) -> None:
         self.config = config
         self.store = store
@@ -44,6 +48,8 @@ class Broker:
         self.agents = agents
         self.db_resources = db_resources
         self.db_executor = db_executor
+        self.ssh_resources = ssh_resources
+        self.ssh_ca = ssh_ca
         self._token_cache: dict[str, dict] = {}
         self._policies_mtime = self._policies_file_mtime()
         self.total_requests = 0
@@ -459,6 +465,127 @@ class Broker:
         )
         return self._db_deny("denied by operator")
 
+    @staticmethod
+    def _ssh_deny(reason: str) -> dict:
+        return {
+            "granted": False, "host": None, "port": None, "username": None,
+            "private_key": None, "certificate": None, "expires_at": None,
+            "reason": reason,
+        }
+
+    async def request_ssh_certificate(self, agent: str, agent_key: str, resource: str) -> dict:
+        self.total_requests += 1
+        mode = state.read_mode(self.config.state_path)
+
+        if not self._authenticate(agent, agent_key, resource, mode):
+            return self._ssh_deny("unknown agent or invalid agent key")
+
+        if mode == "manual":
+            return await self._escalate_ssh(agent, resource, mode, "manual-mode")
+
+        decision = self._current_engine().evaluate(agent, resource)
+        if decision.auto_approve:
+            return await self._grant_ssh(agent, resource, mode, decision.policy_name)
+        if not decision.escalate:
+            self.audit.log(
+                agent=agent, credential_requested=resource,
+                policy_matched=decision.policy_name, decision="denied",
+                mode=mode, token_expiry=None,
+            )
+            return self._ssh_deny(f"denied by policy '{decision.policy_name}'")
+        return await self._escalate_ssh(agent, resource, mode, decision.policy_name)
+
+    async def _grant_ssh(self, agent: str, resource: str, mode: str, policy_name: str) -> dict:
+        if self.ssh_resources is None:
+            res = None
+        else:
+            try:
+                res = self.ssh_resources.get(resource)
+            except KeyError:
+                res = None
+            except Exception:
+                # A store failure must fail closed WITH an audit row and the
+                # standard deny shape; reason stays generic (no internals leak).
+                self.audit.log(
+                    agent=agent, credential_requested=resource, policy_matched=policy_name,
+                    decision="denied", mode=mode, token_expiry=None,
+                )
+                return self._ssh_deny(f"could not access ssh resource '{resource}'")
+        if res is None or self.ssh_ca is None:
+            self.audit.log(
+                agent=agent, credential_requested=resource, policy_matched=policy_name,
+                decision="denied", mode=mode, token_expiry=None,
+            )
+            return self._ssh_deny(f"unknown ssh resource '{resource}'")
+
+        try:
+            ca_pem = self.ssh_ca.load_private_pem()
+        except KeyError:
+            self.audit.log(
+                agent=agent, credential_requested=resource, policy_matched=policy_name,
+                decision="denied", mode=mode, token_expiry=None,
+            )
+            return self._ssh_deny("ssh CA not initialized")
+        except Exception:
+            self.audit.log(
+                agent=agent, credential_requested=resource, policy_matched=policy_name,
+                decision="denied", mode=mode, token_expiry=None,
+            )
+            return self._ssh_deny("could not access ssh CA")
+
+        key_id = f"agentgate:{agent}:{resource}"
+        try:
+            cred = ssh_ca.issue_certificate(
+                ca_pem, key_id=key_id, principal=res.principal,
+                ttl_minutes=self.config.ssh_cert_ttl_minutes,
+                force_command=res.force_command,
+            )
+        except Exception:
+            # Fail closed: never leak crypto/validation internals; always audit.
+            self.audit.log(
+                agent=agent, credential_requested=resource, policy_matched=policy_name,
+                decision="denied", mode=mode, token_expiry=None,
+            )
+            return self._ssh_deny(f"could not issue certificate for '{resource}'")
+
+        self.audit.log(
+            agent=agent, credential_requested=resource, policy_matched=policy_name,
+            decision="approved", mode=mode, token_expiry=cred.expires_at,
+            username=res.principal, key_id=key_id,
+        )
+        return {
+            "granted": True, "host": res.host, "port": res.port,
+            "username": res.principal, "private_key": cred.private_key,
+            "certificate": cred.certificate, "expires_at": cred.expires_at,
+            "reason": f"auto-approved by policy '{policy_name}'",
+        }
+
+    async def _escalate_ssh(self, agent: str, resource: str, mode: str, policy_name: str) -> dict:
+        if self._flooded(agent, resource, mode, policy_name):
+            return self._ssh_deny("too many requests pending operator approval")
+        self.escalated_requests += 1
+        self.audit.log(
+            agent=agent, credential_requested=resource, policy_matched=policy_name,
+            decision="escalated", mode=mode, token_expiry=None,
+        )
+        try:
+            approved = await self.approvals.submit(
+                agent, resource, timeout=self.config.escalation_timeout_seconds or None
+            )
+        except asyncio.TimeoutError:
+            self.audit.log(
+                agent=agent, credential_requested=resource, policy_matched=policy_name,
+                decision="expired", mode=mode, token_expiry=None,
+            )
+            return self._ssh_deny("escalation timed out")
+        if approved:
+            return await self._grant_ssh(agent, resource, mode, f"manual:{policy_name}")
+        self.audit.log(
+            agent=agent, credential_requested=resource, policy_matched=policy_name,
+            decision="denied", mode=mode, token_expiry=None,
+        )
+        return self._ssh_deny("denied by operator")
+
     def list_policies(self) -> list[dict]:
         return self._current_engine().list_policies()
 
@@ -579,5 +706,9 @@ def build_mcp(broker: Broker) -> FastMCP:
     @mcp.tool(name="db_credential_request")
     async def db_credential_request(agent: str, agent_key: str, resource: str) -> dict:
         return await broker.request_db_credential(agent, agent_key, resource)
+
+    @mcp.tool(name="ssh_certificate_request")
+    async def ssh_certificate_request(agent: str, agent_key: str, resource: str) -> dict:
+        return await broker.request_ssh_certificate(agent, agent_key, resource)
 
     return mcp

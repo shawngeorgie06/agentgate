@@ -22,6 +22,14 @@ from broker.policy_engine import PolicyEngine
 from broker.ssh_ca_store import SshCaExistsError, SshCaStore
 from broker.ssh_resource_store import SshResource, SshResourceStore
 from broker.ssh_validation import SshValidationError, validate_force_command, validate_principal
+from broker.aws_key_store import AwsKeyStore
+from broker.aws_resource_store import AwsResource, AwsResourceStore
+from broker.aws_validation import (
+    AwsValidationError,
+    validate_external_id,
+    validate_region,
+    validate_role_arn,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -63,6 +71,16 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("ssh-list", help="list registered SSH resources")
     sr = sub.add_parser("ssh-remove", help="remove an SSH resource")
     sr.add_argument("name")
+    ak = sub.add_parser("aws-key-set", help="store the broker's IAM access key (secret not via argv)")
+    ak.add_argument("access_key_id")
+    aws_add = sub.add_parser("aws-add", help="register an AWS role resource")
+    aws_add.add_argument("name")
+    aws_add.add_argument("--role-arn", required=True, dest="role_arn")
+    aws_add.add_argument("--region", required=True)
+    aws_add.add_argument("--external-id", default=None, dest="external_id")
+    sub.add_parser("aws-list", help="list registered AWS resources")
+    aws_remove = sub.add_parser("aws-remove", help="remove an AWS resource")
+    aws_remove.add_argument("name")
     aa = sub.add_parser("agent-add", help="register an agent; prints its key once")
     aa.add_argument("name")
     ar = sub.add_parser("agent-remove", help="revoke an agent's registration")
@@ -302,6 +320,67 @@ def run(
             return 1
         AuditLogger(config.logs_path).log_operator(action="ssh-remove", subject=args.name)
         print(f"removed ssh resource '{args.name}'")
+        return 0
+
+    if args.command == "aws-key-set":
+        secret = os.environ.get("AGENTGATE_AWS_SECRET_KEY")
+        if not secret:
+            secret = (
+                getpass.getpass("AWS secret access key: ")
+                if sys.stdin.isatty() else sys.stdin.readline().rstrip("\n")
+            )
+        if not secret:
+            print("AWS secret access key must not be empty", file=sys.stderr)
+            return 2
+        AwsKeyStore(config.aws_key_path, _password(master_password)).set(
+            args.access_key_id, secret
+        )
+        AuditLogger(config.logs_path).log_operator(
+            action="aws-key-set", subject="aws-broker-key"
+        )
+        print("stored aws broker key")
+        return 0
+
+    if args.command == "aws-add":
+        try:
+            role_arn = validate_role_arn(args.role_arn)
+            region = validate_region(args.region)
+            external_id = (
+                validate_external_id(args.external_id)
+                if args.external_id is not None else None
+            )
+        except AwsValidationError as exc:
+            print(f"invalid aws resource: {exc}", file=sys.stderr)
+            return 2
+        AwsResourceStore(config.aws_resources_path, _password(master_password)).store(
+            AwsResource(
+                name=args.name, role_arn=role_arn, region=region,
+                external_id=external_id,
+                created_at=datetime.datetime.now(datetime.timezone.utc).isoformat(
+                    timespec="seconds"
+                ),
+            )
+        )
+        AuditLogger(config.logs_path).log_operator(action="aws-add", subject=args.name)
+        print(f"registered aws resource '{args.name}'")
+        return 0
+
+    if args.command == "aws-list":
+        store = AwsResourceStore(config.aws_resources_path, _password(master_password))
+        for meta in store.list_metadata():
+            ext = f"  external-id: {meta['external_id']}" if meta["external_id"] else ""
+            print(f"{meta['name']}  {meta['role_arn']}  ({meta['region']}){ext}")
+        return 0
+
+    if args.command == "aws-remove":
+        store = AwsResourceStore(config.aws_resources_path, _password(master_password))
+        try:
+            store.delete(args.name)
+        except KeyError:
+            print(f"no such aws resource '{args.name}'", file=sys.stderr)
+            return 1
+        AuditLogger(config.logs_path).log_operator(action="aws-remove", subject=args.name)
+        print(f"removed aws resource '{args.name}'")
         return 0
 
     return 2

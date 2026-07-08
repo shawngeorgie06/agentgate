@@ -15,6 +15,9 @@ from broker.connection_store import ConnectionStore
 from broker.credential_store import CredentialStore
 from broker.db_executor import AsyncpgExecutor
 from broker.db_resource_store import DbResourceStore
+from broker.aws_executor import Boto3StsExecutor
+from broker.aws_key_store import AwsKeyStore
+from broker.aws_resource_store import AwsResourceStore
 from broker.mcp_server import Broker, build_mcp
 from broker.ssh_ca_store import SshCaStore
 from broker.ssh_resource_store import SshResourceStore
@@ -60,6 +63,9 @@ def build_broker(config: Config, master_password: str) -> Broker:
         db_executor=AsyncpgExecutor(),
         ssh_resources=SshResourceStore(config.ssh_resources_path, master_password),
         ssh_ca=SshCaStore(config.ssh_ca_path, master_password),
+        aws_resources=AwsResourceStore(config.aws_resources_path, master_password),
+        aws_key=AwsKeyStore(config.aws_key_path, master_password),
+        aws_executor=Boto3StsExecutor(),
     )
 
 

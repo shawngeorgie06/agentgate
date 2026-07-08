@@ -146,3 +146,26 @@ def test_ssh_paths_follow_agentgate_home():
     cfg = Config.from_env({"AGENTGATE_HOME": os.path.join("srv", "ag")})
     assert cfg.ssh_ca_path == os.path.join("srv", "ag", "ssh_ca.json")
     assert cfg.ssh_resources_path == os.path.join("srv", "ag", "ssh_resources.json")
+
+
+def test_aws_defaults():
+    cfg = Config.from_env({})
+    assert cfg.aws_key_path.endswith("aws_key.json")
+    assert cfg.aws_resources_path.endswith("aws_resources.json")
+    assert cfg.aws_cred_ttl_minutes == 15
+
+
+def test_aws_cred_ttl_floor_is_15():
+    import pytest
+    from broker.config import ConfigError
+    with pytest.raises(ConfigError):
+        Config.from_env({"AWS_CRED_TTL_MINUTES": "14"})
+    assert Config.from_env({"AWS_CRED_TTL_MINUTES": "15"}).aws_cred_ttl_minutes == 15
+    assert Config.from_env({"AWS_CRED_TTL_MINUTES": "60"}).aws_cred_ttl_minutes == 60
+
+
+def test_aws_paths_follow_agentgate_home():
+    import os
+    cfg = Config.from_env({"AGENTGATE_HOME": os.path.join("srv", "ag")})
+    assert cfg.aws_key_path == os.path.join("srv", "ag", "aws_key.json")
+    assert cfg.aws_resources_path == os.path.join("srv", "ag", "aws_resources.json")

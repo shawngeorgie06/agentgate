@@ -9,10 +9,13 @@ import sys
 import yaml
 from fastmcp import FastMCP
 
-from broker import db_broker, oauth, ssh_ca, state
+from broker import aws_broker, db_broker, oauth, ssh_ca, state
 from broker.agent_store import AgentStore
 from broker.approval import ApprovalQueue
 from broker.audit import AuditLogger
+from broker.aws_executor import StsExecutor
+from broker.aws_key_store import AwsKeyStore
+from broker.aws_resource_store import AwsResourceStore
 from broker.config import Config
 from broker.connection_store import ConnectionStore
 from broker.credential_store import CredentialDecryptionError, CredentialStore
@@ -38,6 +41,9 @@ class Broker:
         db_executor: DbExecutor | None = None,
         ssh_resources: SshResourceStore | None = None,
         ssh_ca: SshCaStore | None = None,
+        aws_resources: AwsResourceStore | None = None,
+        aws_key: AwsKeyStore | None = None,
+        aws_executor: StsExecutor | None = None,
     ) -> None:
         self.config = config
         self.store = store
@@ -50,6 +56,9 @@ class Broker:
         self.db_executor = db_executor
         self.ssh_resources = ssh_resources
         self.ssh_ca = ssh_ca
+        self.aws_resources = aws_resources
+        self.aws_key = aws_key
+        self.aws_executor = aws_executor
         self._token_cache: dict[str, dict] = {}
         self._policies_mtime = self._policies_file_mtime()
         self.total_requests = 0
@@ -586,6 +595,126 @@ class Broker:
         )
         return self._ssh_deny("denied by operator")
 
+    @staticmethod
+    def _aws_deny(reason: str) -> dict:
+        return {
+            "granted": False, "access_key_id": None, "secret_access_key": None,
+            "session_token": None, "expiration": None, "region": None,
+            "reason": reason,
+        }
+
+    async def request_aws_credentials(self, agent: str, agent_key: str, resource: str) -> dict:
+        self.total_requests += 1
+        mode = state.read_mode(self.config.state_path)
+
+        if not self._authenticate(agent, agent_key, resource, mode):
+            return self._aws_deny("unknown agent or invalid agent key")
+
+        if mode == "manual":
+            return await self._escalate_aws(agent, resource, mode, "manual-mode")
+
+        decision = self._current_engine().evaluate(agent, resource)
+        if decision.auto_approve:
+            return await self._grant_aws(agent, resource, mode, decision.policy_name)
+        if not decision.escalate:
+            self.audit.log(
+                agent=agent, credential_requested=resource,
+                policy_matched=decision.policy_name, decision="denied",
+                mode=mode, token_expiry=None,
+            )
+            return self._aws_deny(f"denied by policy '{decision.policy_name}'")
+        return await self._escalate_aws(agent, resource, mode, decision.policy_name)
+
+    async def _grant_aws(self, agent: str, resource: str, mode: str, policy_name: str) -> dict:
+        if self.aws_resources is None:
+            res = None
+        else:
+            try:
+                res = self.aws_resources.get(resource)
+            except KeyError:
+                res = None
+            except Exception:
+                self.audit.log(
+                    agent=agent, credential_requested=resource, policy_matched=policy_name,
+                    decision="denied", mode=mode, token_expiry=None,
+                )
+                return self._aws_deny(f"could not access aws resource '{resource}'")
+        if res is None or self.aws_key is None or self.aws_executor is None:
+            self.audit.log(
+                agent=agent, credential_requested=resource, policy_matched=policy_name,
+                decision="denied", mode=mode, token_expiry=None,
+            )
+            return self._aws_deny(f"unknown aws resource '{resource}'")
+
+        try:
+            key = self.aws_key.load()
+        except KeyError:
+            self.audit.log(
+                agent=agent, credential_requested=resource, policy_matched=policy_name,
+                decision="denied", mode=mode, token_expiry=None,
+            )
+            return self._aws_deny("aws broker key not set")
+        except Exception:
+            self.audit.log(
+                agent=agent, credential_requested=resource, policy_matched=policy_name,
+                decision="denied", mode=mode, token_expiry=None,
+            )
+            return self._aws_deny("could not access aws broker key")
+
+        try:
+            session_name = aws_broker.build_session_name(agent, resource)
+            cred = await aws_broker.assume_role(
+                self.aws_executor, key, res,
+                self.config.aws_cred_ttl_minutes, session_name,
+            )
+        except Exception:
+            # Fail closed: never leak the boto3/validation error (which can embed
+            # ARNs/request IDs); always audit.
+            self.audit.log(
+                agent=agent, credential_requested=resource, policy_matched=policy_name,
+                decision="denied", mode=mode, token_expiry=None,
+            )
+            return self._aws_deny(f"could not assume role for '{resource}'")
+
+        self.audit.log(
+            agent=agent, credential_requested=resource, policy_matched=policy_name,
+            decision="approved", mode=mode, token_expiry=cred.expiration,
+            role_arn=res.role_arn,
+        )
+        return {
+            "granted": True, "access_key_id": cred.access_key_id,
+            "secret_access_key": cred.secret_access_key,
+            "session_token": cred.session_token, "expiration": cred.expiration,
+            "region": cred.region,
+            "reason": f"auto-approved by policy '{policy_name}'",
+        }
+
+    async def _escalate_aws(self, agent: str, resource: str, mode: str, policy_name: str) -> dict:
+        if self._flooded(agent, resource, mode, policy_name):
+            return self._aws_deny("too many requests pending operator approval")
+        self.escalated_requests += 1
+        self.audit.log(
+            agent=agent, credential_requested=resource, policy_matched=policy_name,
+            decision="escalated", mode=mode, token_expiry=None,
+        )
+        try:
+            approved = await self.approvals.submit(
+                agent, resource, timeout=self.config.escalation_timeout_seconds or None
+            )
+        except asyncio.TimeoutError:
+            self.audit.log(
+                agent=agent, credential_requested=resource, policy_matched=policy_name,
+                decision="expired", mode=mode, token_expiry=None,
+            )
+            return self._aws_deny("escalation timed out")
+        if approved:
+            return await self._grant_aws(agent, resource, mode, f"manual:{policy_name}")
+        self.audit.log(
+            agent=agent, credential_requested=resource, policy_matched=policy_name,
+            decision="denied", mode=mode, token_expiry=None,
+        )
+        return self._aws_deny("denied by operator")
+
     def list_policies(self) -> list[dict]:
         return self._current_engine().list_policies()
 
@@ -710,5 +839,9 @@ def build_mcp(broker: Broker) -> FastMCP:
     @mcp.tool(name="ssh_certificate_request")
     async def ssh_certificate_request(agent: str, agent_key: str, resource: str) -> dict:
         return await broker.request_ssh_certificate(agent, agent_key, resource)
+
+    @mcp.tool(name="aws_credential_request")
+    async def aws_credential_request(agent: str, agent_key: str, resource: str) -> dict:
+        return await broker.request_aws_credentials(agent, agent_key, resource)
 
     return mcp

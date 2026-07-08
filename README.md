@@ -142,7 +142,7 @@ Because first-match-wins makes ordering a footgun, `agentgate policy-validate` (
 
 ## MCP Tools
 
-AgentGate exposes 8 MCP tools. The five that grant or change anything require the agent's registered key; an unknown agent or wrong key gets an audited denial and never reaches a policy match or the operator.
+AgentGate exposes 9 MCP tools. The six that grant or change anything require the agent's registered key; an unknown agent or wrong key gets an audited denial and never reaches a policy match or the operator.
 
 1. **`credential_request(agent, agent_key, credential)`** — Request a stored credential. Returns `{granted: bool, value: str, reason: str}`; `value` is `null` when denied. Note: the granted value **is** the raw credential — treat the response as secret.
 
@@ -159,6 +159,8 @@ AgentGate exposes 8 MCP tools. The five that grant or change anything require th
 7. **`db_credential_request(agent, agent_key, resource)`** — Request an ephemeral, scoped PostgreSQL credential for a named database resource (see [PostgreSQL Infra Broker](#postgresql-infra-broker)). Returns `{granted: bool, host: str, port: int, dbname: str, username: str, password: str, expires_at: str, reason: str}`; all fields but `granted`/`reason` are `null` when denied. Note: the granted `password` **is** a real, working database credential (short-lived, TTL-limited) — treat it as secret. Governed by policy/escalation/audit exactly like `credential_request` (the resource name occupies the credential slot).
 
 8. **`ssh_certificate_request(agent, agent_key, resource)`** — Request an ephemeral SSH login certificate for a named server resource (see [SSH Broker](#ssh-broker)). Returns `{granted: bool, host: str, port: int, username: str, private_key: str, certificate: str, expires_at: str, reason: str}`; all fields but `granted`/`reason` are `null` when denied. Note: the granted `private_key` **is** a working (TTL-limited) SSH key — treat the response as secret. Governed by policy/escalation/audit exactly like `credential_request` (the resource name occupies the credential slot).
+
+9. **`aws_credential_request(agent, agent_key, resource)`** — Request short-lived AWS credentials for a named role resource (see [AWS Broker](#aws-broker)). Returns `{granted: bool, access_key_id: str, secret_access_key: str, session_token: str, expiration: str, region: str, reason: str}`; all credential fields are `null` when denied. Note: the granted keys **are** working (TTL-limited) AWS credentials — treat the response as secret. Governed by policy/escalation/audit exactly like `credential_request` (the resource name occupies the credential slot).
 
 ## Approval Modes
 
@@ -344,6 +346,67 @@ Every certificate's `key_id` is `agentgate:<agent>:<resource>` (e.g. `agentgate:
 
 AgentGate holds a CA key that every enrolled server trusts — compromise of that key means access to all enrolled servers as any registered principal, until `TrustedUserCAKeys` is removed from each server's `sshd_config`. There is no pre-expiry revocation (no certificate revocation list/KRL): a certificate issued before compromise is detected remains valid until it naturally expires. The `SSH_CERT_TTL_MINUTES` window is the control — keep it short.
 
+## AWS Broker
+
+Beyond static API keys, OAuth tokens, database roles, and SSH certificates, AgentGate can broker **live AWS access**: an agent asks for a named role resource and receives temporary STS credentials via `AssumeRole` — never a standing access key, never credentials that outlive the request by more than a few minutes.
+
+### The model
+
+AgentGate holds one dedicated IAM user's access key (encrypted at rest) whose IAM policy allows **only** `sts:AssumeRole` on the registered role ARNs. On each grant it calls STS with `RoleSessionName=agentgate-<agent>-<resource>` and returns the temporary keypair + session token:
+
+- Credentials are **short-lived** — `DurationSeconds` is set to `AWS_CRED_TTL_MINUTES × 60` (default 15, STS floor 900 seconds). AWS enforces expiry natively. There is no reaper.
+- Credentials are **role-scoped** — each registered resource carries a fixed IAM role ARN and region; the agent supplies only the resource name (a dict key). An optional `ExternalId` is forwarded when configured.
+- Every assumption is **CloudTrail-visible** — the session name embeds the agent and resource, so AWS-side logs trace back independently of AgentGate's audit log.
+
+### One-time setup
+
+Create scoped IAM roles for each workload (S3 reader, Lambda invoker, etc.), then create a dedicated broker IAM user whose **only** policy is `sts:AssumeRole` on those role ARNs:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": "sts:AssumeRole",
+    "Resource": ["arn:aws:iam::123456789012:role/agent-s3-reader"]
+  }]
+}
+```
+
+Store the broker user's access key in AgentGate (secret never via argv):
+
+```bash
+AGENTGATE_AWS_SECRET_KEY=... agentgate aws-key-set AKIA_BROKER_ID
+```
+
+### Registering a role
+
+```bash
+agentgate aws-add s3-reader \
+  --role-arn arn:aws:iam::123456789012:role/agent-s3-reader \
+  --region us-east-1 \
+  --external-id my-external-id   # optional
+```
+
+`--external-id` is optional — omit it when the target role's trust policy does not require one. `agentgate aws-list` shows registered resources (role ARN, region, external-id metadata only — no secrets); `agentgate aws-remove <name>` deletes one. Both are recorded as operator actions in the audit log.
+
+### Agent usage
+
+An agent requests credentials over MCP, then uses them with any AWS SDK or CLI:
+
+```
+aws_credential_request(agent="claude-code", agent_key="<key>", resource="s3-reader")
+  -> {granted: true, access_key_id: "ASIA...", secret_access_key: "...",
+      session_token: "...", expiration: "2026-07-06T15:15:00+00:00",
+      region: "us-east-1", reason: "auto-approved by policy 'cc-aws'"}
+```
+
+The `RoleSessionName` is `agentgate-<agent>-<resource>`, truncated to 64 characters if needed (STS charset `[\w+=,.@-]`). If the agent name contains characters outside that charset, the request is denied.
+
+### Residual risk
+
+AgentGate holds an IAM access key that can assume every registered role — compromise of the AgentGate host (master password plus encrypted stores) is equivalent to compromising that broker user's `AssumeRole` privileges on all registered roles, not just one resource. Mitigations: scope the broker user's IAM policy to `sts:AssumeRole` on only those specific role ARNs, keep the key encrypted at rest, and rely on CloudTrail session-name attribution. There is no pre-expiry revocation of issued STS credentials (AWS provides none short of revoking the role's sessions) — the `AWS_CRED_TTL_MINUTES` window is the control; keep it short.
+
 ## Audit Log
 
 All decisions are logged to `logs/audit.log`, one JSON object per line (append-only; the file is written owner-only). Each entry includes:
@@ -396,6 +459,9 @@ All runtime state is stored in environment-configured mounted volumes:
 - `SSH_CA_PATH` → `data/ssh_ca.json` (encrypted SSH certificate authority keypair)
 - `SSH_RESOURCES_PATH` → `data/ssh_resources.json` (encrypted SSH server resource definitions)
 - `SSH_CERT_TTL_MINUTES` → lifetime (in minutes) of an issued SSH certificate (default `15`)
+- `AWS_KEY_PATH` → `data/aws_key.json` (encrypted broker IAM access key)
+- `AWS_RESOURCES_PATH` → `data/aws_resources.json` (registered AWS role resource definitions)
+- `AWS_CRED_TTL_MINUTES` → lifetime (in minutes) of issued STS credentials (default `15`, STS floor 15)
 
 In ECS, mount these as external volumes and inject the paths via environment variables. Note: AgentGate is currently a **single-instance** design — the approval queue, OAuth token cache, and request counters live in process memory, so horizontal scaling requires the V2 shared-state work (DynamoDB/S3).
 

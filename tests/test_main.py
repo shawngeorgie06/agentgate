@@ -200,3 +200,23 @@ def test_build_broker_wires_ssh_stores(tmp_path):
     broker = m.build_broker(cfg, "pw")
     assert broker.ssh_resources is not None
     assert broker.ssh_ca is not None
+
+
+def test_build_broker_wires_aws(tmp_path):
+    from broker import main as m
+    cfg = Config.from_env({
+        "POLICIES_PATH": str(tmp_path / "p.yaml"),
+        "STATE_PATH": str(tmp_path / "mode.json"),
+        "LOGS_PATH": str(tmp_path / "audit.log"),
+        "CREDENTIALS_PATH": str(tmp_path / "creds.json"),
+        "AGENTS_PATH": str(tmp_path / "agents.json"),
+        "AWS_KEY_PATH": str(tmp_path / "aws_key.json"),
+        "AWS_RESOURCES_PATH": str(tmp_path / "aws.json"),
+    })
+    (tmp_path / "p.yaml").write_text(
+        'policies:\n  - name: d\n    agent: "*"\n    credential: "*"\n'
+        "    auto_approve: false\n    escalate: true\n")
+    broker = m.build_broker(cfg, "pw")
+    assert broker.aws_resources is not None
+    assert broker.aws_key is not None
+    assert broker.aws_executor is not None

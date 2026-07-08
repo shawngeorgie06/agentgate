@@ -135,3 +135,27 @@ def test_log_omits_key_id_when_absent(tmp_path):
         decision="denied", mode="auto", token_expiry=None,
     )
     assert "key_id" not in json.loads(path.read_text().strip())
+
+
+def test_log_accepts_role_arn(tmp_path):
+    import json
+    from broker.audit import AuditLogger
+    path = tmp_path / "audit.log"
+    AuditLogger(str(path)).log(
+        agent="claude-code", credential_requested="s3-reader", policy_matched="p",
+        decision="approved", mode="auto", token_expiry="2026-07-06T10:15:00+00:00",
+        role_arn="arn:aws:iam::123456789012:role/agent-s3-reader",
+    )
+    entry = json.loads(path.read_text().strip())
+    assert entry["role_arn"] == "arn:aws:iam::123456789012:role/agent-s3-reader"
+
+
+def test_log_omits_role_arn_when_absent(tmp_path):
+    import json
+    from broker.audit import AuditLogger
+    path = tmp_path / "audit.log"
+    AuditLogger(str(path)).log(
+        agent="a", credential_requested="k", policy_matched="p",
+        decision="denied", mode="auto", token_expiry=None,
+    )
+    assert "role_arn" not in json.loads(path.read_text().strip())

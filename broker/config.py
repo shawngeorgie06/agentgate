@@ -14,6 +14,7 @@ _DEFAULTS = {
     "DB_CRED_TTL_MINUTES": "15",
     "DB_REAP_INTERVAL_SECONDS": "30",
     "SSH_CERT_TTL_MINUTES": "15",
+    "AWS_CRED_TTL_MINUTES": "15",
 }
 
 
@@ -33,6 +34,8 @@ def _default_paths(env: Mapping[str, str]) -> dict[str, str]:
         "DB_RESOURCES_PATH": os.path.join(base, "db_resources.json"),
         "SSH_CA_PATH": os.path.join(base, "ssh_ca.json"),
         "SSH_RESOURCES_PATH": os.path.join(base, "ssh_resources.json"),
+        "AWS_KEY_PATH": os.path.join(base, "aws_key.json"),
+        "AWS_RESOURCES_PATH": os.path.join(base, "aws_resources.json"),
     }
 
 
@@ -85,6 +88,9 @@ class Config:
     ssh_ca_path: str = os.path.join("data", "ssh_ca.json")
     ssh_resources_path: str = os.path.join("data", "ssh_resources.json")
     ssh_cert_ttl_minutes: int = 15
+    aws_key_path: str = os.path.join("data", "aws_key.json")
+    aws_resources_path: str = os.path.join("data", "aws_resources.json")
+    aws_cred_ttl_minutes: int = 15
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Config":
@@ -125,5 +131,12 @@ class Config:
             ),
             ssh_cert_ttl_minutes=_require_int(
                 get("SSH_CERT_TTL_MINUTES"), "SSH_CERT_TTL_MINUTES", minimum=1
+            ),
+            aws_key_path=_require_non_empty(get("AWS_KEY_PATH"), "AWS_KEY_PATH"),
+            aws_resources_path=_require_non_empty(
+                get("AWS_RESOURCES_PATH"), "AWS_RESOURCES_PATH"
+            ),
+            aws_cred_ttl_minutes=_require_int(
+                get("AWS_CRED_TTL_MINUTES"), "AWS_CRED_TTL_MINUTES", minimum=15
             ),
         )

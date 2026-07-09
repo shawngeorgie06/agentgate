@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 
 from broker import crypto
@@ -16,9 +17,11 @@ class SshRevocationStore(EncryptedStore):
     _SECTION = "ssh_revocations"
 
     def _entry_id(self, key_id: str) -> str:
-        # Derive a fixed-length ID from the key_id for storage indexing.
-        # This hides the actual key_id in the JSON file.
-        return hashlib.sha256(key_id.encode()).hexdigest()
+        # Keyed (HMAC) index, NOT a bare hash: the key_id format is public and
+        # low-entropy, so an unkeyed hash would let a password-less reader of
+        # the file test membership by hashing candidate names. HMAC with the
+        # store's derived key makes membership-testing require the master key.
+        return hmac.new(self._key, key_id.encode(), hashlib.sha256).hexdigest()
 
     def revoke(self, *, key_id: str, agent: str, resource: str,
                revoked_at: str, reason: str | None = None) -> None:

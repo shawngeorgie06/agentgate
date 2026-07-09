@@ -57,3 +57,12 @@ def test_revoked_key_id_not_plaintext_on_disk(tmp_path):
                             revoked_at="2026-07-08T00:00:00+00:00")
     raw = (tmp_path / "revocations.json").read_text()
     assert kid not in raw  # encrypted at rest
+
+
+def test_entry_index_is_key_dependent(tmp_path):
+    # Same key_id under two different master passwords must not collide to the
+    # same on-disk index -> a password-less reader can't test membership.
+    kid = ssh_key_id("claude-code", "web-1")
+    a = SshRevocationStore(str(tmp_path / "a.json"), "pw-a")
+    b = SshRevocationStore(str(tmp_path / "b.json"), "pw-b")
+    assert a._entry_id(kid) != b._entry_id(kid)

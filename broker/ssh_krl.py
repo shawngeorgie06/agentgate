@@ -61,8 +61,16 @@ class SshKeygenKrlWriter:
 def _write_temp(directory: str, text: str) -> str:
     fd, path = tempfile.mkstemp(dir=directory)
     try:
-        os.chmod(path, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            # fchmod on the open fd: the descriptor is now owned by the
+            # context manager, so no fd can leak if permission-setting raises,
+            # and mkstemp already created the file 0600 on POSIX anyway.
+            try:
+                os.fchmod(fh.fileno(), 0o600)
+            except (AttributeError, OSError):
+                # os.fchmod is unavailable on Windows; mkstemp's file is
+                # already owner-only there, so this is a safe no-op fallback.
+                pass
             fh.write(text)
     except Exception:
         os.remove(path)

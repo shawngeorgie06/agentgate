@@ -24,6 +24,8 @@ from broker.db_resource_store import DbResourceStore
 from broker.policy_engine import PolicyEngine, PolicyError
 from broker.ssh_ca_store import SshCaStore
 from broker.ssh_resource_store import SshResourceStore
+from broker.ssh_revocation_store import SshRevocationStore
+from broker.ssh_validation import ssh_key_id
 
 
 class Broker:
@@ -41,6 +43,7 @@ class Broker:
         db_executor: DbExecutor | None = None,
         ssh_resources: SshResourceStore | None = None,
         ssh_ca: SshCaStore | None = None,
+        ssh_revocations: SshRevocationStore | None = None,
         aws_resources: AwsResourceStore | None = None,
         aws_key: AwsKeyStore | None = None,
         aws_executor: StsExecutor | None = None,
@@ -56,6 +59,7 @@ class Broker:
         self.db_executor = db_executor
         self.ssh_resources = ssh_resources
         self.ssh_ca = ssh_ca
+        self.ssh_revocations = ssh_revocations
         self.aws_resources = aws_resources
         self.aws_key = aws_key
         self.aws_executor = aws_executor
@@ -542,7 +546,27 @@ class Broker:
             )
             return self._ssh_deny("could not access ssh CA")
 
-        key_id = f"agentgate:{agent}:{resource}"
+        key_id = ssh_key_id(agent, resource)
+        try:
+            revoked = (
+                self.ssh_revocations is not None
+                and self.ssh_revocations.is_revoked(key_id)
+            )
+        except Exception:
+            # Cannot determine revocation status -> fail closed (deny), audit,
+            # leak nothing about the store internals.
+            self.audit.log(
+                agent=agent, credential_requested=resource, policy_matched=policy_name,
+                decision="denied", mode=mode, token_expiry=None,
+            )
+            return self._ssh_deny("could not check revocation status")
+        if revoked:
+            self.audit.log(
+                agent=agent, credential_requested=resource, policy_matched=policy_name,
+                decision="denied", mode=mode, token_expiry=None,
+            )
+            return self._ssh_deny("credential revoked")
+
         try:
             cred = ssh_ca.issue_certificate(
                 ca_pem, key_id=key_id, principal=res.principal,

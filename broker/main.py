@@ -21,6 +21,7 @@ from broker.aws_resource_store import AwsResourceStore
 from broker.mcp_server import Broker, build_mcp
 from broker.ssh_ca_store import SshCaStore
 from broker.ssh_resource_store import SshResourceStore
+from broker.ssh_revocation_store import SshRevocationStore
 
 
 def resolve_master_password(config: Config) -> str:
@@ -63,6 +64,7 @@ def build_broker(config: Config, master_password: str) -> Broker:
         db_executor=AsyncpgExecutor(),
         ssh_resources=SshResourceStore(config.ssh_resources_path, master_password),
         ssh_ca=SshCaStore(config.ssh_ca_path, master_password),
+        ssh_revocations=SshRevocationStore(config.ssh_revocations_path, master_password),
         aws_resources=AwsResourceStore(config.aws_resources_path, master_password),
         aws_key=AwsKeyStore(config.aws_key_path, master_password),
         aws_executor=Boto3StsExecutor(),

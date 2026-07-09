@@ -15,6 +15,7 @@ from broker.mcp_server import Broker, build_mcp
 from broker.policy_engine import PolicyEngine
 from broker.ssh_ca_store import SshCaStore
 from broker.ssh_resource_store import SshResource, SshResourceStore
+from broker.ssh_revocation_store import SshRevocationStore
 
 _NULL_FIELDS = ("host", "port", "username", "private_key", "certificate", "expires_at")
 
@@ -25,7 +26,7 @@ def _write_policies(tmp_path, body):
     return str(p)
 
 
-def _make_broker(tmp_path, *, policies, with_ssh=True, ca_initialized=True):
+def _make_broker(tmp_path, *, policies, with_ssh=True, ca_initialized=True, revoke=None):
     cfg = Config.from_env({
         "POLICIES_PATH": _write_policies(tmp_path, policies),
         "STATE_PATH": str(tmp_path / "mode.json"),
@@ -34,6 +35,7 @@ def _make_broker(tmp_path, *, policies, with_ssh=True, ca_initialized=True):
         "AGENTS_PATH": str(tmp_path / "agents.json"),
         "SSH_CA_PATH": str(tmp_path / "ssh_ca.json"),
         "SSH_RESOURCES_PATH": str(tmp_path / "ssh.json"),
+        "SSH_REVOCATIONS_PATH": str(tmp_path / "revocations.json"),
     })
     agents = AgentStore(cfg.agents_path, "pw")
     agent_key = agents.register("claude-code")
@@ -48,6 +50,15 @@ def _make_broker(tmp_path, *, policies, with_ssh=True, ca_initialized=True):
         ssh_ca = SshCaStore(cfg.ssh_ca_path, "pw")
         if ca_initialized:
             ssh_ca.initialize()
+    revocations = SshRevocationStore(cfg.ssh_revocations_path, "pw")
+    if revoke:
+        agent_name, resource_name = revoke
+        from broker.ssh_validation import ssh_key_id
+        revocations.revoke(
+            key_id=ssh_key_id(agent_name, resource_name),
+            agent=agent_name, resource=resource_name,
+            revoked_at="2026-07-08T00:00:00+00:00",
+        )
     broker = Broker(
         config=cfg,
         store=CredentialStore(cfg.credentials_path, "pw"),
@@ -57,6 +68,7 @@ def _make_broker(tmp_path, *, policies, with_ssh=True, ca_initialized=True):
         agents=agents,
         ssh_resources=ssh_resources,
         ssh_ca=ssh_ca,
+        ssh_revocations=revocations,
     )
     return broker, agent_key, tmp_path / "audit.log"
 
@@ -104,6 +116,38 @@ async def test_grant_returns_key_cert_and_audits_without_private_key(tmp_path):
     assert "PRIVATE KEY" not in log_text
     body = result["private_key"].strip().splitlines()[1]  # a base64 line of the key
     assert body not in log_text
+
+
+async def test_revoked_key_id_denied_and_never_signs(tmp_path):
+    broker, key, log = _make_broker(tmp_path, policies=_ALLOW, revoke=("claude-code", "web-1"))
+    result = await broker.request_ssh_certificate("claude-code", key, "web-1")
+    _assert_denied_shape(result)
+    assert result["reason"] == "credential revoked"
+    entry = json.loads(log.read_text().strip().splitlines()[-1])
+    assert entry["decision"] == "denied"
+
+
+async def test_non_revoked_pairing_still_grants(tmp_path):
+    # Revoking a DIFFERENT resource must not block web-1.
+    broker, key, _log = _make_broker(tmp_path, policies=_ALLOW, revoke=("claude-code", "other"))
+    result = await broker.request_ssh_certificate("claude-code", key, "web-1")
+    assert result["granted"] is True
+
+
+async def test_revocation_store_failure_fails_closed(tmp_path):
+    broker, key, log = _make_broker(tmp_path, policies=_ALLOW)
+
+    class _Boom:
+        def is_revoked(self, key_id):
+            raise RuntimeError("REVOCATION_STORE_DETAIL")
+
+    broker.ssh_revocations = _Boom()
+    result = await broker.request_ssh_certificate("claude-code", key, "web-1")
+    _assert_denied_shape(result)
+    assert "REVOCATION_STORE_DETAIL" not in result["reason"]
+    log_text = log.read_text()
+    assert '"decision": "denied"' in log_text
+    assert "REVOCATION_STORE_DETAIL" not in log_text
 
 
 async def test_unknown_agent_denied_and_never_escalates(tmp_path):

@@ -43,3 +43,11 @@ def validate_key_id(raw: object) -> str:
     if not isinstance(raw, str) or not raw or not raw.isprintable():
         raise SshValidationError("key_id must be non-empty printable text")
     return raw
+
+
+def ssh_key_id(agent: str, resource: str) -> str:
+    # The ONE place the certificate key_id is composed. Both the signing sink
+    # (broker/mcp_server.py) and revocation (store + CLI) call this so a
+    # revoked key_id is byte-identical to the issued one — if they drifted,
+    # revocation would silently fail to match. (The role_naming.py lesson.)
+    return f"agentgate:{agent}:{resource}"

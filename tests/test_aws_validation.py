@@ -71,5 +71,29 @@ def test_invalid_external_ids_raise(bad):
         validate_external_id(bad)
 
 
+@pytest.mark.parametrize("bad", [
+    "arn:aws:iam::123456789012:role/rôle",      # Unicode letter in role name
+    "агентgate-claude-code",                      # Cyrillic in session name (\w Unicode)
+    "外部id-string",                               # CJK in external id
+])
+def test_non_ascii_word_chars_are_rejected(bad):
+    # \w / \d must be ASCII-only (re.ASCII): AWS charsets never contain Unicode
+    # letters or digits, so these must fail at validation, not later at STS.
+    with pytest.raises(AwsValidationError):
+        validate_role_arn(bad)
+    with pytest.raises(AwsValidationError):
+        validate_session_name(bad)
+    with pytest.raises(AwsValidationError):
+        validate_external_id(bad)
+
+
+def test_unicode_digits_rejected_in_account_and_region():
+    # Arabic-Indic digits are \d under Unicode but not ASCII; must be rejected.
+    with pytest.raises(AwsValidationError):
+        validate_role_arn("arn:aws:iam::١٢٣٤٥٦٧٨٩٠١٢:role/x")
+    with pytest.raises(AwsValidationError):
+        validate_region("us-east-١")
+
+
 def test_error_is_a_valueerror():
     assert issubclass(AwsValidationError, ValueError)

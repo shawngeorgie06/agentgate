@@ -12,14 +12,19 @@ import re
 # (patterns are deliberately unanchored; .match would admit a trailing
 # newline).
 
+# re.ASCII on every pattern: AWS's ARN / region / session-name / external-id
+# charsets are ASCII-only, so \w / \d must NOT match Unicode letters or digits.
+# Without it a Unicode-bearing value passes validation here and is only rejected
+# later by STS — we want it rejected at the sink, fail-closed at input.
+#
 # IAM role ARN: arn:aws:iam::<12-digit account>:role/<path+name>.
-ROLE_ARN_RE = re.compile(r"arn:aws:iam::\d{12}:role/[\w+=,.@/-]+")
+ROLE_ARN_RE = re.compile(r"arn:aws:iam::\d{12}:role/[\w+=,.@/-]+", re.ASCII)
 # STS RoleSessionName: 2..64 chars from [\w+=,.@-].
-SESSION_NAME_RE = re.compile(r"[\w+=,.@-]{2,64}")
+SESSION_NAME_RE = re.compile(r"[\w+=,.@-]{2,64}", re.ASCII)
 # STS ExternalId: 2..1224 chars from a documented safe set.
-EXTERNAL_ID_RE = re.compile(r"[\w+=,.@:/-]{2,1224}")
+EXTERNAL_ID_RE = re.compile(r"[\w+=,.@:/-]{2,1224}", re.ASCII)
 # AWS region, e.g. us-east-1, ap-southeast-1.
-REGION_RE = re.compile(r"[a-z]{2}(-[a-z]+)+-\d")
+REGION_RE = re.compile(r"[a-z]{2}(-[a-z]+)+-\d", re.ASCII)
 
 
 class AwsValidationError(ValueError):

@@ -169,3 +169,18 @@ def test_aws_paths_follow_agentgate_home():
     cfg = Config.from_env({"AGENTGATE_HOME": os.path.join("srv", "ag")})
     assert cfg.aws_key_path == os.path.join("srv", "ag", "aws_key.json")
     assert cfg.aws_resources_path == os.path.join("srv", "ag", "aws_resources.json")
+
+
+def test_ssh_revocation_and_krl_paths_derive_from_home(tmp_path, monkeypatch):
+    from broker.config import Config
+    monkeypatch.setenv("AGENTGATE_HOME", str(tmp_path))
+    cfg = Config.from_env()
+    assert cfg.ssh_revocations_path == str(tmp_path / "ssh_revocations.json")
+    assert cfg.ssh_krl_path == str(tmp_path / "ssh_krl")
+
+
+def test_ssh_krl_path_overridable(monkeypatch):
+    from broker.config import Config
+    monkeypatch.setenv("SSH_KRL_PATH", "/etc/ssh/agentgate_krl")
+    cfg = Config.from_env()
+    assert cfg.ssh_krl_path == "/etc/ssh/agentgate_krl"

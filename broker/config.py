@@ -34,6 +34,8 @@ def _default_paths(env: Mapping[str, str]) -> dict[str, str]:
         "DB_RESOURCES_PATH": os.path.join(base, "db_resources.json"),
         "SSH_CA_PATH": os.path.join(base, "ssh_ca.json"),
         "SSH_RESOURCES_PATH": os.path.join(base, "ssh_resources.json"),
+        "SSH_REVOCATIONS_PATH": os.path.join(base, "ssh_revocations.json"),
+        "SSH_KRL_PATH": os.path.join(base, "ssh_krl"),
         "AWS_KEY_PATH": os.path.join(base, "aws_key.json"),
         "AWS_RESOURCES_PATH": os.path.join(base, "aws_resources.json"),
     }
@@ -88,6 +90,8 @@ class Config:
     ssh_ca_path: str = os.path.join("data", "ssh_ca.json")
     ssh_resources_path: str = os.path.join("data", "ssh_resources.json")
     ssh_cert_ttl_minutes: int = 15
+    ssh_revocations_path: str = os.path.join("data", "ssh_revocations.json")
+    ssh_krl_path: str = os.path.join("data", "ssh_krl")
     aws_key_path: str = os.path.join("data", "aws_key.json")
     aws_resources_path: str = os.path.join("data", "aws_resources.json")
     aws_cred_ttl_minutes: int = 15
@@ -132,6 +136,10 @@ class Config:
             ssh_cert_ttl_minutes=_require_int(
                 get("SSH_CERT_TTL_MINUTES"), "SSH_CERT_TTL_MINUTES", minimum=1
             ),
+            ssh_revocations_path=_require_non_empty(
+                get("SSH_REVOCATIONS_PATH"), "SSH_REVOCATIONS_PATH"
+            ),
+            ssh_krl_path=_require_non_empty(get("SSH_KRL_PATH"), "SSH_KRL_PATH"),
             aws_key_path=_require_non_empty(get("AWS_KEY_PATH"), "AWS_KEY_PATH"),
             aws_resources_path=_require_non_empty(
                 get("AWS_RESOURCES_PATH"), "AWS_RESOURCES_PATH"

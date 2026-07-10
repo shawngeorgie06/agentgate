@@ -20,8 +20,16 @@ from broker.db_grants import GrantError, validate_grant
 from broker.db_resource_store import DbResource, DbResourceStore
 from broker.policy_engine import PolicyEngine
 from broker.ssh_ca_store import SshCaExistsError, SshCaStore
+from broker.ssh_krl import KrlWriteError, SshKeygenKrlWriter
 from broker.ssh_resource_store import SshResource, SshResourceStore
-from broker.ssh_validation import SshValidationError, validate_force_command, validate_principal
+from broker.ssh_revocation_store import SshRevocationStore
+from broker.ssh_validation import (
+    SshValidationError,
+    ssh_key_id,
+    validate_force_command,
+    validate_key_id,
+    validate_principal,
+)
 from broker.aws_key_store import AwsKeyStore
 from broker.aws_resource_store import AwsResource, AwsResourceStore
 from broker.aws_validation import (
@@ -71,6 +79,16 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("ssh-list", help="list registered SSH resources")
     sr = sub.add_parser("ssh-remove", help="remove an SSH resource")
     sr.add_argument("name")
+    rv = sub.add_parser("ssh-revoke", help="revoke an agent's certs for a resource")
+    rv.add_argument("agent")
+    rv.add_argument("resource")
+    rv.add_argument("--reason", default=None, help="operator note stored with the revocation")
+    ur = sub.add_parser("ssh-unrevoke", help="lift a revocation")
+    ur.add_argument("agent")
+    ur.add_argument("resource")
+    sub.add_parser("ssh-revoke-list", help="list revoked certs (metadata only)")
+    kw = sub.add_parser("ssh-krl-write", help="regenerate the KRL file")
+    kw.add_argument("path", nargs="?", default=None, help="output path (default: configured ssh_krl_path)")
     ak = sub.add_parser("aws-key-set", help="store the broker's IAM access key (secret not via argv)")
     ak.add_argument("access_key_id")
     aws_add = sub.add_parser("aws-add", help="register an AWS role resource")
@@ -96,6 +114,36 @@ def _password(master_password: str | None) -> str:
     if env:
         return env
     return getpass.getpass("AgentGate master password: ")
+
+
+def validate_principal_free(raw: object) -> str:
+    # Agent + resource names embedded into a key_id: must be non-empty
+    # printable single-line text (same rule validate_key_id enforces on the
+    # composed id). Rejects the newline/control chars that would let a name
+    # smuggle a KRL directive.
+    if not isinstance(raw, str) or ":" in raw:
+        raise SshValidationError("name must not contain ':'")
+    validate_key_id(raw)  # printable / non-empty gate
+    return raw
+
+
+def _validate_reason(raw: str | None) -> str | None:
+    if raw is None:
+        return None
+    if not raw.isprintable():
+        raise SshValidationError("reason must be printable text")
+    return raw
+
+
+def _regenerate_krl(config: Config, master_password: str | None, out_path: str | None = None) -> str:
+    """Load the CA public key + all revoked key_ids and (re)write the KRL.
+    Raises KrlWriteError / KeyError on failure; callers decide the exit code."""
+    ca = SshCaStore(config.ssh_ca_path, _password(master_password))
+    public_line = ca.public_line()  # KeyError if CA not initialized
+    revocations = SshRevocationStore(config.ssh_revocations_path, _password(master_password))
+    target = out_path or config.ssh_krl_path
+    SshKeygenKrlWriter().write_krl(public_line, revocations.revoked_key_ids(), target)
+    return target
 
 
 def run(
@@ -320,6 +368,77 @@ def run(
             return 1
         AuditLogger(config.logs_path).log_operator(action="ssh-remove", subject=args.name)
         print(f"removed ssh resource '{args.name}'")
+        return 0
+
+    if args.command == "ssh-revoke":
+        try:
+            agent = validate_principal_free(args.agent)
+            resource = validate_principal_free(args.resource)
+            reason = _validate_reason(args.reason)
+        except SshValidationError as exc:
+            print(f"invalid revocation: {exc}", file=sys.stderr)
+            return 2
+        key_id = ssh_key_id(agent, resource)
+        store = SshRevocationStore(config.ssh_revocations_path, _password(master_password))
+        store.revoke(
+            key_id=key_id, agent=agent, resource=resource,
+            revoked_at=datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+            reason=reason,
+        )
+        AuditLogger(config.logs_path).log_operator(action="ssh-revoke", subject=key_id)
+        try:
+            path = _regenerate_krl(config, master_password)
+        except KeyError:
+            print("revoked, but ssh CA not initialized so no KRL was written "
+                  "(run ssh-ca-init)", file=sys.stderr)
+            return 1
+        except KrlWriteError:
+            print("revoked, but KRL generation failed; retry with ssh-krl-write",
+                  file=sys.stderr)
+            return 1
+        print(f"revoked {key_id}")
+        print(f"KRL written to {path} — deploy it to each server's RevokedKeys")
+        return 0
+
+    if args.command == "ssh-unrevoke":
+        try:
+            agent = validate_principal_free(args.agent)
+            resource = validate_principal_free(args.resource)
+        except SshValidationError as exc:
+            print(f"invalid revocation: {exc}", file=sys.stderr)
+            return 2
+        key_id = ssh_key_id(agent, resource)
+        store = SshRevocationStore(config.ssh_revocations_path, _password(master_password))
+        if not store.unrevoke(key_id):
+            print(f"{key_id} was not revoked", file=sys.stderr)
+            return 1
+        AuditLogger(config.logs_path).log_operator(action="ssh-unrevoke", subject=key_id)
+        try:
+            path = _regenerate_krl(config, master_password)
+        except (KeyError, KrlWriteError):
+            print("unrevoked, but KRL regeneration failed; retry with ssh-krl-write",
+                  file=sys.stderr)
+            return 1
+        print(f"unrevoked {key_id}; KRL rewritten to {path}")
+        return 0
+
+    if args.command == "ssh-revoke-list":
+        store = SshRevocationStore(config.ssh_revocations_path, _password(master_password))
+        for e in store.list_entries():
+            reason = f"  ({e['reason']})" if e["reason"] else ""
+            print(f"{e['key_id']}  revoked {e['revoked_at']}{reason}")
+        return 0
+
+    if args.command == "ssh-krl-write":
+        try:
+            path = _regenerate_krl(config, master_password, out_path=args.path)
+        except KeyError:
+            print("ssh CA not initialized (run ssh-ca-init first)", file=sys.stderr)
+            return 1
+        except KrlWriteError:
+            print("KRL generation failed", file=sys.stderr)
+            return 1
+        print(f"KRL written to {path}")
         return 0
 
     if args.command == "aws-key-set":

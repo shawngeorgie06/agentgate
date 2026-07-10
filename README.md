@@ -342,9 +342,39 @@ ssh -i agent_key -o CertificateFile=agent_key-cert.pub deploy@10.0.0.5
 
 Every certificate's `key_id` is `agentgate:<agent>:<resource>` (e.g. `agentgate:claude-code:web-1`), which sshd writes to its own logs on each login — so every session traces back to the agent and resource that requested it, independent of AgentGate's own audit log.
 
+### Revoking a certificate
+
+AgentGate certificates are short-lived (default 15 min), but you can revoke one
+before it expires. Revocation is enforced at two layers:
+
+- **Broker layer:** `agentgate ssh-revoke <agent> <resource>` immediately stops
+  the broker from minting new certificates for that agent on that resource.
+- **Server layer:** the same command regenerates an OpenSSH **KRL** (Key
+  Revocation List) at the configured `ssh_krl_path`. Deploy it to each server
+  and reference it from `sshd_config`, exactly as you already distribute the CA
+  public key:
+
+  ```
+  RevokedKeys /etc/ssh/agentgate_krl
+  ```
+
+  sshd then rejects any presented certificate whose key_id is revoked,
+  regardless of remaining validity.
+
+Commands:
+
+- `agentgate ssh-revoke <agent> <resource> [--reason TEXT]` — revoke and rewrite the KRL.
+- `agentgate ssh-unrevoke <agent> <resource>` — lift a revocation and rewrite the KRL.
+- `agentgate ssh-revoke-list` — list revoked certificates (metadata only).
+- `agentgate ssh-krl-write [path]` — regenerate the KRL on demand (e.g. after a failed write).
+
+Revocation requires the OpenSSH `ssh-keygen` binary on the broker host (used to
+generate the KRL). The broker generates the KRL; distributing it to servers is
+out of band, the same trust model as `TrustedUserCAKeys`.
+
 ### Residual risk
 
-AgentGate holds a CA key that every enrolled server trusts — compromise of that key means access to all enrolled servers as any registered principal, until `TrustedUserCAKeys` is removed from each server's `sshd_config`. There is no pre-expiry revocation (no certificate revocation list/KRL): a certificate issued before compromise is detected remains valid until it naturally expires. The `SSH_CERT_TTL_MINUTES` window is the control — keep it short.
+AgentGate holds a CA key that every enrolled server trusts — compromise of that key means access to all enrolled servers as any registered principal, until `TrustedUserCAKeys` is removed from each server's `sshd_config`. Pre-expiry revocation (KRL) mitigates a single compromised or misused credential once detected, but does not by itself revoke the CA's trust — an attacker who has stolen the CA private key can mint fresh certificates outside the broker's revocation list. The `SSH_CERT_TTL_MINUTES` window remains the backstop control for that scenario — keep it short.
 
 ## AWS Broker
 

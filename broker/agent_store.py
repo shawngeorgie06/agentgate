@@ -24,8 +24,18 @@ class AgentStore(EncryptedStore):
     _SECTION = "agents"
 
     def register(self, name: str) -> str:
-        if not isinstance(name, str) or not name or not name.isprintable():
-            raise ValueError("agent name must be non-empty printable text")
+        # Agent names are composed into SSH key_ids as
+        # "agentgate:<agent>:<resource>" (broker/ssh_validation.py); a ':' in
+        # the name would make the composed id ambiguous to split back apart,
+        # so every issuable name must also be revocable. Keep the message
+        # generic here since this guard is not SSH-specific.
+        if (
+            not isinstance(name, str)
+            or not name
+            or not name.isprintable()
+            or ":" in name
+        ):
+            raise ValueError("agent name must be printable text without ':'")
         entries = self._entries()
         if name in entries:
             raise ValueError(f"agent '{name}' is already registered")

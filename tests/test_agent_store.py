@@ -47,6 +47,16 @@ def test_register_rejects_non_printable_or_empty_name(tmp_path):
     assert store.verify("claude-code", key) is True
 
 
+def test_register_rejects_colon_in_name(tmp_path):
+    # Agent names are composed into SSH key_ids as "agentgate:<agent>:<resource>"
+    # (broker/ssh_validation.py); a ':' would make the composed id ambiguous
+    # to split back apart, so every issuable name must also be revocable.
+    store = AgentStore(str(tmp_path / "agents.json"), "pw")
+    with pytest.raises(ValueError):
+        store.register("a:b")
+    assert store.list_names() == []
+
+
 def test_delete_revokes(tmp_path):
     store = AgentStore(str(tmp_path / "agents.json"), "pw")
     key = store.register("claude-code")

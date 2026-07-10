@@ -331,6 +331,10 @@ def run(
 
     if args.command == "ssh-add":
         try:
+            # The resource name is composed into the SSH key_id
+            # ("agentgate:<agent>:<resource>", broker/ssh_validation.py);
+            # reject ':' here so every issuable key_id stays revocable.
+            resource_name = validate_principal_free(args.name)
             principal = validate_principal(args.principal)
             force_command = (
                 validate_force_command(args.force_command)

@@ -531,21 +531,9 @@ class Broker:
             )
             return self._ssh_deny(f"unknown ssh resource '{resource}'")
 
-        try:
-            ca_pem = self.ssh_ca.load_private_pem()
-        except KeyError:
-            self.audit.log(
-                agent=agent, credential_requested=resource, policy_matched=policy_name,
-                decision="denied", mode=mode, token_expiry=None,
-            )
-            return self._ssh_deny("ssh CA not initialized")
-        except Exception:
-            self.audit.log(
-                agent=agent, credential_requested=resource, policy_matched=policy_name,
-                decision="denied", mode=mode, token_expiry=None,
-            )
-            return self._ssh_deny("could not access ssh CA")
-
+        # Check revocation BEFORE ever decrypting the CA private key: a denied
+        # request (revoked key_id) must never cause the CA key material to be
+        # loaded into memory. Only after the gate passes do we touch the key.
         key_id = ssh_key_id(agent, resource)
         try:
             revoked = (
@@ -566,6 +554,21 @@ class Broker:
                 decision="denied", mode=mode, token_expiry=None,
             )
             return self._ssh_deny("credential revoked")
+
+        try:
+            ca_pem = self.ssh_ca.load_private_pem()
+        except KeyError:
+            self.audit.log(
+                agent=agent, credential_requested=resource, policy_matched=policy_name,
+                decision="denied", mode=mode, token_expiry=None,
+            )
+            return self._ssh_deny("ssh CA not initialized")
+        except Exception:
+            self.audit.log(
+                agent=agent, credential_requested=resource, policy_matched=policy_name,
+                decision="denied", mode=mode, token_expiry=None,
+            )
+            return self._ssh_deny("could not access ssh CA")
 
         try:
             cred = ssh_ca.issue_certificate(

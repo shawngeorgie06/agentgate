@@ -119,6 +119,21 @@ def test_ssh_add_rejects_bad_principal(tmp_path):
     assert '"action": "ssh-add"' not in log_text
 
 
+def test_ssh_add_rejects_colon_in_resource_name(tmp_path):
+    # The resource name is composed into the SSH key_id
+    # ("agentgate:<agent>:<resource>"); a ':' here would make the composed
+    # key_id ambiguous to split back apart during revocation.
+    cfg = _cfg(tmp_path)
+    rc = commands.run([
+        "ssh-add", "web:1", "--host", "h", "--port", "22", "--principal", "deploy",
+    ], config=cfg, master_password="pw")
+    assert rc == 2
+    assert SshResourceStore(cfg.ssh_resources_path, "pw").list_names() == []
+    log_path = tmp_path / "audit.log"
+    log_text = log_path.read_text() if log_path.exists() else ""
+    assert '"action": "ssh-add"' not in log_text
+
+
 def test_ssh_remove_unknown_fails(tmp_path):
     cfg = _cfg(tmp_path)
     assert commands.run(["ssh-remove", "nope"], config=cfg, master_password="pw") == 1
@@ -200,6 +215,44 @@ def test_ssh_revoke_invalid_agent_exits_2_no_write(tmp_path, monkeypatch):
     rc = commands.run(["ssh-revoke", "bad agent\n", "web-1"], config=cfg, master_password="pw")
     assert rc == 2
     store = SshRevocationStore(cfg.ssh_revocations_path, "pw")
+    assert store.revoked_key_ids() == []
+
+
+def test_ssh_revoke_colon_in_agent_or_resource_exits_2_no_write(tmp_path, monkeypatch):
+    monkeypatch.setattr("cli.commands.SshKeygenKrlWriter", _FakeKrlWriter)
+    _FakeKrlWriter.calls = []
+    cfg = _cfg(tmp_path)
+    assert commands.run(["ssh-ca-init"], config=cfg, master_password="pw") == 0
+
+    rc = commands.run(["ssh-revoke", "a:b", "web-1"], config=cfg, master_password="pw")
+    assert rc == 2
+    store = SshRevocationStore(cfg.ssh_revocations_path, "pw")
+    assert store.revoked_key_ids() == []
+
+    rc = commands.run(["ssh-revoke", "claude-code", "b:c"], config=cfg, master_password="pw")
+    assert rc == 2
+    assert store.revoked_key_ids() == []
+
+
+def test_ssh_revoke_non_printable_reason_exits_2_no_write(tmp_path, monkeypatch):
+    monkeypatch.setattr("cli.commands.SshKeygenKrlWriter", _FakeKrlWriter)
+    _FakeKrlWriter.calls = []
+    cfg = _cfg(tmp_path)
+    assert commands.run(["ssh-ca-init"], config=cfg, master_password="pw") == 0
+
+    rc = commands.run(
+        ["ssh-revoke", "claude-code", "web-1", "--reason", "bad\x00reason"],
+        config=cfg, master_password="pw",
+    )
+    assert rc == 2
+    store = SshRevocationStore(cfg.ssh_revocations_path, "pw")
+    assert store.revoked_key_ids() == []
+
+    rc = commands.run(
+        ["ssh-revoke", "claude-code", "web-1", "--reason", "line1\nline2"],
+        config=cfg, master_password="pw",
+    )
+    assert rc == 2
     assert store.revoked_key_ids() == []
 
 

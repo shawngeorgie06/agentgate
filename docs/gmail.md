@@ -129,7 +129,9 @@ Use the agent name authorized by your policies. Reading and drafting follow thos
 
 ## Reusable agent commands
 
-With the broker running, use `.venv/bin/python -m cli.agent` from the repository. These commands read the private MCP token automatically, use agent `agentgate-local`, and never open or unlock the Gmail credential store. Each successful request prints one JSON object to stdout and exits with code `0`; refusals and failures exit with code `1`. Invalid command arguments exit with code `2`.
+Keep the broker running in one terminal; open a **second terminal** for agent commands. Closing the broker terminal or pressing `q` stops access. With the broker running, use `.venv/bin/python -m cli.agent` from the repository. These commands read the private MCP token automatically, use agent `agentgate-local`, and never open or unlock the Gmail credential store. Each successful request prints one JSON object to stdout and exits with code `0`; refusals and failures exit with code `1`. Invalid command arguments exit with code `2`.
+
+Run these two commands first:
 
 ```bash
 # Check the live broker.
@@ -138,6 +140,11 @@ With the broker running, use `.venv/bin/python -m cli.agent` from the repository
 # Search unread inbox messages; returns IDs and a nextPageToken when available.
 .venv/bin/python -m cli.agent search 'in:inbox is:unread' --limit 10
 
+```
+
+The following are templates—do not paste them unchanged. Replace `MESSAGE_ID` with an actual ID from search, and `DRAFT_ID` with the ID returned by draft creation. Create `body.txt` before using it.
+
+```bash
 # Read a message returned by search.
 .venv/bin/python -m cli.agent read MESSAGE_ID
 

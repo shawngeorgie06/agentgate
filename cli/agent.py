@@ -7,10 +7,30 @@ import json
 import sys
 from pathlib import Path
 
+import httpx2 as httpx
 from fastmcp import Client
 
 from broker.config import ConfigError
 from broker.http_auth import read_token_file
+
+
+class AgentClientError(Exception):
+    def __init__(self, reason: str, *, uncertain: bool = False):
+        super().__init__(reason)
+        self.uncertain = uncertain
+
+
+def connection_reason(error: Exception) -> str:
+    seen = set()
+    current = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, httpx.ConnectError):
+            return 'Cannot connect to the broker. Start it in another terminal and leave it running.'
+        if isinstance(current, httpx.HTTPStatusError) and current.response.status_code in (401, 403):
+            return 'Broker authentication rejected. Check that the client and broker use the same private token file.'
+        current = current.__cause__ or current.__context__
+    return 'Broker request failed. Check the broker terminal and authentication.'
 
 
 def positive_number(value: str) -> float:
@@ -59,14 +79,22 @@ async def execute(args: argparse.Namespace) -> dict:
         values.update(message_id=args.message_id)
     elif args.command == 'draft':
         tool = 'gmail.draft'
-        body = sys.stdin.read() if args.body_file == '-' else Path(args.body_file).expanduser().read_text(encoding='utf-8')
+        try:
+            body = sys.stdin.read() if args.body_file == '-' else Path(args.body_file).expanduser().read_text(encoding='utf-8')
+        except (OSError, UnicodeError):
+            raise AgentClientError('Cannot read the draft body. Supply an existing UTF-8 file with --body-file, or provide the body on stdin.') from None
         values.update(to=args.to, subject=args.subject, cc=args.cc, bcc=args.bcc, body=body)
     else:
         tool = 'gmail.send_draft'
         values.update(draft_id=args.draft_id)
     # The address is fixed to loopback so a URL option cannot forward the token.
-    async with Client(f'http://127.0.0.1:{args.port}/mcp', auth=token, timeout=args.timeout) as client:
-        result = (await client.call_tool(tool, values)).data
+    dispatched = False
+    try:
+        async with Client(f'http://127.0.0.1:{args.port}/mcp', auth=token, timeout=args.timeout) as client:
+            dispatched = True
+            result = (await client.call_tool(tool, values)).data
+    except Exception as exc:
+        raise AgentClientError(connection_reason(exc), uncertain=dispatched) from None
     return {'ok': True, 'data': result} if args.command == 'status' else result
 
 
@@ -80,6 +108,9 @@ def run(argv: list[str]) -> int:
     uncertain = False
     try:
         result = asyncio.run(execute(args))
+    except AgentClientError as exc:
+        uncertain = exc.uncertain
+        result = {'ok': False, 'reason': str(exc)}
     except ConfigError as exc:
         result = {'ok': False, 'reason': str(exc)}
     except (OSError, UnicodeError):

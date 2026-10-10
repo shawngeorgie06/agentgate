@@ -69,3 +69,39 @@ def test_invalid_arguments_rejected_before_connection(arguments):
     with pytest.raises(SystemExit) as error:
         agent.run(arguments)
     assert error.value.code == 2
+
+
+def test_missing_body_file_is_reported_before_any_request(tmp_path, capsys):
+    token = tmp_path / 'token'
+    create_token_file(str(token))
+    assert agent.run(['--token-file', str(token), 'draft', '--to', 'recipient@example.test',
+                      '--subject', 'Subject', '--body-file', str(tmp_path / 'missing.txt')]) == 1
+    result = json.loads(capsys.readouterr().out)
+    assert 'Cannot read the draft body' in result['reason']
+    assert 'notice' not in result
+
+
+@pytest.mark.parametrize('during_dispatch', [False, True])
+def test_connection_errors_distinguish_startup_from_uncertain_dispatch(tmp_path, monkeypatch, capsys, during_dispatch):
+    import httpx2
+    token = tmp_path / 'token'
+    create_token_file(str(token))
+    class BrokenClient:
+        async def __aenter__(self):
+            if not during_dispatch:
+                try:
+                    raise httpx2.ConnectError('Bearer secret-token')
+                except Exception as exc:
+                    raise RuntimeError('Client startup failed') from exc
+            return self
+        async def __aexit__(self, *args):
+            return None
+        async def call_tool(self, *args):
+            raise httpx2.ConnectError('Bearer secret-token')
+    monkeypatch.setattr(agent, 'Client', lambda *args, **kwargs: BrokenClient())
+    assert agent.run(['--token-file', str(token), 'send-draft', 'draft-1']) == 1
+    output = capsys.readouterr().out
+    result = json.loads(output)
+    assert 'Cannot connect to the broker' in result['reason']
+    assert ('notice' in result) is during_dispatch
+    assert 'secret-token' not in output

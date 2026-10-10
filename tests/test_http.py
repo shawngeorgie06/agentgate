@@ -54,7 +54,9 @@ async def test_http_never_starts_without_authentication():
 
 
 _SERVER = '''
-import os, fcntl, termios
+import os, fcntl, termios, signal
+# Closing the synthetic PTY must not kill the child during final cleanup.
+signal.signal(signal.SIGHUP, signal.SIG_IGN)
 os.setsid()
 fcntl.ioctl(int(os.environ['TEST_TTY_FD']), termios.TIOCSCTTY, 0)
 from tests.test_gmail import FakeService

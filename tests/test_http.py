@@ -131,9 +131,12 @@ async def test_real_http_auth_and_terminal_send_approval(tmp_path, approve):
             assert rejected.status_code in (403, 421)
         async with Client(url, auth=token) as client:
             assert (await client.call_tool('broker.status', {})).data['policies'] == 1
-            request = asyncio.create_task(client.call_tool('gmail.send_draft', {
-                'agent': 'local-agent', 'draft_id': 'draft-1',
-            }))
+            agent_process = await asyncio.create_subprocess_exec(
+                sys.executable, '-m', 'cli.agent', '--port', str(port),
+                '--token-file', str(token_path), '--agent', 'local-agent',
+                'send-draft', 'draft-1', stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+            request = asyncio.create_task(agent_process.communicate())
             preview = await terminal_until(master, b'; deny: n]')
             assert 'recipient@example.test' in preview
             assert 'Test subject' in preview
@@ -142,7 +145,11 @@ async def test_real_http_auth_and_terminal_send_approval(tmp_path, approve):
             await asyncio.sleep(0.15)
             assert not request.done()
             os.write(master, f'y {code}\n'.encode() if approve else b'n\n')
-            result = (await asyncio.wait_for(request, 5)).data
+            stdout, stderr = await asyncio.wait_for(request, 5)
+            result = json.loads(stdout)
+            assert not stderr
+            assert token not in stdout.decode()
+            assert agent_process.returncode == (0 if approve else 1)
             assert result['ok'] is approve
             if approve:
                 assert result['data']['id'] == 'sent-1'

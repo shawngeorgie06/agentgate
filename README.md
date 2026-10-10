@@ -75,7 +75,7 @@ The container mounts all state directories (`policies`, `state`, `logs`, `data`)
 
 ## Gmail
 
-Connect Gmail once using Google OAuth, then let local agents search, read, and create drafts. Every email send requires operator approval. Tokens stay inside the encrypted broker store. See the [Gmail setup guide](docs/gmail.md) for Google setup, policies, tools, and current terminal requirements.
+Connect Gmail once using Google OAuth, then let local agents search, read, and create drafts. Every email send requires operator approval. Tokens stay inside the encrypted broker store. Agents can use `.venv/bin/python -m cli.agent` for JSON commands (`status`, `search`, `read`, `draft`, `send-draft`) through the authenticated local broker. See the [Gmail setup guide](docs/gmail.md) for Google setup, policies, tools, and current terminal requirements.
 
 ## Policy Schema
 

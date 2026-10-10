@@ -5,3 +5,4 @@ data/credentials.json
 state/mode.json
 logs/audit.log
 .pytest_cache/
+.venv/

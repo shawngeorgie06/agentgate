@@ -1,13 +1,13 @@
 # AgentGate
 
-AgentGate is a production-grade credential broker and approval engine for AI agents. It enforces time-based policy gates on API key access, provides two-tier approval workflows (AUTO for trusted policies, MANUAL for escalations), and audits all credential requests with immutable logging.
+AgentGate is a prototype credential broker and approval engine for AI agents. It enforces time-based policy gates on API key access, provides two-tier approval workflows (AUTO for trusted policies, MANUAL for escalations), and audits credential decisions with append-only file logging.
 
 ## V1 Scope
 
 - **Credential Storage**: Argon2id + AES-256-GCM encrypted credential storage with per-credential salts and nonces
 - **Policy Engine**: YAML-based declarative policies with time windows and auto-approval rules
 - **Two-Tier Approval**: Automatic approval for trusted agent/credential pairs; escalation to CLI operator for others
-- **Audit Logging**: Immutable audit trail with request signatures (no credential values logged)
+- **Audit Logging**: Append-only JSON audit trail (no credential values logged)
 - **FastMCP Server**: Built-in Model Context Protocol server exposing 5 standard MCP tools for agent integration
 - **Runtime Mode Toggle**: Interactive CLI toggle between AUTO and MANUAL approval modes (state persisted to JSON)
 - **Async CLI**: Command-line interface for credential management and policy administration
@@ -19,7 +19,9 @@ AgentGate is a production-grade credential broker and approval engine for AI age
 
 **Install dependencies:**
 ```bash
-pip install -r requirements.txt
+uv venv --python 3.12 .venv
+uv pip install --python .venv/bin/python -r requirements.txt
+source .venv/bin/activate
 ```
 
 **Set up environment:**
@@ -28,7 +30,7 @@ cp .env.example .env
 ```
 
 **Set master password:**
-Edit `.env` and set `AGENTGATE_MASTER_PASSWORD` to a secure value (or it will prompt via `getpass` on CLI startup).
+Set `AGENTGATE_MASTER_PASSWORD` in your shell environment (or the interactive broker will prompt via `getpass`). The application does not automatically load `.env`; Docker Compose loads it via `env_file`.
 
 **Seed a credential:**
 The credential value is read from stdin or the `AGENTGATE_CRED_VALUE` env var (never passed as a command-line argument, so it won't leak into process listings):
@@ -45,13 +47,21 @@ AGENTGATE_CRED_VALUE="<your-api-key>" python -m cli.commands cred-store anthropi
 python -m broker.main
 ```
 
-The broker starts a FastMCP server (stdin/stdout transport) and begins listening for credential requests via `credential.request` RPC calls.
+The broker starts a FastMCP server over stdin/stdout. An MCP client launches this command and owns those streams. Operator approvals use `/dev/tty`, the controlling terminal, and startup diagnostics go to stderr. Interactive approvals on macOS/Linux require the server process to retain a controlling terminal. Clients that detach their subprocesses (including FastMCP’s stdio client), and desktop clients without a terminal, use headless mode even if the client was launched from a shell. The terminal shows requests as they arrive; answer `y` or `n`, press `s` then Enter to toggle modes, or `q` then Enter to stop.
+
+For a safe standalone walkthrough with temporary dummy credentials:
+```bash
+python -m examples.demo
+```
+Approve the first request with `y`, then deny the second with `n`. This demo exercises the MCP tools in process; it does not modify your real credentials, policies, or audit log.
+
+Without a controlling terminal, the broker requires `AGENTGATE_MASTER_PASSWORD` and a positive `ESCALATION_TIMEOUT_SECONDS`. Automatic policies still work; requests needing an operator time out and are denied.
 
 **Request credentials from agents:**
 Agents connect to AgentGate via MCP and call `credential.request(agent, credential)`. The broker consults policies and audit state to approve or escalate the request.
 
 **Toggle approval mode:**
-Once the CLI is running, press `s` to toggle between AUTO and MANUAL approval modes. The decision is persisted to `state/mode.json` and read on every request (never cached).
+Once the CLI is running, press `s` then Enter to toggle between AUTO and MANUAL approval modes. The decision is persisted to `state/mode.json` and read on every request (never cached).
 
 ### Docker Compose
 
@@ -150,7 +160,7 @@ All runtime state is stored in environment-configured mounted volumes:
 - `LOGS_PATH` → `logs/audit.log` (audit trail)
 - `CREDENTIALS_PATH` → `data/credentials.json` (encrypted credentials)
 
-In ECS, mount these volumes as external storage (e.g., EFS or S3-backed volumes) and inject the paths via environment variables. AgentGate will read and write state atomically, making it safe for horizontal scaling with shared state.
+In ECS, mount these volumes as external storage (e.g., EFS or S3-backed volumes) and inject the paths via environment variables. AgentGate will read and write state atomically, but atomic replacement alone does not prevent concurrent writers from losing updates. Multi-instance use requires additional locking or transactional storage.
 
 ## Credential Storage
 
@@ -158,13 +168,13 @@ Credentials are encrypted at rest using:
 
 - **Key Derivation**: Argon2id (RFC 9106) with user-configured master password
 - **Encryption**: AES-256-GCM with per-credential salts and nonces
-- **Audit**: All credential requests logged without values (signatures only)
+- **Audit**: Credential decisions logged without credential values
 
-Credentials are accessed only via authenticated MCP calls and are never logged in plaintext.
+The broker accepts agent names supplied by MCP callers; it does not authenticate those identities. Use local trusted clients only. Credential values are omitted from the audit log but are returned to approved callers.
 
 ## Token TTL
 
-Granted credentials include a `token_expiry` timestamp (configurable via `TOKEN_TTL_MINUTES` in `.env`, default 60 minutes). Agents must re-request before expiry.
+Granted credentials include a `token_expiry` timestamp (configurable via `TOKEN_TTL_MINUTES` in `.env`, default 60 minutes). This expiry is metadata only: the broker returns the underlying API key and does not enforce token redemption or revoke the key at expiry.
 
 ## Escalation Timeout
 
@@ -177,7 +187,7 @@ Set `ESCALATION_TIMEOUT_SECONDS` in `.env` to limit how long the broker waits fo
 - Credential store (encrypted JSON)
 - Policy engine (YAML parser + time-window evaluator)
 - Approval queue (pending requests awaiting operator decision)
-- Audit logger (immutable append-only log)
+- Audit logger (append-only file log)
 
 **CLI** (`cli/commands.py`):
 - Credential management (`cred-store`, `cred-delete`, `cred-list`)
@@ -198,7 +208,7 @@ Run the full test suite:
 python -m pytest -v
 ```
 
-Expected: 41 passing tests covering:
+Tests cover:
 - Credential encryption/decryption
 - Policy evaluation and time-window matching
 - Two-tier approval workflows

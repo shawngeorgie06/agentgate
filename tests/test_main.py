@@ -1,4 +1,6 @@
 import textwrap
+import dataclasses
+import pytest
 from broker.config import Config
 from broker import main as main_mod
 
@@ -40,3 +42,15 @@ def test_format_status_line_contains_mode_and_counts(tmp_path):
     assert "policies: 1" in line
     assert "requests: 0" in line
     assert "escalated: 0" in line
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('password, timeout, message', [
+    (None, 1, 'AGENTGATE_MASTER_PASSWORD'),
+    ('pw', 0, 'ESCALATION_TIMEOUT_SECONDS'),
+])
+async def test_headless_requires_password_and_timeout(tmp_path, monkeypatch, password, timeout, message):
+    monkeypatch.setattr(main_mod, 'open_terminal', lambda: None)
+    cfg = dataclasses.replace(_cfg(tmp_path), master_password=password, escalation_timeout_seconds=timeout)
+    with pytest.raises(main_mod.ConfigError, match=message):
+        await main_mod.run(cfg)

@@ -4,6 +4,8 @@ import asyncio
 import argparse
 import getpass
 import sys
+import secrets
+import webbrowser
 import uvicorn
 
 from broker.approval import ApprovalQueue
@@ -12,7 +14,7 @@ from broker.config import Config, ConfigError
 from broker.console import console_loop, open_terminal
 from broker.credential_store import CredentialStore
 from broker.mcp_server import Broker, build_mcp
-from broker.http_auth import token_verifier
+from broker.http_auth import token_verifier, read_token_file
 
 
 def resolve_master_password(config: Config) -> str:
@@ -45,17 +47,24 @@ def format_status_line(broker: Broker) -> str:
 async def run(
     config: Config | None = None, *, http: bool = False,
     port: int = 8765, token_file: str | None = None,
+    operator_token_file: str | None = None, open_app: bool = True,
 ) -> None:
     config = config or Config.from_env()
     if http and not token_file:
         raise ConfigError('HTTP mode requires --token-file for bearer authentication.')
     if not 1 <= port <= 65535:
         raise ConfigError('HTTP port must be between 1 and 65535.')
+    if operator_token_file and not http:
+        raise ConfigError('The app requires HTTP mode.')
+    operator_token = read_token_file(operator_token_file) if operator_token_file else None
+    if operator_token and token_file and secrets.compare_digest(operator_token, read_token_file(token_file)):
+        raise ConfigError('Operator and agent token files must contain different credentials.')
     auth = token_verifier(token_file) if http else None
     terminal = open_terminal()
     tasks = []
     http_server = None
     server_task = None
+    launch_task = None
     try:
         if terminal is None:
             if not config.master_password:
@@ -64,7 +73,12 @@ async def run(
                 raise ConfigError("headless MCP requires ESCALATION_TIMEOUT_SECONDS > 0")
         master_password = resolve_master_password(config)
         broker = build_broker(config, master_password)
-        mcp = build_mcp(broker, auth=auth)
+        gmail_tools = None
+        if operator_token:
+            from broker.gmail_tools import GmailTools
+            from broker.integrations.gmail import Gmail
+            gmail_tools = GmailTools(broker, Gmail(broker.store))
+        mcp = build_mcp(broker, auth=auth, gmail_tools=gmail_tools) if gmail_tools else build_mcp(broker, auth=auth)
         print(format_status_line(broker), file=sys.stderr)
         if http:
             print(f'[AgentGate] authenticated MCP endpoint: http://127.0.0.1:{port}/mcp', file=sys.stderr)
@@ -72,15 +86,26 @@ async def run(
                 path='/mcp', transport='http', host_origin_protection=True,
                 allowed_hosts=['127.0.0.1', 'localhost'], allowed_origins=[],
             )
+            if operator_token:
+                from broker.dashboard import create_dashboard
+                app = create_dashboard(app, broker, gmail_tools, operator_token)
             http_server = uvicorn.Server(uvicorn.Config(
                 app, host='127.0.0.1', port=port, lifespan='on',
                 timeout_graceful_shutdown=2,
             ))
             server_task = asyncio.create_task(http_server.serve())
             tasks.append(server_task)
+            if operator_token and open_app:
+                async def launch_app():
+                    while not http_server.started and not server_task.done():
+                        await asyncio.sleep(0.05)
+                    if http_server.started:
+                        # Fragments are never transmitted in HTTP requests/logs.
+                        await asyncio.to_thread(webbrowser.open, f'http://127.0.0.1:{port}/app#key={operator_token}')
+                launch_task = asyncio.create_task(launch_app())
         else:
             tasks.append(asyncio.create_task(mcp.run_async()))
-        if terminal is not None:
+        if terminal is not None and not operator_token:
             tasks.append(asyncio.create_task(console_loop(broker, terminal)))
         done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for task in done:
@@ -94,6 +119,8 @@ async def run(
                 await asyncio.wait_for(asyncio.shield(server_task), timeout=5)
             except (asyncio.TimeoutError, asyncio.CancelledError):
                 server_task.cancel()
+        if launch_task is not None:
+            tasks.append(launch_task)
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -106,9 +133,17 @@ def main() -> None:
     parser.add_argument('--http', action='store_true', help='serve authenticated MCP on localhost')
     parser.add_argument('--port', type=int, default=8765, help='localhost HTTP port (default: 8765)')
     parser.add_argument('--token-file', help='private bearer token file required for HTTP')
+    parser.add_argument('--app', action='store_true', help='enable the local operator app and open its window')
+    parser.add_argument('--operator-token-file', help='separate private app credential, required with --app')
+    parser.add_argument('--no-open', action='store_true', help='do not automatically open the app browser')
     args = parser.parse_args()
+    if args.app and not args.operator_token_file:
+        parser.error('--app requires --operator-token-file')
+    if args.operator_token_file and not args.app:
+        parser.error('--operator-token-file requires --app')
     try:
-        asyncio.run(run(http=args.http, port=args.port, token_file=args.token_file))
+        asyncio.run(run(http=args.http or args.app, port=args.port, token_file=args.token_file,
+                        operator_token_file=args.operator_token_file, open_app=not args.no_open))
     except ConfigError as exc:
         print(f"[AgentGate] configuration error: {exc}", file=sys.stderr)
         raise SystemExit(2)

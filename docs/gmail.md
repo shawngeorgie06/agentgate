@@ -63,7 +63,7 @@ Agent names are still caller supplied. These policies are suitable for trusted l
 ## MCP tools
 
 - `gmail.search(agent, query, limit=20, page_token=None)` searches using Gmail query syntax, returning IDs and pagination. `limit` is 1–100.
-- `gmail.read(agent, message_id)` returns headers and text/HTML bodies with attachment metadata. It does not download attachment contents.
+- `gmail.read(agent, message_id)` returns headers and text/HTML bodies with attachment metadata. Attachment contents are not exposed in the result, although Gmail’s raw MIME response includes attachment bytes inside the broker.
 - `gmail.draft(agent, to, subject, body, cc="", bcc="")` creates a plain-text draft and returns its ID. It does not send it.
 - `gmail.send_draft(agent, draft_id)` first checks draft access, then presents the recipients (including Bcc), subject, bodies, attachment metadata, and a content hash for approval. It sends exactly those snapshotted message bytes, so edits to the Gmail draft during approval cannot change the email sent.
 

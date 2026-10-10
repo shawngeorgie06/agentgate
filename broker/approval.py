@@ -20,6 +20,7 @@ class PendingRequest:
     agent: str
     credential: str
     details: str | None = None
+    request_id: str = field(default_factory=lambda: secrets.token_urlsafe(16))
     approval_code: str = field(default_factory=lambda: secrets.token_hex(3))
     future: "asyncio.Future[bool] | None" = field(default=None)  # set in submit
 

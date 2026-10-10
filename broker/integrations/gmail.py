@@ -85,6 +85,7 @@ def describe_message(raw: str) -> dict:
         'cc': message.get_all('Cc', []),
         'bcc': message.get_all('Bcc', []),
         'subject': message.get('Subject', ''),
+        'date': message.get('Date', ''),
         'parts': parts,
         'attachments': attachments,
         'sha256': hashlib.sha256(content).hexdigest(),
@@ -154,6 +155,26 @@ class Gmail:
     def _read(self, service, message_id: str):
         result = service.users().messages().get(userId='me', id=message_id, format='raw').execute()
         return {'id': result['id'], 'thread_id': result.get('threadId'), **describe_message(result['raw'])}
+
+    def _inbox(self, service, query: str = 'in:inbox', page_token: str | None = None):
+        result = self._search(service, query, limit=10, page_token=page_token)
+        messages = []
+        for item in result.get('messages', []):
+            message = self._read(service, item['id'])
+            plain = next((p['content'] for p in message['parts'] if p['type'] == 'text/plain'), '')
+            messages.append({key: message[key] for key in ('id', 'from', 'subject', 'date')} | {'snippet': plain[:180]})
+        return {'messages': messages, 'next_page_token': result.get('nextPageToken')}
+
+    def _drafts(self, service, page_token: str | None = None):
+        arguments = {'userId': 'me', 'maxResults': 10}
+        if page_token:
+            arguments['pageToken'] = page_token
+        result = service.users().drafts().list(**arguments).execute()
+        drafts = []
+        for item in result.get('drafts', []):
+            preview = self._snapshot(service, item['id'])['preview']
+            drafts.append({'id': item['id'], **preview})
+        return {'drafts': drafts, 'next_page_token': result.get('nextPageToken')}
 
     def _draft(self, service, to: str, subject: str, body: str, cc: str = '', bcc: str = ''):
         if not to.strip():

@@ -218,3 +218,7 @@ Tests cover:
 - Two-tier approval workflows
 - Audit logging (values never logged)
 - MCP tool interface
+
+### Local operator app
+
+Use the [AgentGate app](docs/app.md) for Gmail reading, draft creation/previews, send approvals, and activity in a browser window. Agent commands continue to work while approvals move out of the terminal. Try the sample-data preview with `.venv/bin/python examples/app_demo.py`.

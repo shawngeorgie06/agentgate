@@ -12,3 +12,4 @@ httplib2>=0.20
 
 uvicorn>=0.30
 httpx2>=2.13
+starlette>=0.40

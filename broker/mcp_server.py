@@ -195,7 +195,7 @@ class Broker:
         }
 
 
-def build_mcp(broker: Broker, *, auth=None) -> FastMCP:
+def build_mcp(broker: Broker, *, auth=None, gmail_tools=None) -> FastMCP:
     mcp = FastMCP("AgentGate", auth=auth, mask_error_details=True)
 
     @mcp.tool(name="credential.request")
@@ -219,5 +219,8 @@ def build_mcp(broker: Broker, *, auth=None) -> FastMCP:
     def broker_status() -> dict:
         return broker.status()
 
-    register_gmail_tools(mcp, broker)
+    if gmail_tools is None:
+        register_gmail_tools(mcp, broker)
+    else:
+        register_gmail_tools(mcp, broker, tools=gmail_tools)
     return mcp

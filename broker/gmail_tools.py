@@ -95,8 +95,8 @@ class GmailTools:
             return {'ok': True, 'data': data, 'draft_retained': True}
 
 
-def register_gmail_tools(mcp: FastMCP, broker: Broker, gmail: Gmail | None = None) -> GmailTools:
-    tools = GmailTools(broker, gmail or Gmail(broker.store))
+def register_gmail_tools(mcp: FastMCP, broker: Broker, gmail: Gmail | None = None, *, tools: GmailTools | None = None) -> GmailTools:
+    tools = tools or GmailTools(broker, gmail or Gmail(broker.store))
 
     @mcp.tool(name='gmail.search')
     async def search(agent: str, query: str, limit: int = 20, page_token: str | None = None) -> dict:
@@ -105,7 +105,7 @@ def register_gmail_tools(mcp: FastMCP, broker: Broker, gmail: Gmail | None = Non
 
     @mcp.tool(name='gmail.read')
     async def read(agent: str, message_id: str) -> dict:
-        """Read email headers and body; attachment contents are not downloaded."""
+        """Read email headers and body; attachment contents are not returned."""
         return await tools.execute(agent, 'gmail:read', 'read', message_id=message_id)
 
     @mcp.tool(name='gmail.draft')

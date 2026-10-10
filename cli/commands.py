@@ -21,6 +21,9 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("cred-list", help="list credential names")
     sub.add_parser("policy-validate", help="validate the policy file")
     sub.add_parser("status", help="print broker status")
+    gmail = sub.add_parser("gmail-connect", help="connect Gmail using Google OAuth")
+    gmail.add_argument("--client-file", required=True, help="Google Desktop app client JSON")
+    sub.add_parser("gmail-disconnect", help="remove local Gmail authorization")
     return parser
 
 
@@ -45,6 +48,27 @@ def run(
             print(f"[AgentGate] configuration error: {exc}", file=sys.stderr)
             return 2
     args = build_parser().parse_args(argv)
+
+    if args.command == "gmail-connect":
+        from broker.integrations.gmail import connect
+        try:
+            store = CredentialStore(config.credentials_path, _password(master_password))
+            account = connect(args.client_file, store)
+        except Exception:
+            print("Gmail connection failed. Check the client file, permissions, and browser consent.", file=sys.stderr)
+            return 1
+        print(f"Gmail connected: {account}. Restart the broker to use this connection.")
+        return 0
+
+    if args.command == "gmail-disconnect":
+        from broker.integrations.gmail import TOKEN_NAME
+        store = CredentialStore(config.credentials_path, _password(master_password))
+        try:
+            store.delete(TOKEN_NAME)
+        except KeyError:
+            pass
+        print("Local Gmail authorization removed. Stop running brokers and revoke access in your Google account to disconnect fully.")
+        return 0
 
     if args.command == "cred-store":
         value = os.environ.get("AGENTGATE_CRED_VALUE") or sys.stdin.readline().rstrip("\n")

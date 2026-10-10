@@ -8,7 +8,7 @@ AgentGate is a prototype credential broker and approval engine for AI agents. It
 - **Policy Engine**: YAML-based declarative policies with time windows and auto-approval rules
 - **Two-Tier Approval**: Automatic approval for trusted agent/credential pairs; escalation to CLI operator for others
 - **Audit Logging**: Append-only JSON audit trail (no credential values logged)
-- **FastMCP Server**: Built-in Model Context Protocol server exposing 5 standard MCP tools for agent integration
+- **FastMCP Server**: Built-in Model Context Protocol server exposing credential, policy, and Gmail MCP tools for agent integration
 - **Runtime Mode Toggle**: Interactive CLI toggle between AUTO and MANUAL approval modes (state persisted to JSON)
 - **Async CLI**: Command-line interface for credential management and policy administration
 - **Docker Ready**: Docker Compose configuration with mounted state volumes for ECS migration
@@ -73,6 +73,10 @@ docker compose up
 
 The container mounts all state directories (`policies`, `state`, `logs`, `data`) from the host, making it suitable for ECS task definitions that mount external state volumes.
 
+## Gmail
+
+Connect Gmail once using Google OAuth, then let local agents search, read, and create drafts. Every email send requires operator approval. Tokens stay inside the encrypted broker store. See the [Gmail setup guide](docs/gmail.md) for Google setup, policies, tools, and current terminal requirements.
+
 ## Policy Schema
 
 Policies are defined in `policies/policies.yaml`. Each policy specifies:
@@ -112,7 +116,7 @@ The first matching policy wins. Policies are evaluated in order.
 
 ## MCP Tools
 
-AgentGate exposes 5 MCP tools for agent integration:
+AgentGate exposes these core MCP tools for agent integration:
 
 1. **`credential.request`** — Request a credential by agent name and credential name. Returns `{granted: bool, token: str, token_expiry: int, value: str, reason: str}`.
 
@@ -140,7 +144,7 @@ All credential decisions are logged to `logs/audit.log`, one JSON object per lin
 - `agent` — requesting agent name
 - `credential_requested` — credential name (never the value)
 - `policy_matched` — the policy that decided the request
-- `decision` — one of `approved`, `denied`, `escalated`, `expired` (`expired` = escalated request that timed out waiting for the operator and was auto-denied)
+- `decision` — one of `approved`, `denied`, `escalated`, `expired`, `completed`, `failed` (`completed` and `failed` record Gmail operation outcomes; `expired` = escalated request that timed out waiting for the operator and was auto-denied)
 - `mode` — the broker mode at decision time (`auto` or `manual`)
 - `token_expiry` — expiry of the issued token, or `null` when no token was issued
 

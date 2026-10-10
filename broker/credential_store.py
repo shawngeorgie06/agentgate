@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import threading
 
 from argon2.low_level import Type, hash_secret_raw
 from cryptography.exceptions import InvalidTag
@@ -31,6 +32,7 @@ def _b64d(text: str) -> bytes:
 
 class CredentialStore:
     def __init__(self, path: str, master_password: str) -> None:
+        self._lock = threading.RLock()
         self._path = path
         self._password = master_password.encode("utf-8")
         is_new = not os.path.exists(self._path)
@@ -66,33 +68,37 @@ class CredentialStore:
 
     # --- public API ------------------------------------------------------
     def store(self, name: str, value: str) -> None:
-        nonce = os.urandom(_NONCE_LEN)
-        ciphertext = AESGCM(self._key).encrypt(nonce, value.encode("utf-8"), None)
-        self._data["credentials"][name] = {
-            "nonce": _b64e(nonce),
-            "ciphertext": _b64e(ciphertext),
-        }
-        self._write(self._data)
+        with self._lock:
+            nonce = os.urandom(_NONCE_LEN)
+            ciphertext = AESGCM(self._key).encrypt(nonce, value.encode("utf-8"), None)
+            self._data["credentials"][name] = {
+                "nonce": _b64e(nonce),
+                "ciphertext": _b64e(ciphertext),
+            }
+            self._write(self._data)
 
     def retrieve(self, name: str) -> str:
-        if name not in self._data["credentials"]:
-            raise KeyError(name)
-        entry = self._data["credentials"][name]
-        try:
-            plaintext = AESGCM(self._key).decrypt(
-                _b64d(entry["nonce"]), _b64d(entry["ciphertext"]), None
-            )
-        except InvalidTag as exc:
-            raise CredentialDecryptionError(
-                f"could not decrypt credential '{name}' (wrong password or tampered store)"
-            ) from exc
-        return plaintext.decode("utf-8")
+        with self._lock:
+            if name not in self._data["credentials"]:
+                raise KeyError(name)
+            entry = self._data["credentials"][name]
+            try:
+                plaintext = AESGCM(self._key).decrypt(
+                    _b64d(entry["nonce"]), _b64d(entry["ciphertext"]), None
+                )
+            except InvalidTag as exc:
+                raise CredentialDecryptionError(
+                    f"could not decrypt credential '{name}' (wrong password or tampered store)"
+                ) from exc
+            return plaintext.decode("utf-8")
 
     def delete(self, name: str) -> None:
-        if name not in self._data["credentials"]:
-            raise KeyError(name)
-        del self._data["credentials"][name]
-        self._write(self._data)
+        with self._lock:
+            if name not in self._data["credentials"]:
+                raise KeyError(name)
+            del self._data["credentials"][name]
+            self._write(self._data)
 
     def list_names(self) -> list[str]:
-        return sorted(self._data["credentials"].keys())
+        with self._lock:
+            return sorted(self._data["credentials"].keys())

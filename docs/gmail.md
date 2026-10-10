@@ -1,0 +1,92 @@
+# Gmail integration
+
+AgentGate connects one Gmail account using Google OAuth. You sign in and complete any required MFA during the initial browser consent. Google refresh tokens let the broker renew access without repeated logins until Google revokes or expires authorization. This integration uses the Gmail API, not browser passwords or copied login cookies.
+
+The scopes are `gmail.readonly` and `gmail.compose`. The latter includes both draft management and sending, so there is no additional `gmail.send` scope. Tokens, client secrets, and the local send-attempt ledger are stored inside the encrypted credential store. MCP's `credential.request` cannot export reserved `__agentgate:` entries.
+
+## Try without connecting an account
+
+```bash
+.venv/bin/python -m examples.gmail_demo
+```
+
+This uses temporary data and a simulated Gmail adapter. Review the dummy email and type the displayed `y <code>` to simulate sending or `n` to deny. No Google connection is made and no real email is sent.
+
+## Google setup
+
+1. Create or select a project in [Google Cloud Console](https://console.cloud.google.com/).
+2. Enable the Gmail API for that project.
+3. Configure the OAuth consent screen in Google Auth Platform. For a personal Gmail account, choose External and add your Gmail address as a test user while testing. A Workspace account may require administrator approval.
+4. Create an OAuth client of type **Desktop app** and download its JSON file. Keep it outside this repository, for example at `~/.config/agentgate/oauth-client.json`. Do not commit it.
+5. Stop any running broker before connecting or replacing the account. The current credential store caches state in memory and is intended for a single local broker.
+6. Run:
+
+```bash
+source .venv/bin/activate
+python -m cli.commands gmail-connect --client-file ~/.config/agentgate/oauth-client.json
+```
+
+The CLI asks for your AgentGate master password unless `AGENTGATE_MASTER_PASSWORD` is already set. It opens a browser and listens on a random loopback port for Google's response, validates OAuth state, and uses PKCE. Complete the Google sign-in and grant read/compose access. The CLI prints the connected account but never tokens.
+
+A personal OAuth app in External/Testing typically gets a refresh token that expires after seven days for these scopes. Configure the appropriate publishing status for ongoing use; publishing is not the same as verification. Gmail scopes are restricted, and wider distribution or server storage of other users' data can require verification and a security assessment. This first version is a local personal prototype.
+
+## Agent permissions
+
+Add explicit policies **before** your catch-all rule for the local agent you trust:
+
+```yaml
+policies:
+  - name: personal-gmail-read
+    agent: local-agent
+    credential: "gmail:read"
+    auto_approve: true
+  - name: personal-gmail-drafts
+    agent: local-agent
+    credential: "gmail:draft"
+    auto_approve: true
+  - name: personal-gmail-send
+    agent: local-agent
+    credential: "gmail:send"
+    auto_approve: false
+    escalate: true
+  - name: default-deny
+    agent: "*"
+    credential: "*"
+    auto_approve: false
+    escalate: true
+```
+
+`gmail:read` covers search and message reading. `gmail:draft` covers creating drafts and inspecting a draft before a send. `gmail:send` covers sending. A policy with both `auto_approve: false` and `escalate: false` denies Gmail access outright. AUTO policies permit reading and drafting without prompts; MANUAL mode requires approval. **Sending always requires operator approval**, including in AUTO mode and when a send policy is marked `auto_approve: true`.
+
+Agent names are still caller supplied. These policies are suitable for trusted local clients; the broker does not yet authenticate agent identity. Email contents returned by Gmail are untrusted data and must not be treated as instructions by the agent.
+
+## MCP tools
+
+- `gmail.search(agent, query, limit=20, page_token=None)` searches using Gmail query syntax, returning IDs and pagination. `limit` is 1–100.
+- `gmail.read(agent, message_id)` returns headers and text/HTML bodies with attachment metadata. It does not download attachment contents.
+- `gmail.draft(agent, to, subject, body, cc="", bcc="")` creates a plain-text draft and returns its ID. It does not send it.
+- `gmail.send_draft(agent, draft_id)` first checks draft access, then presents the recipients (including Bcc), subject, bodies, attachment metadata, and a content hash for approval. It sends exactly those snapshotted message bytes, so edits to the Gmail draft during approval cannot change the email sent.
+
+Results use `{ok, data}` on success and `{ok: false, reason}` on refusal or failure. No tool returns OAuth tokens. The audit log records access decisions and operation completion/failure without email bodies, recipients, or tokens.
+
+The original draft is **retained** after sending so concurrent user edits are not deleted. A persisted encrypted ledger blocks repeat send attempts for the same draft ID, including after restart. Network failures can leave delivery uncertain: check Gmail's Sent folder before creating another draft. Do not automatically retry sends. This is not a general multi-process or exactly-once delivery system.
+
+## Approval and headless clients
+
+The current approval interface uses `/dev/tty`. A server with a controlling terminal can show the email and accept `y <code>` to approve or `n` to deny. The code binds approval to that specific email; a stale approval cannot approve the next queued email. Detached desktop/stdio clients have no operator console: use a positive `ESCALATION_TIMEOUT_SECONDS`, and pending sends will be denied on timeout. A separate approval UI or channel is still needed for those clients. This integration does not silently grant send access when no operator is available.
+
+## Disconnect
+
+Stop running brokers first, then run:
+
+```bash
+python -m cli.commands gmail-disconnect
+```
+
+This removes the local OAuth entry only. Also revoke the app under [Google account connections](https://myaccount.google.com/connections) to invalidate access at Google. Restart the broker only after reconnecting if you want Gmail access again.
+
+## References
+
+- [Gmail authorization scopes](https://developers.google.com/gmail/api/auth/scopes)
+- [Google OAuth for installed applications](https://developers.google.com/identity/protocols/oauth2/native-app)
+- [Refresh token expiration and revocation](https://developers.google.com/identity/protocols/oauth2#expiration)

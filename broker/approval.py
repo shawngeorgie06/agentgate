@@ -19,6 +19,8 @@ def issue_token(ttl_minutes: int, now: datetime.datetime | None = None) -> tuple
 class PendingRequest:
     agent: str
     credential: str
+    details: str | None = None
+    approval_code: str = field(default_factory=lambda: secrets.token_hex(3))
     future: "asyncio.Future[bool] | None" = field(default=None)  # set in submit
 
 
@@ -27,19 +29,18 @@ class ApprovalQueue:
         self._queue: deque[PendingRequest] = deque()
 
     async def submit(
-        self, agent: str, credential: str, timeout: float | None = None
+        self, agent: str, credential: str, timeout: float | None = None,
+        details: str | None = None
     ) -> bool:
         loop = asyncio.get_running_loop()
-        req = PendingRequest(agent=agent, credential=credential, future=loop.create_future())
+        req = PendingRequest(agent=agent, credential=credential, details=details, future=loop.create_future())
         self._queue.append(req)
-        if timeout is None:
-            return await req.future
         try:
+            if timeout is None:
+                return await req.future
             return await asyncio.wait_for(req.future, timeout)
-        except asyncio.TimeoutError:
-            # Fail closed: drop the request so it never lingers as phantom-pending.
+        finally:
             self._remove(req)
-            raise
 
     def get_pending(self) -> PendingRequest | None:
         for req in self._queue:

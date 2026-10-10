@@ -12,6 +12,8 @@ from broker.approval import ApprovalQueue, issue_token
 from broker.audit import AuditLogger
 from broker.config import Config
 from broker.credential_store import CredentialStore
+from broker.integrations.gmail import INTERNAL_PREFIX
+from broker.gmail_tools import register_gmail_tools
 from broker.policy_engine import PolicyEngine, PolicyError
 
 
@@ -37,6 +39,14 @@ class Broker:
     async def request_credential(self, agent: str, credential: str) -> dict:
         self.total_requests += 1
         mode = state.read_mode(self.config.state_path)
+
+        if credential.startswith(INTERNAL_PREFIX):
+            self.audit.log(
+                agent=agent, credential_requested=credential, policy_matched="internal-only",
+                decision="denied", mode=mode, token_expiry=None,
+            )
+            return {"granted": False, "token": None, "token_expiry": None,
+                    "value": None, "reason": "Integration credentials are broker-only."}
 
         if mode == "manual":
             return await self._escalate(agent, credential, mode, policy_name="manual-mode")
@@ -209,4 +219,5 @@ def build_mcp(broker: Broker) -> FastMCP:
     def broker_status() -> dict:
         return broker.status()
 
+    register_gmail_tools(mcp, broker)
     return mcp

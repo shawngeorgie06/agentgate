@@ -50,3 +50,20 @@ def test_cli_returns_nonzero_on_invalid_config(monkeypatch, capsys):
     assert rc != 0
     err = capsys.readouterr().err
     assert "TOKEN_TTL_MINUTES" in err
+
+
+def test_gmail_connect_and_disconnect(tmp_path, monkeypatch, capsys):
+    from broker.integrations import gmail
+    cfg = _cfg(tmp_path)
+    def fake_connect(client_file, store):
+        assert client_file == 'oauth-client.json'
+        store.store(gmail.TOKEN_NAME, 'refresh-token-secret')
+        return 'user@example.test'
+    monkeypatch.setattr(gmail, 'connect', fake_connect)
+    assert commands.run(['gmail-connect', '--client-file', 'oauth-client.json'], config=cfg, master_password='pw') == 0
+    output = capsys.readouterr().out
+    assert 'refresh-token-secret' not in output
+    assert 'Restart the broker' in output
+    assert commands.run(['gmail-disconnect'], config=cfg, master_password='pw') == 0
+    from broker.credential_store import CredentialStore
+    assert gmail.TOKEN_NAME not in CredentialStore(cfg.credentials_path, 'pw').list_names()

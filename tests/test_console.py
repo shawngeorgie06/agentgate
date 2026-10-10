@@ -82,3 +82,39 @@ async def test_real_stdio_server_headless_timeout(tmp_path):
             assert result['granted'] is False
             assert result['reason'] == 'escalation timed out'
     assert 'dummy-value' not in Path(config.logs_path).read_text()
+
+
+@pytest.mark.asyncio
+async def test_stale_email_approval_cannot_approve_next_email(tmp_path):
+    broker = build_broker(_cfg(tmp_path), 'pw')
+    master, slave = pty.openpty()
+    terminal = Terminal(slave)
+    console = asyncio.create_task(console_loop(broker, terminal))
+    first = asyncio.create_task(broker.approvals.submit('agent', 'gmail:send', details='Email A'))
+    second = None
+    try:
+        await asyncio.sleep(0.1)
+        request_a = broker.approvals.get_pending()
+        assert request_a is not None
+        first.cancel()
+        await asyncio.gather(first, return_exceptions=True)
+        second = asyncio.create_task(broker.approvals.submit('agent', 'gmail:send', details='Email B'))
+        await asyncio.sleep(0.1)
+        request_b = broker.approvals.get_pending()
+        assert request_b is not None
+        os.write(master, f'y {request_a.approval_code}\n'.encode())
+        await asyncio.sleep(0.1)
+        assert not second.done()
+        os.write(master, b'y\n')
+        await asyncio.sleep(0.1)
+        assert not second.done()
+        os.write(master, f'y {request_b.approval_code}\n'.encode())
+        assert await asyncio.wait_for(second, 2) is True
+    finally:
+        console.cancel()
+        first.cancel()
+        if second:
+            second.cancel()
+        await asyncio.gather(console, first, *([second] if second else []), return_exceptions=True)
+        terminal.close()
+        os.close(master)

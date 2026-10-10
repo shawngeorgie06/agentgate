@@ -6,3 +6,5 @@ state/mode.json
 logs/audit.log
 .pytest_cache/
 .venv/
+client_secret*.json
+oauth-client*.json

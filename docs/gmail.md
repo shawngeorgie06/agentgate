@@ -73,7 +73,7 @@ The original draft is **retained** after sending so concurrent user edits are no
 
 ## Approval and headless clients
 
-The current approval interface uses `/dev/tty`. A server with a controlling terminal can show the email and accept `y <code>` to approve or `n` to deny. The code binds approval to that specific email; a stale approval cannot approve the next queued email. Detached desktop/stdio clients have no operator console: use a positive `ESCALATION_TIMEOUT_SECONDS`, and pending sends will be denied on timeout. A separate approval UI or channel is still needed for those clients. This integration does not silently grant send access when no operator is available.
+The current approval interface uses `/dev/tty`. A server with a controlling terminal can show the email and accept `y <code>` to approve or `n` to deny. The code binds approval to that specific email; a stale approval cannot approve the next queued email. Detached desktop/stdio clients have no operator console: use a positive `ESCALATION_TIMEOUT_SECONDS`, and pending sends will be denied on timeout. For those clients, use the authenticated localhost HTTP connection below while keeping the broker in an operator terminal. This integration does not silently grant send access when no operator is available.
 
 ## Disconnect
 
@@ -90,3 +90,39 @@ This removes the local OAuth entry only. Also revoke the app under [Google accou
 - [Gmail authorization scopes](https://developers.google.com/gmail/api/auth/scopes)
 - [Google OAuth for installed applications](https://developers.google.com/identity/protocols/oauth2/native-app)
 - [Refresh token expiration and revocation](https://developers.google.com/identity/protocols/oauth2#expiration)
+
+## Agent access with terminal approvals
+
+Create a private local client token once:
+
+```bash
+.venv/bin/python -m cli.commands mcp-token-create --path ~/.config/agentgate/mcp-token
+```
+
+Start the broker in your own terminal with your usual credential and policy paths:
+
+```bash
+.venv/bin/python -m broker.main --http --token-file ~/.config/agentgate/mcp-token
+```
+
+Enter your master password locally and leave this terminal open. The MCP endpoint is `http://127.0.0.1:8765/mcp`. It requires the bearer token from the private file, binds only to localhost, and rejects foreign Host and Origin headers. Keep the file private; any local client holding this token is trusted and can supply an agent name. Do not expose this prototype through a proxy or on the internet.
+
+A Python agent can connect without receiving your Google credentials:
+
+```python
+import asyncio
+from fastmcp import Client
+from broker.http_auth import read_token_file
+
+async def main():
+    token = read_token_file("~/.config/agentgate/mcp-token")
+    async with Client("http://127.0.0.1:8765/mcp", auth=token) as client:
+        result = await client.call_tool("gmail.search", {
+            "agent": "agentgate-local", "query": "is:unread", "limit": 5,
+        })
+        print(result.data)
+
+asyncio.run(main())
+```
+
+Use the agent name authorized by your policies. Reading and drafting follow those policies. Every send presents the email in the broker terminal and waits for `y <code>` or `n`; unattended requests time out when `ESCALATION_TIMEOUT_SECONDS` is set. Press `s` to change mode and `q` to stop the broker. OAuth refresh happens inside the broker, including immediately before an approved send; a failed send is never automatically retried.

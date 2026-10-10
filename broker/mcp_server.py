@@ -195,8 +195,8 @@ class Broker:
         }
 
 
-def build_mcp(broker: Broker) -> FastMCP:
-    mcp = FastMCP("AgentGate")
+def build_mcp(broker: Broker, *, auth=None) -> FastMCP:
+    mcp = FastMCP("AgentGate", auth=auth, mask_error_details=True)
 
     @mcp.tool(name="credential.request")
     async def credential_request(agent: str, credential: str) -> dict:

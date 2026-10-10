@@ -24,6 +24,8 @@ def build_parser() -> argparse.ArgumentParser:
     gmail = sub.add_parser("gmail-connect", help="connect Gmail using Google OAuth")
     gmail.add_argument("--client-file", required=True, help="Google Desktop app client JSON")
     sub.add_parser("gmail-disconnect", help="remove local Gmail authorization")
+    token = sub.add_parser("mcp-token-create", help="create a private local MCP bearer token")
+    token.add_argument("--path", required=True, help="destination token file (must not already exist)")
     return parser
 
 
@@ -48,6 +50,16 @@ def run(
             print(f"[AgentGate] configuration error: {exc}", file=sys.stderr)
             return 2
     args = build_parser().parse_args(argv)
+
+    if args.command == "mcp-token-create":
+        from broker.http_auth import create_token_file
+        try:
+            create_token_file(args.path)
+        except OSError:
+            print("Could not create the MCP token file. Check permissions and use a new path.", file=sys.stderr)
+            return 1
+        print("Private MCP token file created. Its value is not displayed.")
+        return 0
 
     if args.command == "gmail-connect":
         from broker.integrations.gmail import connect

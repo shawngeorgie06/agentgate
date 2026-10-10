@@ -321,6 +321,7 @@ def test_send_transport_does_not_replay_after_response_loss(tmp_path, monkeypatc
     gmail = Gmail(broker.store)
     gmail._credentials = SimpleNamespace(token='dummy-token', valid=True)
     gmail._service = object()
+    gmail._refresh = lambda: None
     try:
         with pytest.raises(GmailError, match='could not be reached'):
             gmail.call('send', snapshot={'raw': raw_message()})
@@ -329,3 +330,24 @@ def test_send_transport_does_not_replay_after_response_loss(tmp_path, monkeypatc
         server.shutdown()
         server.server_close()
         worker.join(timeout=2)
+
+
+def test_send_renews_token_before_dispatch_without_retry(tmp_path, monkeypatch):
+    from broker.integrations import gmail as module
+    broker, _, _, _ = make_tools(tmp_path)
+    gmail = Gmail(broker.store)
+    gmail._credentials = SimpleNamespace(token='old-token', valid=True)
+    gmail._service = object()
+    events = []
+    def refresh():
+        events.append('refresh')
+        gmail._credentials.token = 'fresh-token'
+    def post(url, **kwargs):
+        events.append('send')
+        assert kwargs['headers']['Authorization'] == 'Bearer fresh-token'
+        return SimpleNamespace(status_code=401)
+    gmail._refresh = refresh
+    monkeypatch.setattr(module.requests, 'post', post)
+    with pytest.raises(GmailError, match='HTTP 401'):
+        gmail.call('send', snapshot={'raw': raw_message()})
+    assert events == ['refresh', 'send']

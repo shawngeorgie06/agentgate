@@ -2,3 +2,7 @@
 :root{--soft-red:#faeeea}
 .agent-register{max-width:720px}.agent-register form{max-width:480px}.agent-register .hint{margin:10px 0 16px}.agent-card{max-width:900px}.agent-card .pill{color:#55765c;text-transform:capitalize}.agent-card .status-revoked,.agent-card .status-expired{color:#865c50;background:var(--soft-red)}.agent-card>button{margin-top:18px}.credential-path{font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere;background:#f6f8f4;border:1px solid var(--line);border-radius:8px;padding:12px;margin-top:7px}.command-example{white-space:pre-wrap;overflow-wrap:anywhere;background:#f5f6f2;border-radius:8px;padding:14px;font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;color:#405348}.agent-card .detail-value{color:#44564b}
 .request-details{white-space:pre-wrap;overflow-wrap:anywhere;background:#f5f6f2;border:1px solid var(--line);border-radius:8px;padding:16px;margin:12px 0;font:12px/1.65 ui-monospace,SFMono-Regular,Menlo,monospace;color:#405348;max-height:460px;overflow:auto}
+
+select{font:inherit;padding:11px 13px;border:1px solid #d8e0d7;border-radius:8px;background:#fff;color:inherit;width:100%;margin-top:7px}select:focus{outline:3px solid #dcece0}#permissions-form{max-width:600px}#permissions-dialog pre{white-space:pre-wrap}
+
+#permission-window-ack{width:auto;display:inline-block;margin-right:8px}#permission-windows{white-space:pre-wrap;color:#805e37}

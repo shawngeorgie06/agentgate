@@ -18,11 +18,15 @@ from starlette.routing import Mount, Route
 from broker import state
 from broker.gmail_tools import GmailTools
 from broker.integrations.gmail import GmailError, TOKEN_NAME
+from broker.permissions import Permissions, PermissionConflict
+from broker.policy_engine import PolicyError
 
 ASSETS = Path(__file__).with_name('web')
 
 
 def create_dashboard(mcp_app, broker, tools: GmailTools, operator_token: str):
+    permissions = Permissions(broker)
+
     async def asset(request):
         names = {'app': 'index.html', 'app.js': 'app.js', 'app.css': 'app.css'}
         name = names.get(request.path_params.get('asset', 'app'))
@@ -53,6 +57,8 @@ def create_dashboard(mcp_app, broker, tools: GmailTools, operator_token: str):
                 registry = getattr(broker, 'agent_registry', None)
                 data = {'agents': registry.list_agents() if registry is not None else [],
                         'available': registry is not None}
+            elif request.method == 'GET' and action == 'permissions':
+                data = permissions.view(request.query_params.get('agent_id', ''))
             elif request.method == 'GET' and action == 'activity':
                 def read_activity():
                     path = Path(broker.config.logs_path)
@@ -105,6 +111,16 @@ def create_dashboard(mcp_app, broker, tools: GmailTools, operator_token: str):
                         raise ValueError()
                     broker.approvals.resolve(pending, payload['approved'])
                     data = {'approved': payload['approved']}
+                elif action == 'permissions':
+                    agent_id = payload.get('agent_id')
+                    if not isinstance(agent_id, str):
+                        raise ValueError()
+                    try:
+                        data = permissions.save(agent_id, payload.get('permissions'), payload.get('revision'), acknowledge_time_windows=payload.get('acknowledge_time_windows', False))
+                    except Exception:
+                        tools.audit('operator', 'permissions:update', 'operator-settings', state.read_mode(broker.config.state_path), 'failed')
+                        raise
+                    tools.audit('operator', 'permissions:update', agent_id, state.read_mode(broker.config.state_path), 'completed')
                 elif action == 'agent-register':
                     name = payload.get('name')
                     ttl_hours = payload.get('ttl_hours', 720)
@@ -195,6 +211,10 @@ def create_dashboard(mcp_app, broker, tools: GmailTools, operator_token: str):
             else:
                 return JSONResponse({'ok': False, 'reason': 'Unknown operation.'}, status_code=404, headers=headers)
             return JSONResponse({'ok': True, 'data': data}, headers=headers)
+        except PermissionConflict as exc:
+            return JSONResponse({'ok': False, 'reason': str(exc)}, status_code=409, headers=headers)
+        except PolicyError:
+            return JSONResponse({'ok': False, 'reason': 'The policy file is invalid. Repair it before editing permissions.'}, status_code=400, headers=headers)
         except GmailError as exc:
             return JSONResponse({'ok': False, 'reason': str(exc)}, status_code=400, headers=headers)
         except (ValueError, TypeError):

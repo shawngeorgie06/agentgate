@@ -31,6 +31,13 @@ class GmailTools:
             decision=decision, mode=mode, token_expiry=None,
         )
 
+    def access_guard(self, identity_guard=None, *, trusted_operator=False):
+        revision = self.broker.policy_revision
+        def active():
+            identity_active = identity_guard is None or identity_guard()
+            return identity_active and (trusted_operator or self.broker.policy_revision == revision)
+        return active
+
     async def authorize(self, agent: str, resource: str, details: str | None = None,
                         identity_guard=None, *, trusted_operator: bool = False) -> bool:
         if identity_guard is not None and not identity_guard():
@@ -68,6 +75,7 @@ class GmailTools:
         return approved
 
     async def execute(self, agent: str, resource: str, operation: str, *, identity_guard=None, **arguments) -> dict:
+        identity_guard = self.access_guard(identity_guard)
         if not await self.authorize(agent, resource, identity_guard=identity_guard):
             return {'ok': False, 'reason': 'Access denied or approval timed out.'}
         def check_active():
@@ -77,7 +85,7 @@ class GmailTools:
             data = await asyncio.to_thread(self.gmail.call, operation, before_dispatch=check_active, **arguments)
         except IdentityError:
             self.audit(agent, resource, operation, state.read_mode(self.broker.config.state_path), 'denied')
-            return {'ok': False, 'reason': 'Agent identity is no longer active.'}
+            return {'ok': False, 'reason': 'Agent access is no longer active, or permissions changed.'}
         except GmailError as exc:
             self.audit(agent, resource, operation, state.read_mode(self.broker.config.state_path), 'failed')
             return {'ok': False, 'reason': str(exc)}
@@ -89,9 +97,10 @@ class GmailTools:
         if trusted_operator:
             agent, identity_guard = 'operator', None
         async with self._send_lock:
+            identity_guard = self.access_guard(identity_guard, trusted_operator=trusted_operator)
             if identity_guard is not None and not identity_guard():
                 self.audit(agent, 'gmail:send', 'identity-check', state.read_mode(self.broker.config.state_path), 'denied')
-                return {'ok': False, 'reason': 'Agent identity is no longer active.'}
+                return {'ok': False, 'reason': 'Agent access is no longer active, or permissions changed.'}
             if draft_id in self._sent_drafts:
                 return {'ok': False, 'reason': 'This draft already has a send attempt. Check Gmail before creating another draft.'}
             # Access to draft contents must itself be authorized.
@@ -102,7 +111,7 @@ class GmailTools:
                 snapshot = await asyncio.to_thread(self.gmail.call, 'snapshot', before_dispatch=_identity_callback(identity_guard), draft_id=draft_id)
             except IdentityError:
                 self.audit(agent, 'gmail:draft', 'snapshot', state.read_mode(self.broker.config.state_path), 'denied')
-                return {'ok': False, 'reason': 'Agent identity is no longer active.'}
+                return {'ok': False, 'reason': 'Agent access is no longer active, or permissions changed.'}
             except GmailError as exc:
                 return {'ok': False, 'reason': str(exc)}
             details = json.dumps({'draft_id': draft_id, **snapshot['preview']}, ensure_ascii=True, indent=2)
@@ -121,7 +130,7 @@ class GmailTools:
                 self._sent_drafts.discard(draft_id)
                 self.broker.store.store(self._ledger_name, json.dumps(sorted(self._sent_drafts)))
                 self.audit(agent, 'gmail:send', 'send', state.read_mode(self.broker.config.state_path), 'denied')
-                return {'ok': False, 'reason': 'Agent identity is no longer active.'}
+                return {'ok': False, 'reason': 'Agent access is no longer active, or permissions changed.'}
             except GmailError as exc:
                 self.audit(agent, 'gmail:send', 'send', state.read_mode(self.broker.config.state_path), 'failed')
                 return {'ok': False, 'reason': str(exc) + ' Delivery may be uncertain; check Gmail before retrying.'}

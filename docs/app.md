@@ -22,6 +22,7 @@ Your existing agent commands continue to use `http://127.0.0.1:8765/mcp`. The ap
 
 ## Using the app
 
+- **Permissions:** select an active agent and set Gmail reading, drafting, and sending access. Review and save in the app; see [permissions and time-window behavior](permissions.md).
 - **Agents:** register a unique identity, choose its lifetime, copy the private credential-file command, and revoke access when needed. See [identity setup and migration](agents.md).
 - **Inbox:** search with Gmail queries, select a message, and use “Load next page” for older results. Reading does not mark mail as read or delete anything.
 - **Drafts:** create a plain-text draft with To, Cc, Bcc, subject, and body. Browse existing Gmail drafts and their previews, including older pages. Existing drafts can be edited in Gmail; this version does not edit them in the app.

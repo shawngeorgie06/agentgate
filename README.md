@@ -222,3 +222,7 @@ Tests cover:
 ### Local operator app
 
 Use the [AgentGate app](docs/app.md) to register and revoke [agent identities](docs/agents.md), inspect activity, and approve requests. Gmail reading and draft creation/previews remain available. Agent commands continue to work while approvals move out of the terminal. Try the sample-data preview with `.venv/bin/python examples/app_demo.py`.
+
+### Agent permissions
+
+Set per-agent Gmail access in the app’s **Permissions** screen: allow/ask/deny for reading and drafting, and ask/deny for sending. Saves are persisted and applied immediately with conflict detection. See the [permissions guide](docs/permissions.md) for schedules, approval invalidation, and scope.

@@ -60,5 +60,10 @@ class ApprovalQueue:
             request.future.set_result(approved)
         self._remove(request)
 
+    def reject_agent_requests(self) -> None:
+        for request in list(self._queue):
+            if request.agent != 'operator':
+                self.resolve(request, False)
+
     def pending_count(self) -> int:
         return sum(1 for r in self._queue if not r.future.done())

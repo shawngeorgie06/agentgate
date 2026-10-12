@@ -19,11 +19,12 @@ function showView(view) {
   activeView = view;
   document.querySelectorAll('.view').forEach(n => n.hidden = n.id !== view + '-view');
   document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === view));
-  $('compose-button').hidden = view === 'agents';
-  $('view-title').textContent = {inbox:'Inbox', drafts:'Drafts', approvals:'Approvals', activity:'Activity', agents:'Agents'}[view];
-  $('view-subtitle').textContent = {inbox:'A quieter place to work through your email.', drafts:'Thoughtful messages, ready when you are.', approvals:'Stay in control of every outgoing email.', activity:'See what your agents have been working on.', agents:'Manage the identities that connect to your permission gateway.'}[view];
+  $('compose-button').hidden = view === 'agents' || view === 'permissions';
+  $('view-title').textContent = {inbox:'Inbox', drafts:'Drafts', approvals:'Approvals', activity:'Activity', agents:'Agents', permissions:'Permissions'}[view];
+  $('view-subtitle').textContent = {inbox:'A quieter place to work through your email.', drafts:'Thoughtful messages, ready when you are.', approvals:'Stay in control of every outgoing email.', activity:'See what your agents have been working on.', agents:'Manage the identities that connect to your permission gateway.', permissions:'Decide what each agent can do with your connections.'}[view];
   if (view === 'drafts') loadDrafts().catch(e => notice(e.message, true));
   if (view === 'activity') loadActivity().catch(e => notice(e.message, true));
+  if (view === 'permissions') loadPermissionAgents().catch(e => notice(e.message, true));
   if (view === 'agents') loadAgents().catch(e => notice(e.message, true));
   if (view === 'inbox') loadInbox().catch(e => notice(e.message, true));
 }
@@ -210,6 +211,59 @@ async function pollStatus() {
     $('gmail-status').textContent = 'Unavailable'; notice(e.message + ' Keep the app broker running.', true);
   } finally { polling = false; }
 }
+let permissionRevision = null, permissionGeneration = 0, permissionProposal = null, permissionWindows = [];
+async function loadPermissionAgents() {
+  $('permissions-save').disabled = true; permissionRevision = null;
+  const data = await api('agents'); const select = $('permission-agent'); const previous = select.value;
+  select.replaceChildren();
+  for (const agent of data.agents || []) {
+    const option = node('option', agent.name + (agent.status === 'active' ? '' : ' · ' + agent.status));
+    option.value = agent.id; option.disabled = agent.status !== 'active'; select.append(option);
+  }
+  const active = (data.agents || []).filter(a => a.status === 'active');
+  if (!active.length) { notice('Register an active agent before setting permissions.', true); return; }
+  select.value = active.some(a => a.id === previous) ? previous : active[0].id;
+  await loadPermissions();
+}
+async function loadPermissions() {
+  const generation = ++permissionGeneration; permissionRevision = null; $('permissions-save').disabled = true;
+  const id = $('permission-agent').value;
+  const data = await api('permissions?' + new URLSearchParams({agent_id:id}));
+  if (generation !== permissionGeneration || $('permission-agent').value !== id) return;
+  permissionWindows = data.time_windows || [];
+  $('permission-windows').hidden = !permissionWindows.length;
+  $('permission-windows').textContent = 'Existing time-window rules:\n' + permissionWindows.map(w => w.resource + ': ' + w.start + '–' + w.end + ' (' + w.policy + ')').join('\n') + '\nChoose each new all-time setting explicitly.';
+  $('permission-window-ack-label').hidden = !permissionWindows.length;
+  $('permission-window-ack').checked = false; $('permission-window-ack').required = !!permissionWindows.length;
+  $('permission-read').value = permissionWindows.length ? '' : data.permissions['gmail:read'];
+  $('permission-draft').value = permissionWindows.length ? '' : data.permissions['gmail:draft'];
+  $('permission-send').value = permissionWindows.length ? '' : data.permissions['gmail:send'];
+  permissionRevision = data.revision; $('permissions-save').disabled = data.agent.status !== 'active';
+}
+$('permission-agent').addEventListener('change', () => loadPermissions().catch(e => notice(e.message, true)));
+$('permissions-refresh').addEventListener('click', () => loadPermissionAgents().catch(e => notice(e.message, true)));
+$('permissions-form').addEventListener('submit', event => {
+  event.preventDefault(); if (!permissionRevision) return;
+  const permissions = {'gmail:read':$('permission-read').value,'gmail:draft':$('permission-draft').value,'gmail:send':$('permission-send').value};
+  permissionProposal = {agent_id:$('permission-agent').value, permissions, revision:permissionRevision, acknowledge_time_windows: $('permission-window-ack').checked};
+  const labels = {allow:'Allow without asking in AUTO mode', ask:'Ask me', deny:'Deny'};
+  $('permissions-review').textContent = 'Agent: ' + permissionProposal.agent_id + '\nConnection: Gmail\nRules apply at all times; they replace earlier Gmail rules.\n' + (permissionWindows.length ? 'Existing windows explicitly acknowledged: ' + permissionWindows.map(w => w.resource + ' ' + w.start + '–' + w.end).join(', ') + '\n' : '') + '\nRead: ' + labels[permissions['gmail:read']] + '\nDraft: ' + labels[permissions['gmail:draft']] + '\nSend: ' + (permissions['gmail:send'] === 'ask' ? 'Ask before every send' : 'Deny');
+  $('permissions-dialog').showModal();
+});
+$('permissions-cancel').addEventListener('click', () => {permissionProposal = null; $('permissions-dialog').close();});
+$('permissions-confirm').addEventListener('click', async event => {
+  if (!permissionProposal) return;
+  const button = event.currentTarget; button.disabled = true;
+  try {
+    const data = await post('permissions', permissionProposal); permissionRevision = data.revision;
+    $('permissions-dialog').close(); permissionProposal = null;
+    notice('Permissions saved. Pending agent requests were cancelled.'); await pollStatus();
+  } catch (error) {
+    $('permissions-dialog').close(); permissionProposal = null; permissionRevision = null;
+    $('permissions-save').disabled = true; notice(error.message + ' Reload rules before reviewing again.', true);
+  } finally { button.disabled = false; }
+});
+
 document.querySelectorAll('[data-view]').forEach(b => b.addEventListener('click', () => showView(b.dataset.view)));
 $('search-form').addEventListener('submit', e => {e.preventDefault(); loadInbox().catch(e => notice(e.message, true));});
 $('refresh-button').addEventListener('click', () => loadInbox().catch(e => notice(e.message, true)));

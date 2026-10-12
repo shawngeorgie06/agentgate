@@ -36,9 +36,14 @@ class Broker:
         self.audit = audit
         self.approvals = approvals
         self.agent_registry = None
+        self.policy_revision = 0
         self.total_requests = 0
         self.escalated_requests = 0
         self.start_time = datetime.datetime.now()
+
+    def invalidate_agent_requests(self) -> None:
+        self.policy_revision += 1
+        self.approvals.reject_agent_requests()
 
     def _deny_inactive_identity(self, agent: str, credential: str) -> dict:
         self.audit.log(
@@ -182,6 +187,7 @@ class Broker:
 
     async def add_policy(self, policy: dict, *, identity_guard=None, agent: str = "SYSTEM") -> dict:
         # Hard rule: policy mutation ALWAYS escalates, regardless of mode/policy.
+        requested_revision = self.policy_revision
         requested_name = policy.get("name") if isinstance(policy, dict) else None
         resource = self._policy_audit_resource(requested_name)
         try:
@@ -214,6 +220,9 @@ class Broker:
             self._audit_policy_add(agent, resource, "denied")
             return {"added": False, "reason": f"policy '{resource.removeprefix('policy.add:')}' change denied by operator"}
         self._audit_policy_add(agent, resource, "approved")
+        if requested_revision != self.policy_revision:
+            self._audit_policy_add(agent, resource, "denied")
+            return {"added": False, "reason": "Policy changed while approval was pending. Request a fresh review."}
         if identity_guard is not None and not identity_guard():
             self._audit_policy_add(agent, resource, "denied")
             return {"added": False, "reason": f"Agent identity is no longer active; policy '{resource.removeprefix('policy.add:')}' was not added."}
@@ -240,6 +249,7 @@ class Broker:
             PolicyEngine.from_file(tmp)
             os.replace(tmp, self.config.policies_path)
             self.engine = PolicyEngine.from_file(self.config.policies_path)
+            self.invalidate_agent_requests()
         except (OSError, yaml.YAMLError, PolicyError, TypeError, ValueError):
             self._audit_policy_add(agent, resource, "failed")
             return {"added": False, "reason": f"could not apply policy '{resource.removeprefix('policy.add:')}'"}

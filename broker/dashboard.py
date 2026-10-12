@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import secrets
@@ -17,6 +18,7 @@ from starlette.routing import Mount, Route
 
 from broker import state
 from broker.connections import GmailConnection
+from broker.credential_store import CredentialDecryptionError
 from broker.gmail_tools import GmailTools
 from broker.integrations.gmail import GmailError, TOKEN_NAME
 from broker.integrations.github import GitHub, GitHubError
@@ -351,6 +353,10 @@ def create_dashboard(mcp_app, broker, tools: GmailTools, operator_token: str, *,
             else:
                 return JSONResponse({'ok': False, 'reason': 'Unknown operation.'}, status_code=404, headers=headers)
             return JSONResponse({'ok': True, 'data': data}, headers=headers)
+        except CredentialDecryptionError:
+            return JSONResponse({'ok': False, 'code': 'credentials_locked',
+                                 'reason': 'Saved credentials could not be unlocked. Restart AgentGate and enter the original master password privately. If it is correct, the credential file may be damaged.'},
+                                status_code=503, headers=headers)
         except PermissionConflict as exc:
             return JSONResponse({'ok': False, 'reason': str(exc)}, status_code=409, headers=headers)
         except PolicyError:
@@ -361,7 +367,9 @@ def create_dashboard(mcp_app, broker, tools: GmailTools, operator_token: str, *,
             return JSONResponse({'ok': False, 'reason': str(exc)}, status_code=400, headers=headers)
         except (ValueError, TypeError):
             return JSONResponse({'ok': False, 'reason': 'Invalid request.'}, status_code=400, headers=headers)
-        except Exception:
+        except Exception as exc:
+            # Exception text and tracebacks may contain credentials or mail.
+            logging.getLogger(__name__).error('Operator API failed (%s).', type(exc).__name__)
             return JSONResponse({'ok': False, 'reason': 'Operation failed. Check the connection and try refreshing.'}, status_code=500, headers=headers)
 
     @asynccontextmanager

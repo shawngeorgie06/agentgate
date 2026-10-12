@@ -8,12 +8,13 @@ import sys
 import secrets
 import webbrowser
 import uvicorn
+from argon2.exceptions import Argon2Error
 
 from broker.approval import ApprovalQueue
 from broker.audit import AuditLogger
 from broker.config import Config, ConfigError
 from broker.console import console_loop, open_terminal
-from broker.credential_store import CredentialStore
+from broker.credential_store import CredentialStore, CredentialDecryptionError
 from broker.mcp_server import Broker, build_mcp
 from broker.http_auth import RegistryTokenVerifier, read_token_file
 from broker.agent_registry import AgentRegistry
@@ -26,7 +27,14 @@ def resolve_master_password(config: Config) -> str:
 
 
 def build_broker(config: Config, master_password: str) -> Broker:
-    store = CredentialStore(config.credentials_path, master_password)
+    # Opening the file derives a key but does not verify it. Validate before
+    # serving an apparently connected app or accepting credential changes.
+    try:
+        store = CredentialStore(config.credentials_path, master_password)
+        for name in store.list_names():
+            store.retrieve(name)
+    except (CredentialDecryptionError, Argon2Error, KeyError, ValueError, TypeError, AttributeError):
+        raise ConfigError('Could not unlock saved credentials. Enter the original AgentGate master password; if it is correct, the credential file may be damaged.') from None
     from broker.policy_engine import PolicyEngine
     return Broker(
         config=config,

@@ -213,3 +213,18 @@ async def test_canceled_github_connect_keeps_mutation_lock_until_worker_finishes
             await connect
         assert (await disconnect).status_code == 200
         assert GITHUB_TOKEN not in broker.store.list_names()
+
+@pytest.mark.asyncio
+async def test_credential_unlock_failure_has_safe_actionable_error(tmp_path, monkeypatch):
+    from broker.credential_store import CredentialDecryptionError
+    async with dashboard(tmp_path) as (client,broker,github,tools):
+        broker.store.store(GMAIL_TOKEN,'sample-only')
+        def failed(*args,**kwargs):
+            raise CredentialDecryptionError('private-credential-name-and-secret')
+        monkeypatch.setattr(tools.gmail,'call',failed)
+        response = await client.get('/api/connections')
+        assert response.status_code == 503
+        data = response.json()
+        assert data['code'] == 'credentials_locked'
+        assert 'master password' in data['reason']
+        assert 'private-credential-name-and-secret' not in response.text

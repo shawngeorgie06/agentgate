@@ -1,4 +1,4 @@
-"""Operator-managed Gmail policies with atomic storage and conflict detection."""
+"""Operator-managed service permissions with atomic storage and conflict detection."""
 from __future__ import annotations
 
 import hashlib
@@ -11,7 +11,12 @@ import yaml
 from broker.policy_engine import PolicyEngine, PolicyError
 
 RESOURCES = ('gmail:read', 'gmail:draft', 'gmail:send')
+SERVICE_RESOURCES = {
+    'gmail': RESOURCES,
+    'github': ('github:read', 'github:write'),
+}
 MARKER = 'agentgate-permissions'
+SERVICE_MARKERS = {'gmail': MARKER, 'github': MARKER + ':github'}
 
 
 class PermissionConflict(ValueError):
@@ -44,46 +49,62 @@ class Permissions:
         return agent
 
     @staticmethod
-    def _time_windows(doc, agent_id):
+    def _service(service):
+        if service not in SERVICE_RESOURCES:
+            raise ValueError('Choose Gmail or GitHub.')
+        return service
+
+    @staticmethod
+    def _time_windows(doc, agent_id, service='gmail'):
+        resources = SERVICE_RESOURCES[service]
         windows = []
         for rule in doc['policies']:
             if rule.get('agent') not in (agent_id, '*') or not rule.get('time_window'):
                 continue
-            for resource in RESOURCES:
+            for resource in resources:
                 if rule.get('credential') in (resource, '*'):
                     windows.append({'resource': resource, 'policy': rule['name'], 'start': rule['time_window']['start'], 'end': rule['time_window']['end']})
         return windows
 
-    def view(self, agent_id):
+    def view(self, agent_id, service='gmail'):
+        service = self._service(service)
+        resources = SERVICE_RESOURCES[service]
         agent = self._agent(agent_id)
         doc, revision = self._snapshot()
         engine = PolicyEngine(doc['policies'])
         permissions = {}
-        for resource in RESOURCES:
+        for resource in resources:
             decision = engine.evaluate(agent_id, resource)
-            permissions[resource] = ('ask' if resource == 'gmail:send' else 'allow') if decision.auto_approve else ('ask' if decision.escalate else 'deny')
-        return {'agent': agent, 'connection': 'gmail', 'permissions': permissions, 'revision': revision, 'time_windows': self._time_windows(doc, agent_id)}
+            write = resource in ('gmail:send', 'github:write')
+            permissions[resource] = ('ask' if write else 'allow') if decision.auto_approve else ('ask' if decision.escalate else 'deny')
+        return {'agent': agent, 'connection': service, 'permissions': permissions, 'revision': revision,
+                'time_windows': self._time_windows(doc, agent_id, service)}
 
-    def save(self, agent_id, permissions, revision, *, acknowledge_time_windows=False):
+    def save(self, agent_id, permissions, revision, *, service='gmail', acknowledge_time_windows=False):
+        service = self._service(service)
+        resources = SERVICE_RESOURCES[service]
         agent = self._agent(agent_id)
         if agent['status'] != 'active':
             raise ValueError('Only active agents can have their permissions changed.')
-        if not isinstance(permissions, dict) or set(permissions) != set(RESOURCES):
-            raise ValueError('Choose access for all three Gmail operations.')
+        if not isinstance(permissions, dict) or set(permissions) != set(resources):
+            count = 'three Gmail' if service == 'gmail' else 'two GitHub'
+            raise ValueError(f'Choose access for all {count} operations.')
         for resource, value in permissions.items():
-            choices = ('ask', 'deny') if resource == 'gmail:send' else ('allow', 'ask', 'deny')
+            choices = ('ask', 'deny') if resource in ('gmail:send', 'github:write') else ('allow', 'ask', 'deny')
             if not isinstance(value, str) or value not in choices:
-                raise ValueError('Invalid permission selection. Sending must require approval or be denied.')
+                message = 'Sending must require approval or be denied.' if resource == 'gmail:send' else 'Write operations must require approval or be denied.'
+                raise ValueError('Invalid permission selection. ' + message)
         doc, current_revision = self._snapshot()
         if not isinstance(revision, str) or revision != current_revision:
             raise PermissionConflict('Permissions changed elsewhere. Reload and review before saving.')
-        if self._time_windows(doc, agent_id) and acknowledge_time_windows is not True:
+        if self._time_windows(doc, agent_id, service) and acknowledge_time_windows is not True:
             raise ValueError('Explicitly acknowledge replacing existing time windows with all-time rules.')
-        managed = [{'name': f'{MARKER}:{agent_id}:{resource}', 'managed_by': MARKER,
+        marker = SERVICE_MARKERS[service]
+        managed = [{'name': f'{marker}:{agent_id}:{resource}', 'managed_by': marker,
                     'agent': agent_id, 'credential': resource,
                     'auto_approve': value == 'allow', 'escalate': value == 'ask'}
                    for resource, value in permissions.items()]
-        retained = [rule for rule in doc['policies'] if not (rule.get('managed_by') == MARKER and rule.get('agent') == agent_id)]
+        retained = [rule for rule in doc['policies'] if not (rule.get('managed_by') == marker and rule.get('agent') == agent_id)]
         doc['policies'] = managed + retained
         fd, temporary = tempfile.mkstemp(prefix='.agentgate-permissions-', dir=self.path.parent)
         try:
@@ -102,4 +123,4 @@ class Permissions:
         finally:
             if os.path.exists(temporary):
                 os.unlink(temporary)
-        return self.view(agent_id)
+        return self.view(agent_id, service)

@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from fastmcp import FastMCP
 
 from broker import state
+from broker.access import AccessController, AccessError
 from broker.integrations.gmail import Gmail, GmailError, INTERNAL_PREFIX
 
 if TYPE_CHECKING:
@@ -18,6 +19,7 @@ class GmailTools:
     def __init__(self, broker: Broker, gmail: Gmail):
         self.broker = broker
         self.gmail = gmail
+        self.access = AccessController(broker)
         self._send_lock = asyncio.Lock()
         self._ledger_name = INTERNAL_PREFIX + 'gmail-send-attempts'
         try:
@@ -31,51 +33,18 @@ class GmailTools:
             decision=decision, mode=mode, token_expiry=None,
         )
 
-    def access_guard(self, identity_guard=None, *, trusted_operator=False):
-        revision = self.broker.policy_revision
-        def active():
-            identity_active = identity_guard is None or identity_guard()
-            return identity_active and (trusted_operator or self.broker.policy_revision == revision)
-        return active
+    def access_guard(self, agent: str, resource: str, identity_guard=None, *, trusted_operator=False):
+        return self.access.access_guard(agent, resource, identity_guard, trusted_operator=trusted_operator)
 
     async def authorize(self, agent: str, resource: str, details: str | None = None,
-                        identity_guard=None, *, trusted_operator: bool = False) -> bool:
-        if identity_guard is not None and not identity_guard():
-            self.audit(agent, resource, 'identity-check', state.read_mode(self.broker.config.state_path), 'denied')
-            return False
-        self.broker.total_requests += 1
-        mode = state.read_mode(self.broker.config.state_path)
-        decision = self.broker.engine.evaluate(agent, resource)
-        policy = decision.policy_name
-        sending = resource == 'gmail:send'
-        if trusted_operator and not sending:
-            self.audit(agent, resource, 'trusted-operator', mode, 'approved')
-            return True
-        if not sending and mode == 'auto' and decision.auto_approve:
-            self.audit(agent, resource, policy, mode, 'approved')
-            return True
-        if not (trusted_operator and sending) and not decision.auto_approve and not decision.escalate:
-            self.audit(agent, resource, policy, mode, 'denied')
-            return False
-        self.broker.escalated_requests += 1
-        self.audit(agent, resource, policy, mode, 'escalated')
-        try:
-            approved = await self.broker.approvals.submit(
-                agent, resource,
-                timeout=self.broker.config.escalation_timeout_seconds or None,
-                details=details,
-            )
-        except asyncio.TimeoutError:
-            self.audit(agent, resource, policy, mode, 'expired')
-            return False
-        if approved and identity_guard is not None and not identity_guard():
-            self.audit(agent, resource, policy, mode, 'denied')
-            return False
-        self.audit(agent, resource, policy, mode, 'approved' if approved else 'denied')
-        return approved
+                        identity_guard=None, *, trusted_operator: bool = False,
+                        require_approval: bool = False) -> bool:
+        return await self.access.authorize(agent, resource, details, identity_guard,
+                                           trusted_operator=trusted_operator,
+                                           require_approval=require_approval)
 
     async def execute(self, agent: str, resource: str, operation: str, *, identity_guard=None, **arguments) -> dict:
-        identity_guard = self.access_guard(identity_guard)
+        identity_guard = self.access_guard(agent, resource, identity_guard)
         if not await self.authorize(agent, resource, identity_guard=identity_guard):
             return {'ok': False, 'reason': 'Access denied or approval timed out.'}
         def check_active():
@@ -83,7 +52,7 @@ class GmailTools:
                 raise IdentityError()
         try:
             data = await asyncio.to_thread(self.gmail.call, operation, before_dispatch=check_active, **arguments)
-        except IdentityError:
+        except AccessError:
             self.audit(agent, resource, operation, state.read_mode(self.broker.config.state_path), 'denied')
             return {'ok': False, 'reason': 'Agent access is no longer active, or permissions changed.'}
         except GmailError as exc:
@@ -97,18 +66,22 @@ class GmailTools:
         if trusted_operator:
             agent, identity_guard = 'operator', None
         async with self._send_lock:
-            identity_guard = self.access_guard(identity_guard, trusted_operator=trusted_operator)
+            draft_guard = self.access_guard(agent, 'gmail:draft', identity_guard,
+                                            trusted_operator=trusted_operator)
+            send_guard = self.access_guard(agent, 'gmail:send', identity_guard,
+                                           trusted_operator=trusted_operator)
+            identity_guard = send_guard
             if identity_guard is not None and not identity_guard():
                 self.audit(agent, 'gmail:send', 'identity-check', state.read_mode(self.broker.config.state_path), 'denied')
                 return {'ok': False, 'reason': 'Agent access is no longer active, or permissions changed.'}
             if draft_id in self._sent_drafts:
                 return {'ok': False, 'reason': 'This draft already has a send attempt. Check Gmail before creating another draft.'}
             # Access to draft contents must itself be authorized.
-            if not await self.authorize(agent, 'gmail:draft', identity_guard=identity_guard,
+            if not await self.authorize(agent, 'gmail:draft', identity_guard=draft_guard,
                                         trusted_operator=trusted_operator):
                 return {'ok': False, 'reason': 'Draft access denied or approval timed out.'}
             try:
-                snapshot = await asyncio.to_thread(self.gmail.call, 'snapshot', before_dispatch=_identity_callback(identity_guard), draft_id=draft_id)
+                snapshot = await asyncio.to_thread(self.gmail.call, 'snapshot', before_dispatch=_identity_callback(draft_guard), draft_id=draft_id)
             except IdentityError:
                 self.audit(agent, 'gmail:draft', 'snapshot', state.read_mode(self.broker.config.state_path), 'denied')
                 return {'ok': False, 'reason': 'Agent access is no longer active, or permissions changed.'}
@@ -116,14 +89,14 @@ class GmailTools:
                 return {'ok': False, 'reason': str(exc)}
             details = json.dumps({'draft_id': draft_id, **snapshot['preview']}, ensure_ascii=True, indent=2)
             if not await self.authorize(agent, 'gmail:send', details=details, identity_guard=identity_guard,
-                                        trusted_operator=trusted_operator):
+                                        trusted_operator=trusted_operator, require_approval=True):
                 return {'ok': False, 'reason': 'Send denied or approval timed out.'}
             # Mark before dispatch: network failures can leave delivery uncertain.
             # Never retry a non-idempotent send automatically.
             self._sent_drafts.add(draft_id)
             self.broker.store.store(self._ledger_name, json.dumps(sorted(self._sent_drafts)))
             try:
-                data = await asyncio.to_thread(self.gmail.call, 'send', before_dispatch=_identity_callback(identity_guard), snapshot=snapshot)
+                data = await asyncio.to_thread(self.gmail.call, 'send', before_dispatch=_identity_callback_all(draft_guard, send_guard), snapshot=snapshot)
             except IdentityError:
                 # Revoke the in-memory marker only when no provider dispatch occurred.
                 # Gmail's before_dispatch runs immediately at the dispatch boundary.
@@ -138,13 +111,20 @@ class GmailTools:
             return {'ok': True, 'data': data, 'draft_retained': True}
 
 
-class IdentityError(Exception):
+class IdentityError(AccessError):
     """Raised inside a provider worker when a captured identity is no longer active."""
 
 
 def _identity_callback(identity_guard):
     def check():
         if identity_guard is not None and not identity_guard():
+            raise IdentityError()
+    return check
+
+
+def _identity_callback_all(*guards):
+    def check():
+        if any(guard is not None and not guard() for guard in guards):
             raise IdentityError()
     return check
 

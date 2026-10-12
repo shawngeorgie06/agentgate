@@ -36,6 +36,7 @@ class Broker:
         self.audit = audit
         self.approvals = approvals
         self.agent_registry = None
+        self.temporary_grants = None
         self.policy_revision = 0
         self.total_requests = 0
         self.escalated_requests = 0
@@ -274,7 +275,7 @@ class Broker:
         }
 
 
-def build_mcp(broker: Broker, *, auth=None, gmail_tools=None, trusted_agent: str = "agentgate-local") -> FastMCP:
+def build_mcp(broker: Broker, *, auth=None, gmail_tools=None, github_tools=None, trusted_agent: str = "agentgate-local") -> FastMCP:
     mcp = FastMCP("AgentGate", auth=auth, mask_error_details=True)
 
     def identity(supplied: str | None):
@@ -342,4 +343,6 @@ def build_mcp(broker: Broker, *, auth=None, gmail_tools=None, trusted_agent: str
         register_gmail_tools(mcp, broker, identity_resolver=identity)
     else:
         register_gmail_tools(mcp, broker, tools=gmail_tools, identity_resolver=identity)
+    from broker.github_tools import register_github_tools
+    register_github_tools(mcp, broker, tools=github_tools, identity_resolver=identity)
     return mcp

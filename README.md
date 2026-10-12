@@ -226,3 +226,23 @@ Use the [AgentGate app](docs/app.md) to register and revoke [agent identities](d
 ### Agent permissions
 
 Set per-agent Gmail access in the app’s **Permissions** screen: allow/ask/deny for reading and drafting, and ask/deny for sending. Saves are persisted and applied immediately with conflict detection. See the [permissions guide](docs/permissions.md) for schedules, approval invalidation, and scope.
+
+### Connections, GitHub, and temporary access
+
+The operator app now includes **Connections** and **Temporary access**. Connections shows the Gmail account address and the GitHub login. Disconnect removes the broker's local credential; revoke the Google app authorization or GitHub token separately if you also want to revoke it at the provider. Reconnecting can change the account used by agents that already have service permissions.
+
+Gmail reconnect uses the private `oauth-client.json` beside the credential store (or `GMAIL_CLIENT_PATH`) and opens Google's consent flow. Failed reconnect keeps the previous connection. Do not share the client JSON or account tokens in chat.
+
+For GitHub, create a fine-grained personal access token limited to the repositories you want agents to use. Give it Metadata and Contents read access; add Issues read access for issue listing and Issues write access only if you want approval-required issue creation. Enter it in the local Connections form. AgentGate encrypts the token and never returns it to agents. The GitHub tools read repository metadata, UTF-8 files up to 1 MiB, and issues; they can create an issue only after an operator approves the exact repository, title, and body. Repository permissions at GitHub still apply.
+
+Set each agent's Gmail and GitHub rules separately in **Permissions**. New GitHub permissions do not alter Gmail rules. Temporary grants override one saved permission for 1–1440 minutes, including an explicit saved deny. After expiry or revocation, saved rules apply again. Manual mode still asks for reads and drafts; email sends and issue creation always ask. Access is checked again immediately before provider dispatch, so expiry or revocation invalidates queued work.
+
+Agent commands (replace the example identity path with your own private credential file):
+
+```sh
+.venv/bin/python -m cli.agent --token-file /private/path/agent.token github repos
+.venv/bin/python -m cli.agent --token-file /private/path/agent.token github read-file OWNER REPO README.md
+.venv/bin/python -m cli.agent --token-file /private/path/agent.token github issues OWNER REPO
+```
+
+Issue creation requires a stable `--request-id` for each logical issue. Reuse that same ID when checking an uncertain request; the encrypted attempt ledger blocks repeated dispatch across broker restarts. Do not generate a new ID to retry a request whose outcome is unknown. No non-idempotent provider action is automatically retried.

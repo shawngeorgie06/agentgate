@@ -96,11 +96,14 @@ class Gmail:
     def __init__(self, store: CredentialStore, service_factory: Callable | None = None):
         self.store = store
         self._factory = service_factory
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._credentials = None
         self._service = None
+        self._suspended = False
 
     def _get_service(self):
+        if self._suspended:
+            raise GmailError('Gmail is not connected. Run gmail-connect in the operator CLI.')
         if self._factory is not None:
             return self._factory()
         if self._credentials is None:
@@ -127,13 +130,21 @@ class Gmail:
             kwargs.setdefault('timeout', 30)
             return request(*args, **kwargs)
         self._credentials.refresh(bounded_request)
+        # Disconnect can suspend the provider while a network refresh is in flight.
+        # Never let that refresh write credentials back after local removal.
+        if self._suspended:
+            raise GmailError('Gmail is not connected. Run gmail-connect in the operator CLI.')
         self.store.store(TOKEN_NAME, self._credentials.to_json())
 
     def call(self, operation: str, *, before_dispatch: Callable[[], None] | None = None, **arguments) -> dict:
         # googleapiclient's HTTP transport is not thread-safe; serialize calls.
         with self._lock:
             try:
+                if self._suspended:
+                    raise GmailError('Gmail is not connected. Run gmail-connect in the operator CLI.')
                 service = self._get_service()
+                if self._suspended:
+                    raise GmailError('Gmail is not connected. Run gmail-connect in the operator CLI.')
                 if before_dispatch is not None:
                     before_dispatch()
                 if operation == 'send':
@@ -155,6 +166,13 @@ class Gmail:
         if page_token:
             args['pageToken'] = page_token
         return service.users().messages().list(**args).execute()
+
+    def _account(self, service):
+        profile = service.users().getProfile(userId='me', fields='emailAddress').execute()
+        email = profile.get('emailAddress')
+        if not isinstance(email, str) or not email:
+            raise GmailError('Gmail did not return an account address.')
+        return {'email': email}
 
     def _read(self, service, message_id: str):
         result = service.users().messages().get(userId='me', id=message_id, format='raw').execute()

@@ -34,6 +34,7 @@ class DemoService:
             message.set_content(body)
             self.mail[f'message-{i}'] = base64.urlsafe_b64encode(message.as_bytes()).decode()
 
+    def getProfile(self, **kwargs): return SimpleNamespace(execute=lambda: {"emailAddress":"sample@example.test"})
     def users(self): return self
     def messages(self): self.kind = 'messages'; return self
     def drafts(self): self.kind = 'drafts'; return self

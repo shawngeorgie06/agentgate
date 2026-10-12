@@ -83,7 +83,7 @@ Stop running brokers first, then run:
 python -m cli.commands gmail-disconnect
 ```
 
-This removes the local OAuth entry only. Also revoke the app under [Google account connections](https://myaccount.google.com/connections) to invalidate access at Google. Restart the broker only after reconnecting if you want Gmail access again.
+This removes the local OAuth entry only. Also revoke the app under [Google account connections](https://myaccount.google.com/connections) to invalidate access at Google. Use Connections → Connect Gmail to reconnect without restarting. The legacy CLI disconnect command requires restarting a running broker to clear its cached provider state.
 
 ## References
 

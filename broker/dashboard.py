@@ -16,19 +16,52 @@ from starlette.responses import FileResponse, JSONResponse
 from starlette.routing import Mount, Route
 
 from broker import state
+from broker.connections import GmailConnection
 from broker.gmail_tools import GmailTools
 from broker.integrations.gmail import GmailError, TOKEN_NAME
+from broker.integrations.github import GitHub, GitHubError
+from broker.grants_dashboard import create_grant, get_grants, revoke_grant
+from broker.grants import GrantError
 from broker.permissions import Permissions, PermissionConflict
 from broker.policy_engine import PolicyError
 
 ASSETS = Path(__file__).with_name('web')
 
 
-def create_dashboard(mcp_app, broker, tools: GmailTools, operator_token: str):
+async def _settled_to_thread(function, *args):
+    """Keep mutation locks until their worker finishes, even if HTTP is canceled."""
+    task = asyncio.create_task(asyncio.to_thread(function, *args))
+    canceled = False
+    while True:
+        try:
+            result = await asyncio.shield(task)
+            break
+        except asyncio.CancelledError:
+            canceled = True
+            continue
+        except BaseException:
+            if canceled:
+                raise asyncio.CancelledError from None
+            raise
+    if canceled:
+        raise asyncio.CancelledError
+    return result
+
+
+def create_dashboard(mcp_app, broker, tools: GmailTools, operator_token: str, *, github=None):
     permissions = Permissions(broker)
+    gmail_mutation_lock = asyncio.Lock()
+    github_mutation_lock = asyncio.Lock()
+    client_file = os.environ.get(
+        'GMAIL_CLIENT_PATH',
+        str(Path(broker.config.credentials_path).expanduser().parent / 'oauth-client.json'),
+    )
+    gmail_connection = GmailConnection(broker, tools.gmail, client_file)
+    github = github or GitHub(broker.store)
 
     async def asset(request):
-        names = {'app': 'index.html', 'app.js': 'app.js', 'app.css': 'app.css'}
+        names = {'app': 'index.html', 'app.js': 'app.js', 'app.css': 'app.css',
+                 'connections.js': 'connections.js', 'grants.js': 'grants.js'}
         name = names.get(request.path_params.get('asset', 'app'))
         if not name:
             return JSONResponse({'ok': False}, status_code=404)
@@ -57,8 +90,44 @@ def create_dashboard(mcp_app, broker, tools: GmailTools, operator_token: str):
                 registry = getattr(broker, 'agent_registry', None)
                 data = {'agents': registry.list_agents() if registry is not None else [],
                         'available': registry is not None}
+            elif request.method == 'GET' and action == 'connections':
+                gmail_info, github_info = await asyncio.gather(
+                    asyncio.to_thread(gmail_connection.info),
+                    asyncio.to_thread(github.info),
+                )
+                registry = getattr(broker, 'agent_registry', None)
+                active_agents = [agent for agent in registry.list_agents()
+                                 if agent.get('status') == 'active'] if registry is not None else []
+                grants_store = getattr(broker, 'temporary_grants', None)
+                live_grants = grants_store.list_grants() if grants_store is not None else []
+                for service_info in (gmail_info, github_info):
+                    service = service_info['service']
+                    prefix = service + ':'
+                    service_agents = []
+                    for agent in active_agents:
+                        view = permissions.view(agent['id'], service=service)
+                        temporary = [
+                            {'resource': row['resource'], 'permission': row['permission'],
+                             'expires_at': row['expires_at']}
+                            for row in live_grants
+                            if row.get('status') == 'active'
+                            and row.get('agent_id') == agent['id']
+                            and row.get('resource', '').startswith(prefix)
+                        ]
+                        service_agents.append({
+                            'id': agent['id'], 'name': agent['name'],
+                            'permissions': view['permissions'],
+                            'temporary_grants': temporary,
+                        })
+                    service_info['agents'] = service_agents
+                data = {'services': [gmail_info, github_info]}
+            elif request.method == 'GET' and action == 'reconnect-status':
+                data = gmail_connection.reconnect_status()
+            elif request.method == 'GET' and action == 'grants':
+                data = get_grants(broker)
             elif request.method == 'GET' and action == 'permissions':
-                data = permissions.view(request.query_params.get('agent_id', ''))
+                data = permissions.view(request.query_params.get('agent_id', ''),
+                                        service=request.query_params.get('service', 'gmail'))
             elif request.method == 'GET' and action == 'activity':
                 def read_activity():
                     path = Path(broker.config.logs_path)
@@ -103,7 +172,75 @@ def create_dashboard(mcp_app, broker, tools: GmailTools, operator_token: str):
                 payload = json.loads(body)
                 if not isinstance(payload, dict):
                     raise ValueError()
-                if action == 'approval':
+                if action == 'connection-disconnect':
+                    service = payload.get('service')
+                    if service not in ('gmail', 'github'):
+                        raise ValueError()
+                    if service == 'gmail':
+                        async with gmail_mutation_lock:
+                            # Gate queued provider calls before canceling approvals
+                            # and deleting credentials in a worker.
+                            tools.gmail._suspended = True
+                            broker.invalidate_agent_requests()
+                            try:
+                                await _settled_to_thread(gmail_connection.disconnect)
+                            finally:
+                                broker.invalidate_agent_requests()
+                    else:
+                        async with github_mutation_lock:
+                            github._suspended = True
+                            broker.invalidate_agent_requests()
+                            try:
+                                await _settled_to_thread(github.disconnect)
+                            finally:
+                                broker.invalidate_agent_requests()
+                    data = {'service': service, 'status': 'disconnected'}
+                elif action == 'gmail-reconnect':
+                    async with gmail_mutation_lock:
+                        broker.invalidate_agent_requests()
+                        try:
+                            data = gmail_connection.begin_reconnect()
+                        finally:
+                            broker.invalidate_agent_requests()
+                elif action == 'github-connect':
+                    token = payload.get('token')
+                    if not isinstance(token, str):
+                        raise ValueError()
+                    async with github_mutation_lock:
+                        old_suspended = github._suspended
+                        github._suspended = True
+                        broker.invalidate_agent_requests()
+                        try:
+                            account = await _settled_to_thread(github.connect, token)
+                        except GitHubError:
+                            github._suspended = old_suspended
+                            raise GitHubError('GitHub could not validate the supplied token.') from None
+                        except asyncio.CancelledError:
+                            if github._suspended:
+                                github._suspended = old_suspended
+                            raise
+                        except BaseException:
+                            # A rejected candidate must leave a working old token usable.
+                            github._suspended = old_suspended
+                            raise
+                        finally:
+                            broker.invalidate_agent_requests()
+                    safe_account = {}
+                    if isinstance(account, dict):
+                        if isinstance(account.get('login'), str):
+                            safe_account['login'] = account['login']
+                        if type(account.get('id')) is int:
+                            safe_account['id'] = account['id']
+                    data = {'service': 'github', 'status': 'connected', 'account': safe_account}
+                elif action == 'grant-create':
+                    data = create_grant(broker, payload)
+                    tools.audit('operator', 'temporary-access', 'grant-create',
+                                state.read_mode(broker.config.state_path), 'completed')
+                elif action == 'grant-revoke':
+                    data = revoke_grant(broker, payload)
+                    tools.audit('operator', 'temporary-access', 'grant-revoke',
+                                state.read_mode(broker.config.state_path), 'completed')
+                elif action == 'approval':
                     pending = broker.approvals.get_pending()
                     if not pending or payload.get('id') != pending.request_id:
                         return JSONResponse({'ok': False, 'reason': 'This approval expired or changed. Refresh and review the current request.'}, status_code=409, headers=headers)
@@ -116,7 +253,9 @@ def create_dashboard(mcp_app, broker, tools: GmailTools, operator_token: str):
                     if not isinstance(agent_id, str):
                         raise ValueError()
                     try:
-                        data = permissions.save(agent_id, payload.get('permissions'), payload.get('revision'), acknowledge_time_windows=payload.get('acknowledge_time_windows', False))
+                        data = permissions.save(agent_id, payload.get('permissions'), payload.get('revision'),
+                                                acknowledge_time_windows=payload.get('acknowledge_time_windows', False),
+                                                service=payload.get('service', 'gmail'))
                     except Exception:
                         tools.audit('operator', 'permissions:update', 'operator-settings', state.read_mode(broker.config.state_path), 'failed')
                         raise
@@ -195,6 +334,7 @@ def create_dashboard(mcp_app, broker, tools: GmailTools, operator_token: str):
                     data = {'revoked': True}
                 elif action == 'mode':
                     data = {'mode': state.toggle_mode(broker.config.state_path)}
+                    broker.invalidate_agent_requests()
                 elif action == 'draft':
                     allowed = ('to', 'subject', 'body', 'cc', 'bcc')
                     if any(not isinstance(payload.get(k, ''), str) for k in allowed):
@@ -215,7 +355,9 @@ def create_dashboard(mcp_app, broker, tools: GmailTools, operator_token: str):
             return JSONResponse({'ok': False, 'reason': str(exc)}, status_code=409, headers=headers)
         except PolicyError:
             return JSONResponse({'ok': False, 'reason': 'The policy file is invalid. Repair it before editing permissions.'}, status_code=400, headers=headers)
-        except GmailError as exc:
+        except (GmailError, GitHubError) as exc:
+            return JSONResponse({'ok': False, 'reason': str(exc)}, status_code=400, headers=headers)
+        except GrantError as exc:
             return JSONResponse({'ok': False, 'reason': str(exc)}, status_code=400, headers=headers)
         except (ValueError, TypeError):
             return JSONResponse({'ok': False, 'reason': 'Invalid request.'}, status_code=400, headers=headers)
@@ -224,8 +366,11 @@ def create_dashboard(mcp_app, broker, tools: GmailTools, operator_token: str):
 
     @asynccontextmanager
     async def lifespan(app):
-        async with mcp_app.router.lifespan_context(mcp_app):
-            yield
+        try:
+            async with mcp_app.router.lifespan_context(mcp_app):
+                yield
+        finally:
+            await gmail_connection.close()
 
     return Starlette(routes=[Route('/app', asset), Route('/app/{asset}', asset),
                              Route('/api/{action}', api, methods=['GET', 'POST']), Mount('/', mcp_app)],

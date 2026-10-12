@@ -83,12 +83,18 @@ async def run(
         master_password = resolve_master_password(config)
         broker = build_broker(config, master_password)
         broker.agent_registry = registry
+        if registry is not None:
+            from broker.grants import TemporaryGrants
+            broker.temporary_grants = TemporaryGrants(registry)
         gmail_tools = None
         if operator_token:
             from broker.gmail_tools import GmailTools
             from broker.integrations.gmail import Gmail
             gmail_tools = GmailTools(broker, Gmail(broker.store))
-        mcp = build_mcp(broker, auth=auth, gmail_tools=gmail_tools, trusted_agent=stdio_agent) if gmail_tools else build_mcp(broker, auth=auth, trusted_agent=stdio_agent)
+        from broker.github_tools import GitHubTools
+        from broker.integrations.github import GitHub
+        github_tools = GitHubTools(broker, GitHub(broker.store))
+        mcp = build_mcp(broker, auth=auth, gmail_tools=gmail_tools, github_tools=github_tools, trusted_agent=stdio_agent) if gmail_tools else build_mcp(broker, auth=auth, github_tools=github_tools, trusted_agent=stdio_agent)
         print(format_status_line(broker), file=sys.stderr)
         if http:
             print(f'[AgentGate] authenticated MCP endpoint: http://127.0.0.1:{port}/mcp', file=sys.stderr)
@@ -98,7 +104,7 @@ async def run(
             )
             if operator_token:
                 from broker.dashboard import create_dashboard
-                app = create_dashboard(app, broker, gmail_tools, operator_token)
+                app = create_dashboard(app, broker, gmail_tools, operator_token, github=github_tools.github)
             http_server = uvicorn.Server(uvicorn.Config(
                 app, host='127.0.0.1', port=port, lifespan='on',
                 timeout_graceful_shutdown=2,

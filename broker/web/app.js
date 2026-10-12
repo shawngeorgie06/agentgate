@@ -1,3 +1,5 @@
+import {renderConnections} from './connections.js';
+import {renderGrants} from './grants.js';
 'use strict';
 const $ = id => document.getElementById(id);
 const supplied = new URLSearchParams(location.hash.slice(1)).get('key');
@@ -5,6 +7,7 @@ if (supplied) { sessionStorage.setItem('agentgate-operator', supplied); history.
 const token = sessionStorage.getItem('agentgate-operator');
 let nextDraftPage = null, draftsGeneration = 0;
 let nextPage = null, pendingId = null, activeView = 'agents', inboxGeneration = 0;
+let viewController = null, viewGeneration = 0;
 let revokeAgentId = null, revokeAgentName = null;
 function node(tag, text, cls) { const n = document.createElement(tag); if (text !== undefined) n.textContent = text; if (cls) n.className = cls; return n; }
 function notice(message, error = false) { $('notice').textContent = message; $('notice').classList.toggle('error', error); $('notice').hidden = !message; }
@@ -16,12 +19,16 @@ async function api(action, options = {}) {
 }
 const post = (action, data) => api(action, {method: 'POST', body: JSON.stringify(data)});
 function showView(view) {
+  viewController?.destroy?.(); viewController = null;
+  const generation = ++viewGeneration;
   activeView = view;
   document.querySelectorAll('.view').forEach(n => n.hidden = n.id !== view + '-view');
   document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === view));
-  $('compose-button').hidden = view === 'agents' || view === 'permissions';
-  $('view-title').textContent = {inbox:'Inbox', drafts:'Drafts', approvals:'Approvals', activity:'Activity', agents:'Agents', permissions:'Permissions'}[view];
-  $('view-subtitle').textContent = {inbox:'A quieter place to work through your email.', drafts:'Thoughtful messages, ready when you are.', approvals:'Stay in control of every outgoing email.', activity:'See what your agents have been working on.', agents:'Manage the identities that connect to your permission gateway.', permissions:'Decide what each agent can do with your connections.'}[view];
+  $('compose-button').hidden = !['inbox','drafts'].includes(view);
+  $('view-title').textContent = {inbox:'Inbox', drafts:'Drafts', approvals:'Approvals', activity:'Activity', agents:'Agents', permissions:'Permissions', connections:'Connections', grants:'Temporary access'}[view];
+  $('view-subtitle').textContent = {inbox:'A quieter place to work through your email.', drafts:'Thoughtful messages, ready when you are.', approvals:'Stay in control of every outgoing email.', activity:'See what your agents have been working on.', agents:'Manage the identities that connect to your permission gateway.', permissions:'Decide what each agent can do with your connections.', connections:'See which accounts your agents use.', grants:'Give an agent access for a limited time.'}[view];
+  if (view === 'connections') renderConnections($('connections-view'), api).then(controller => { if (generation === viewGeneration) viewController = controller; else controller?.destroy?.(); }).catch(e => notice(e.message,true));
+  if (view === 'grants') renderGrants($('grants-view'), api).catch(e => notice(e.message,true));
   if (view === 'drafts') loadDrafts().catch(e => notice(e.message, true));
   if (view === 'activity') loadActivity().catch(e => notice(e.message, true));
   if (view === 'permissions') loadPermissionAgents().catch(e => notice(e.message, true));
@@ -228,26 +235,36 @@ async function loadPermissionAgents() {
 async function loadPermissions() {
   const generation = ++permissionGeneration; permissionRevision = null; $('permissions-save').disabled = true;
   const id = $('permission-agent').value;
-  const data = await api('permissions?' + new URLSearchParams({agent_id:id}));
-  if (generation !== permissionGeneration || $('permission-agent').value !== id) return;
+  const service = $('permission-service').value;
+  const data = await api('permissions?' + new URLSearchParams({agent_id:id,service}));
+  if (generation !== permissionGeneration || $('permission-agent').value !== id || $('permission-service').value !== service) return;
   permissionWindows = data.time_windows || [];
   $('permission-windows').hidden = !permissionWindows.length;
   $('permission-windows').textContent = 'Existing time-window rules:\n' + permissionWindows.map(w => w.resource + ': ' + w.start + '–' + w.end + ' (' + w.policy + ')').join('\n') + '\nChoose each new all-time setting explicitly.';
   $('permission-window-ack-label').hidden = !permissionWindows.length;
   $('permission-window-ack').checked = false; $('permission-window-ack').required = !!permissionWindows.length;
-  $('permission-read').value = permissionWindows.length ? '' : data.permissions['gmail:read'];
-  $('permission-draft').value = permissionWindows.length ? '' : data.permissions['gmail:draft'];
-  $('permission-send').value = permissionWindows.length ? '' : data.permissions['gmail:send'];
+  $('permission-draft-label').hidden = service !== 'gmail';
+  $('permission-draft').required = service === 'gmail';
+  $('permission-read-label').textContent = service === 'gmail' ? 'Search and read emails' : 'Read repositories, files, and issues';
+  $('permission-send-label').textContent = service === 'gmail' ? 'Send email' : 'Create GitHub issues';
+  $('permission-send').querySelector('option[value=ask]').textContent = service === 'gmail' ? 'Ask before every send' : 'Ask before every issue creation';
+  $('permission-read').value = permissionWindows.length ? '' : data.permissions[service + ':read'];
+  $('permission-draft').value = service === 'gmail' ? (permissionWindows.length ? '' : data.permissions['gmail:draft']) : 'deny';
+  $('permission-send').value = permissionWindows.length ? '' : data.permissions[service === 'gmail' ? 'gmail:send' : 'github:write'];
   permissionRevision = data.revision; $('permissions-save').disabled = data.agent.status !== 'active';
 }
+$('permission-service').addEventListener('change', () => loadPermissions().catch(e => notice(e.message,true)));
 $('permission-agent').addEventListener('change', () => loadPermissions().catch(e => notice(e.message, true)));
 $('permissions-refresh').addEventListener('click', () => loadPermissionAgents().catch(e => notice(e.message, true)));
 $('permissions-form').addEventListener('submit', event => {
   event.preventDefault(); if (!permissionRevision) return;
-  const permissions = {'gmail:read':$('permission-read').value,'gmail:draft':$('permission-draft').value,'gmail:send':$('permission-send').value};
-  permissionProposal = {agent_id:$('permission-agent').value, permissions, revision:permissionRevision, acknowledge_time_windows: $('permission-window-ack').checked};
-  const labels = {allow:'Allow without asking in AUTO mode', ask:'Ask me', deny:'Deny'};
-  $('permissions-review').textContent = 'Agent: ' + permissionProposal.agent_id + '\nConnection: Gmail\nRules apply at all times; they replace earlier Gmail rules.\n' + (permissionWindows.length ? 'Existing windows explicitly acknowledged: ' + permissionWindows.map(w => w.resource + ' ' + w.start + '–' + w.end).join(', ') + '\n' : '') + '\nRead: ' + labels[permissions['gmail:read']] + '\nDraft: ' + labels[permissions['gmail:draft']] + '\nSend: ' + (permissions['gmail:send'] === 'ask' ? 'Ask before every send' : 'Deny');
+  const service = $('permission-service').value;
+  const permissions = {[service + ':read']:$('permission-read').value, [service === 'gmail' ? 'gmail:send' : 'github:write']:$('permission-send').value};
+  if (service === 'gmail') permissions['gmail:draft'] = $('permission-draft').value;
+  permissionProposal = {agent_id:$('permission-agent').value, service, permissions, revision:permissionRevision, acknowledge_time_windows:$('permission-window-ack').checked};
+  const labels = {allow:'Allow without asking in AUTO mode',ask:'Ask me each time',deny:'Deny'};
+  const rows = service === 'gmail' ? [['Read emails','gmail:read'],['Create and inspect drafts','gmail:draft'],['Send email','gmail:send']] : [['Read repositories and issues','github:read'],['Create issues','github:write']];
+  $('permissions-review').textContent = 'Agent: ' + permissionProposal.agent_id + '\nService: ' + (service === 'gmail' ? 'Gmail' : 'GitHub') + '\nRules apply at all times and override earlier rules for this service.\n\n' + rows.map(([label,key]) => label + ': ' + labels[permissions[key]]).join('\n') + (permissionWindows.length ? '\nExisting time restrictions explicitly acknowledged.' : '');
   $('permissions-dialog').showModal();
 });
 $('permissions-cancel').addEventListener('click', () => {permissionProposal = null; $('permissions-dialog').close();});

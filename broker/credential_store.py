@@ -67,15 +67,22 @@ class CredentialStore:
         )
 
     # --- public API ------------------------------------------------------
-    def store(self, name: str, value: str) -> None:
+    def update(self, values: dict[str, str], *, delete=()) -> None:
+        """Persist a complete encrypted candidate before publishing it in memory."""
         with self._lock:
-            nonce = os.urandom(_NONCE_LEN)
-            ciphertext = AESGCM(self._key).encrypt(nonce, value.encode("utf-8"), None)
-            self._data["credentials"][name] = {
-                "nonce": _b64e(nonce),
-                "ciphertext": _b64e(ciphertext),
-            }
-            self._write(self._data)
+            entries = dict(self._data["credentials"])
+            for name in delete:
+                entries.pop(name, None)
+            for name, value in values.items():
+                nonce = os.urandom(_NONCE_LEN)
+                ciphertext = AESGCM(self._key).encrypt(nonce, value.encode("utf-8"), None)
+                entries[name] = {"nonce": _b64e(nonce), "ciphertext": _b64e(ciphertext)}
+            candidate = {**self._data, "credentials": entries}
+            self._write(candidate)
+            self._data = candidate
+
+    def store(self, name: str, value: str) -> None:
+        self.update({name: value})
 
     def retrieve(self, name: str) -> str:
         with self._lock:
@@ -96,8 +103,7 @@ class CredentialStore:
         with self._lock:
             if name not in self._data["credentials"]:
                 raise KeyError(name)
-            del self._data["credentials"][name]
-            self._write(self._data)
+            self.update({}, delete=(name,))
 
     def list_names(self) -> list[str]:
         with self._lock:

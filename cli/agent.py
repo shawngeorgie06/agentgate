@@ -63,6 +63,32 @@ def build_parser() -> argparse.ArgumentParser:
     draft.add_argument('--body-file', default='-', help='UTF-8 file, or - to read stdin (default)')
     send = commands.add_parser('send-draft', help='request a send; waits for approval in the broker terminal')
     send.add_argument('draft_id')
+    github = commands.add_parser('github', help='read GitHub repositories and issues, or request issue creation')
+    github_commands = github.add_subparsers(dest='github_command', required=True)
+    github_commands.add_parser('account', help='show the connected GitHub account')
+    repos = github_commands.add_parser('repos', help='list repositories visible to the connected account')
+    repos.add_argument('--per-page', type=int, default=30)
+    repos.add_argument('--page', type=int, default=1)
+    repo = github_commands.add_parser('repo', help='read one repository summary')
+    repo.add_argument('owner')
+    repo.add_argument('repo')
+    read_file = github_commands.add_parser('read-file', help='read a UTF-8 repository file up to 1 MiB')
+    read_file.add_argument('owner')
+    read_file.add_argument('repo')
+    read_file.add_argument('path')
+    read_file.add_argument('--ref')
+    issues = github_commands.add_parser('issues', help='list repository issues')
+    issues.add_argument('owner')
+    issues.add_argument('repo')
+    issues.add_argument('--state', choices=('open', 'closed', 'all'), default='open')
+    issues.add_argument('--limit', type=int, default=30)
+    issues.add_argument('--page', type=int, default=1)
+    create_issue = github_commands.add_parser('create-issue', help='request operator approval to create one issue')
+    create_issue.add_argument('owner')
+    create_issue.add_argument('repo')
+    create_issue.add_argument('title')
+    create_issue.add_argument('--body-file', default='-', help='UTF-8 file, or - to read stdin (default)')
+    create_issue.add_argument('--request-id', required=True, help='stable URL-safe ID reused for retries of this logical issue')
     return parser
 
 
@@ -84,6 +110,28 @@ async def execute(args: argparse.Namespace) -> dict:
         except (OSError, UnicodeError):
             raise AgentClientError('Cannot read the draft body. Supply an existing UTF-8 file with --body-file, or provide the body on stdin.') from None
         values.update(to=args.to, subject=args.subject, cc=args.cc, bcc=args.bcc, body=body)
+    elif args.command == 'github':
+        if args.github_command == 'account':
+            tool = 'github.account'
+        elif args.github_command == 'repos':
+            tool = 'github.repos'
+            values.update(per_page=args.per_page, page=args.page)
+        elif args.github_command == 'repo':
+            tool = 'github.repo'
+            values.update(owner=args.owner, repo=args.repo)
+        elif args.github_command == 'read-file':
+            tool = 'github.read_file'
+            values.update(owner=args.owner, repo=args.repo, path=args.path, ref=args.ref)
+        elif args.github_command == 'issues':
+            tool = 'github.issues'
+            values.update(owner=args.owner, repo=args.repo, state=args.state, limit=args.limit, page=args.page)
+        else:
+            tool = 'github.create_issue'
+            try:
+                body = sys.stdin.read() if args.body_file == '-' else Path(args.body_file).expanduser().read_text(encoding='utf-8')
+            except (OSError, UnicodeError):
+                raise AgentClientError('Cannot read the issue body. Supply an existing UTF-8 file with --body-file, or provide the body on stdin.') from None
+            values.update(owner=args.owner, repo=args.repo, title=args.title, body=body, request_id=args.request_id)
     else:
         tool = 'gmail.send_draft'
         values.update(draft_id=args.draft_id)
@@ -105,6 +153,17 @@ def run(argv: list[str]) -> int:
         parser.error('--port must be between 1 and 65535')
     if args.command == 'search' and not 1 <= args.limit <= 100:
         parser.error('--limit must be between 1 and 100')
+    if args.command == 'github':
+        if args.github_command == 'repos':
+            if not 1 <= args.per_page <= 100:
+                parser.error('--per-page must be between 1 and 100')
+            if not 1 <= args.page <= 10000:
+                parser.error('--page must be between 1 and 10000')
+        if args.github_command == 'issues':
+            if not 1 <= args.limit <= 100:
+                parser.error('--limit must be between 1 and 100')
+            if not 1 <= args.page <= 10000:
+                parser.error('--page must be between 1 and 10000')
     uncertain = False
     try:
         result = asyncio.run(execute(args))
@@ -125,6 +184,8 @@ def run(argv: list[str]) -> int:
         result = {'ok': False, 'reason': 'Client interrupted.'}
     if uncertain and args.command in ('draft', 'send-draft'):
         result['notice'] = 'Check Gmail and the broker terminal before another attempt. Do not automatically retry; the operation may have completed.'
+    if uncertain and args.command == 'github' and args.github_command == 'create-issue':
+        result['notice'] = 'Check GitHub and the broker terminal before retrying. Reuse the same request ID; the issue may have been created.'
     print(json.dumps(result, ensure_ascii=True))
     return 0 if result.get('ok') else 1
 

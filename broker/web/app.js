@@ -4,7 +4,8 @@ const supplied = new URLSearchParams(location.hash.slice(1)).get('key');
 if (supplied) { sessionStorage.setItem('agentgate-operator', supplied); history.replaceState(null, '', '/app'); }
 const token = sessionStorage.getItem('agentgate-operator');
 let nextDraftPage = null, draftsGeneration = 0;
-let nextPage = null, pendingId = null, activeView = 'inbox', inboxGeneration = 0;
+let nextPage = null, pendingId = null, activeView = 'agents', inboxGeneration = 0;
+let revokeAgentId = null, revokeAgentName = null;
 function node(tag, text, cls) { const n = document.createElement(tag); if (text !== undefined) n.textContent = text; if (cls) n.className = cls; return n; }
 function notice(message, error = false) { $('notice').textContent = message; $('notice').classList.toggle('error', error); $('notice').hidden = !message; }
 async function api(action, options = {}) {
@@ -18,10 +19,13 @@ function showView(view) {
   activeView = view;
   document.querySelectorAll('.view').forEach(n => n.hidden = n.id !== view + '-view');
   document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === view));
-  $('view-title').textContent = {inbox:'Inbox', drafts:'Drafts', approvals:'Approvals', activity:'Activity'}[view];
-  $('view-subtitle').textContent = {inbox:'A quieter place to work through your email.', drafts:'Thoughtful messages, ready when you are.', approvals:'Stay in control of every outgoing email.', activity:'See what your agents have been working on.'}[view];
+  $('compose-button').hidden = view === 'agents';
+  $('view-title').textContent = {inbox:'Inbox', drafts:'Drafts', approvals:'Approvals', activity:'Activity', agents:'Agents'}[view];
+  $('view-subtitle').textContent = {inbox:'A quieter place to work through your email.', drafts:'Thoughtful messages, ready when you are.', approvals:'Stay in control of every outgoing email.', activity:'See what your agents have been working on.', agents:'Manage the identities that connect to your permission gateway.'}[view];
   if (view === 'drafts') loadDrafts().catch(e => notice(e.message, true));
   if (view === 'activity') loadActivity().catch(e => notice(e.message, true));
+  if (view === 'agents') loadAgents().catch(e => notice(e.message, true));
+  if (view === 'inbox') loadInbox().catch(e => notice(e.message, true));
 }
 function empty(target, text) { target.replaceChildren(node('div', text, 'empty')); }
 function detail(target, label, value) { target.append(node('div', label, 'detail-label'), node('div', Array.isArray(value) ? value.join(', ') : (value || '—'), 'detail-value')); }
@@ -97,13 +101,22 @@ function renderApproval(pending) {
   pendingId = pending?.id || null;
   const target = $('approval-card'); target.replaceChildren();
   if (!pending) { empty(target, 'All clear. Agent requests that need your approval will appear here.'); return; }
+  const isSend = pending.credential === 'gmail:send';
+  const isPolicyChange = typeof pending.credential === 'string' && pending.credential.startsWith('policy.add:');
   const card = node('article', undefined, 'card');
-  const head = node('div', undefined, 'card-head'); head.append(node('h2', pending.preview ? pending.preview.subject || '(No subject)' : 'Access request'), node('span', 'Needs your approval', 'pill')); card.append(head);
+  const title = isPolicyChange ? 'Policy change' : (isSend && pending.preview ? pending.preview.subject || '(No subject)' : 'Access request');
+  const head = node('div', undefined, 'card-head'); head.append(node('h2', title), node('span', 'Needs your approval', 'pill')); card.append(head);
   detail(card, 'Requested by', pending.agent); detail(card, 'Access', pending.credential);
-  if (pending.preview) { if (pending.preview.from?.length) detail(card, 'From', pending.preview.from); preview(card, pending.preview, true); }
+  if (isSend && pending.preview) {
+    if (pending.preview.from?.length) detail(card, 'From', pending.preview.from);
+    preview(card, pending.preview, true);
+  } else if (pending.preview !== undefined && pending.preview !== null) {
+    detail(card, isPolicyChange ? 'Policy proposal' : 'Request details', '');
+    card.append(node('pre', JSON.stringify(pending.preview, null, 2), 'request-details'));
+  }
   const actions = node('div', undefined, 'actions');
   for (const approved of [true, false]) {
-    const label = approved ? (pending.credential === 'gmail:send' ? 'Approve send' : 'Approve access') : 'Reject';
+    const label = approved ? (isSend ? 'Approve send' : (isPolicyChange ? 'Approve policy change' : 'Approve access')) : 'Reject';
     const button = node('button', label, approved ? 'primary' : 'danger');
     const id = pending.id;
     button.addEventListener('click', async () => {
@@ -123,6 +136,62 @@ async function loadActivity() {
     const description = node('div', row.credential_requested); description.append(node('small', row.agent));
     item.append(description, node('b', row.decision)); list.append(item);
   }
+}
+async function loadAgents() {
+  const list = $('agent-list'); empty(list, 'Loading enrolled identities…');
+  const data = await api('agents'); list.replaceChildren();
+  if (!data.available) { empty(list, 'Agent identity management is not configured for this broker.'); $('agent-form').querySelector('button[type=submit]').disabled = true; return; }
+  $('agent-form').querySelector('button[type=submit]').disabled = false;
+  if (!data.agents.length) { empty(list, 'No agents are enrolled yet. Register an identity when you are ready to connect an agent.'); return; }
+  for (const agent of data.agents) {
+    const card = node('article', undefined, 'card agent-card');
+    const head = node('div', undefined, 'card-head'); head.append(node('h2', agent.name || agent.id));
+    const status = node('span', agent.status || 'unknown', 'pill status-' + (agent.status || 'unknown')); head.append(status); card.append(head);
+    detail(card, 'Identity', agent.id);
+    detail(card, 'Created', formatDate(agent.created_at));
+    detail(card, 'Expires', agent.expires_at ? formatDate(agent.expires_at) : 'No expiry (migrated credential)');
+    if (agent.revoked_at) detail(card, 'Revoked', formatDate(agent.revoked_at));
+    if (agent.status === 'active') {
+      const button = node('button', 'Revoke access', 'danger');
+      button.addEventListener('click', () => {
+        revokeAgentId = agent.id; revokeAgentName = agent.name || agent.id;
+        $('revoke-message').textContent = `Revoke ${revokeAgentName}? This agent will no longer be able to authenticate.`;
+        $('revoke-dialog').showModal();
+      }); card.append(button);
+    }
+    list.append(card);
+  }
+}
+function formatDate(value) {
+  const date = new Date(value || ''); return Number.isNaN(date.getTime()) ? (value || '—') : date.toLocaleString();
+}
+function showRegistrationResult(agent, credentialPath) {
+  const result = $('registration-result'); result.replaceChildren(); result.hidden = false;
+  const title = node('h2', 'Identity registered');
+  const message = node('p', 'The credential was saved locally with private file permissions. Keep this path available to the agent process.');
+  const pathLabel = node('div', 'Credential file', 'detail-label');
+  const pathValue = node('div', credentialPath, 'credential-path');
+  const commandLabel = node('div', 'Example agent command', 'detail-label');
+  const quotedPath = "'" + credentialPath.replaceAll("'", "'\\''") + "'";
+  const command = node('pre', `.venv/bin/python -m cli.agent --token-file ${quotedPath} status`, 'command-example');
+  const copy = node('button', 'Copy command');
+  copy.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(command.textContent); notice('Example command copied.'); }
+    catch (_) { notice('Copy is unavailable here. Select and copy the example command.', true); }
+  });
+  result.append(title, message, pathLabel, pathValue, commandLabel, command, copy);
+}
+async function registerAgent(event) {
+  event.preventDefault(); const form = event.currentTarget; const button = form.querySelector('button[type=submit]');
+  const values = new FormData(form); const ttl = Number(values.get('ttl_hours'));
+  if (!Number.isInteger(ttl) || ttl < 1 || ttl > 8760) { notice('Lifetime must be a whole number from 1 to 8760 hours.', true); return; }
+  button.disabled = true;
+  try {
+    const data = await post('agent-register', {name: values.get('name'), ttl_hours: ttl});
+    showRegistrationResult(data.agent, data.credential_path); form.reset(); form.elements.ttl_hours.value = '720';
+    notice('Identity registered. The credential is stored in the private credential folder.'); await loadAgents();
+  } catch (e) { notice(e.message, true); }
+  finally { button.disabled = false; }
 }
 let polling = false;
 async function pollStatus() {
@@ -148,6 +217,15 @@ $('more-button').addEventListener('click', () => loadInbox(nextPage).catch(e => 
 $('draft-more-button').addEventListener('click', () => loadDrafts(nextDraftPage).catch(e => notice(e.message, true)));
 $('draft-refresh').addEventListener('click', () => loadDrafts().catch(e => notice(e.message, true)));
 $('activity-refresh').addEventListener('click', () => loadActivity().catch(e => notice(e.message, true)));
+$('agents-refresh').addEventListener('click', () => loadAgents().catch(e => notice(e.message, true)));
+$('agent-form').addEventListener('submit', registerAgent);
+$('confirm-revoke').addEventListener('click', async e => {
+  e.preventDefault(); if (!revokeAgentId) return;
+  const button = e.currentTarget; button.disabled = true;
+  try { await post('agent-revoke', {id: revokeAgentId}); $('revoke-dialog').close(); notice(`Access revoked for ${revokeAgentName}.`); revokeAgentId = revokeAgentName = null; await loadAgents(); }
+  catch (error) { notice(error.message, true); }
+  finally { button.disabled = false; }
+});
 $('mode-button').addEventListener('click', async () => { try {await post('mode', {}); await pollStatus();} catch(e) {notice(e.message, true);} });
 $('compose-button').addEventListener('click', () => { $('compose-form').reset(); $('compose-form').querySelector('[type=submit]').disabled = false; $('compose-dialog').showModal(); });
 $('close-compose').addEventListener('click', () => $('compose-dialog').close());
@@ -157,4 +235,4 @@ $('compose-form').addEventListener('submit', async e => {
   catch(e) { notice(e.message + ' Check Gmail before saving again; the draft may have been created.', true); $('compose-dialog').close(); }
 });
 if (!token) { notice('Open AgentGate using the operator launcher to unlock this window.', true); empty($('message-list'), 'Waiting for operator access.'); $('compose-button').disabled = true; }
-else { pollStatus(); loadInbox().catch(e => notice(e.message, true)); setInterval(pollStatus, 1500); }
+else { pollStatus(); loadAgents().catch(e => notice(e.message, true)); $('compose-button').hidden = true; setInterval(pollStatus, 1500); }

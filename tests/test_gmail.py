@@ -2,6 +2,7 @@ import asyncio
 import base64
 import dataclasses
 import json
+import threading
 from email.message import EmailMessage
 from types import SimpleNamespace
 
@@ -86,7 +87,7 @@ async def pending(broker):
 async def test_mcp_search_read_and_create_draft(tmp_path):
     broker, service, gmail, _ = make_tools(tmp_path)
     mcp = FastMCP('Gmail test')
-    register_gmail_tools(mcp, broker, gmail)
+    register_gmail_tools(mcp, broker, gmail, trusted_agent='local-agent')
     async with Client(mcp) as client:
         search = (await client.call_tool('gmail.search', {'agent': 'local-agent', 'query': 'is:unread'})).data
         assert search['data']['messages'][0]['id'] == 'message-1'
@@ -98,6 +99,19 @@ async def test_mcp_search_read_and_create_draft(tmp_path):
         assert draft['data']['id'] == 'draft-1'
     assert not any(call[1] == 'send' for call in service.calls)
     assert 'Body' not in open(broker.config.logs_path).read()
+
+
+@pytest.mark.asyncio
+async def test_standalone_registration_requires_explicit_trusted_identity(tmp_path):
+    broker, service, gmail, _ = make_tools(tmp_path)
+    mcp = FastMCP('Untrusted Gmail test')
+    register_gmail_tools(mcp, broker, gmail)
+    async with Client(mcp) as client:
+        result = (await client.call_tool('gmail.search', {
+            'agent': 'local-agent', 'query': 'is:unread',
+        })).data
+    assert result['ok'] is False
+    assert not service.calls
 
 
 @pytest.mark.asyncio
@@ -126,6 +140,72 @@ async def test_send_requires_approval_even_under_auto_policy(tmp_path, approve):
     audit = open(broker.config.logs_path).read()
     assert 'recipient@example.test' not in audit
     assert 'Hello!' not in audit
+
+
+@pytest.mark.asyncio
+async def test_revocation_while_send_approval_is_pending_blocks_dispatch(tmp_path):
+    broker, service, _, tools = make_tools(tmp_path)
+    active = True
+    task = asyncio.create_task(tools.send_draft(
+        'local-agent', 'draft-1', identity_guard=lambda: active
+    ))
+    request = await pending(broker)
+    assert request.credential == 'gmail:send'
+    active = False
+    broker.approvals.resolve(request, True)
+    result = await task
+    assert result['ok'] is False
+    assert 'denied or approval timed out' in result['reason']
+    assert not any(call[1] == 'send' for call in service.calls)
+
+
+@pytest.mark.asyncio
+async def test_revocation_while_waiting_for_gmail_transport_lock_blocks_dispatch(tmp_path):
+    broker, service, gmail, tools = make_tools(tmp_path)
+    active = True
+    waiting_for_transport = threading.Event()
+    original_call = gmail.call
+
+    def blocked_call(operation, **kwargs):
+        if operation == 'send':
+            waiting_for_transport.set()
+        return original_call(operation, **kwargs)
+
+    gmail.call = blocked_call
+    task = asyncio.create_task(tools.send_draft(
+        'local-agent', 'draft-1', identity_guard=lambda: active
+    ))
+    request = await pending(broker)
+    gmail._lock.acquire()
+    broker.approvals.resolve(request, True)
+    assert await asyncio.to_thread(waiting_for_transport.wait, 3)
+    active = False
+    gmail._lock.release()
+    result = await task
+    assert result['ok'] is False
+    assert 'no longer active' in result['reason']
+    assert not any(call[1] == 'send' for call in service.calls)
+    assert 'draft-1' not in tools._sent_drafts
+
+
+@pytest.mark.asyncio
+async def test_trusted_operator_send_uses_operator_actor_and_always_escalates(tmp_path):
+    broker, service, _, tools = make_tools(tmp_path)
+    broker.engine = PolicyEngine([{
+        'name': 'deny-operator', 'agent': 'operator', 'credential': '*',
+        'auto_approve': False, 'escalate': False,
+    }])
+    task = asyncio.create_task(tools.send_draft(
+        'ignored-actor-name', 'draft-1', trusted_operator=True,
+    ))
+    request = await pending(broker)
+    assert request.agent == 'operator'
+    assert request.credential == 'gmail:send'
+    assert json.loads(request.details)['draft_id'] == 'draft-1'
+    broker.approvals.resolve(request, True)
+    assert (await task)['ok'] is True
+    audit = open(broker.config.logs_path).read()
+    assert '"agent": "operator"' in audit
 
 
 @pytest.mark.asyncio

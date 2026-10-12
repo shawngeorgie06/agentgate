@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import argparse
 import getpass
+import os
 import sys
 import secrets
 import webbrowser
@@ -14,7 +15,8 @@ from broker.config import Config, ConfigError
 from broker.console import console_loop, open_terminal
 from broker.credential_store import CredentialStore
 from broker.mcp_server import Broker, build_mcp
-from broker.http_auth import token_verifier, read_token_file
+from broker.http_auth import RegistryTokenVerifier, read_token_file
+from broker.agent_registry import AgentRegistry
 
 
 def resolve_master_password(config: Config) -> str:
@@ -48,6 +50,7 @@ async def run(
     config: Config | None = None, *, http: bool = False,
     port: int = 8765, token_file: str | None = None,
     operator_token_file: str | None = None, open_app: bool = True,
+    bootstrap_agent: str = 'agentgate-local', stdio_agent: str = 'agentgate-local',
 ) -> None:
     config = config or Config.from_env()
     if http and not token_file:
@@ -59,7 +62,13 @@ async def run(
     operator_token = read_token_file(operator_token_file) if operator_token_file else None
     if operator_token and token_file and secrets.compare_digest(operator_token, read_token_file(token_file)):
         raise ConfigError('Operator and agent token files must contain different credentials.')
-    auth = token_verifier(token_file) if http else None
+    registry = None
+    auth = None
+    if http:
+        agents_path = config.agents_path or os.path.join(os.path.dirname(config.credentials_path), 'agents.sqlite3')
+        registry = AgentRegistry(agents_path)
+        registry.import_token(bootstrap_agent, read_token_file(token_file))
+        auth = RegistryTokenVerifier(registry)
     terminal = open_terminal()
     tasks = []
     http_server = None
@@ -73,12 +82,13 @@ async def run(
                 raise ConfigError("headless MCP requires ESCALATION_TIMEOUT_SECONDS > 0")
         master_password = resolve_master_password(config)
         broker = build_broker(config, master_password)
+        broker.agent_registry = registry
         gmail_tools = None
         if operator_token:
             from broker.gmail_tools import GmailTools
             from broker.integrations.gmail import Gmail
             gmail_tools = GmailTools(broker, Gmail(broker.store))
-        mcp = build_mcp(broker, auth=auth, gmail_tools=gmail_tools) if gmail_tools else build_mcp(broker, auth=auth)
+        mcp = build_mcp(broker, auth=auth, gmail_tools=gmail_tools, trusted_agent=stdio_agent) if gmail_tools else build_mcp(broker, auth=auth, trusted_agent=stdio_agent)
         print(format_status_line(broker), file=sys.stderr)
         if http:
             print(f'[AgentGate] authenticated MCP endpoint: http://127.0.0.1:{port}/mcp', file=sys.stderr)
@@ -133,6 +143,8 @@ def main() -> None:
     parser.add_argument('--http', action='store_true', help='serve authenticated MCP on localhost')
     parser.add_argument('--port', type=int, default=8765, help='localhost HTTP port (default: 8765)')
     parser.add_argument('--token-file', help='private bearer token file required for HTTP')
+    parser.add_argument('--bootstrap-agent', default='agentgate-local', help='identity assigned to --token-file on first launch')
+    parser.add_argument('--stdio-agent', default='agentgate-local', help='trusted identity for STDIO clients')
     parser.add_argument('--app', action='store_true', help='enable the local operator app and open its window')
     parser.add_argument('--operator-token-file', help='separate private app credential, required with --app')
     parser.add_argument('--no-open', action='store_true', help='do not automatically open the app browser')
@@ -143,7 +155,8 @@ def main() -> None:
         parser.error('--operator-token-file requires --app')
     try:
         asyncio.run(run(http=args.http or args.app, port=args.port, token_file=args.token_file,
-                        operator_token_file=args.operator_token_file, open_app=not args.no_open))
+                        operator_token_file=args.operator_token_file, open_app=not args.no_open,
+                        bootstrap_agent=args.bootstrap_agent, stdio_agent=args.stdio_agent))
     except ConfigError as exc:
         print(f"[AgentGate] configuration error: {exc}", file=sys.stderr)
         raise SystemExit(2)

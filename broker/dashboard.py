@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import re
 import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -47,6 +49,10 @@ def create_dashboard(mcp_app, broker, tools: GmailTools, operator_token: str):
                         'pending_count': broker.approvals.pending_count(),
                         'pending': {'id': pending.request_id, 'agent': pending.agent,
                                     'credential': pending.credential, 'preview': details} if pending else None}
+            elif request.method == 'GET' and action == 'agents':
+                registry = getattr(broker, 'agent_registry', None)
+                data = {'agents': registry.list_agents() if registry is not None else [],
+                        'available': registry is not None}
             elif request.method == 'GET' and action == 'activity':
                 def read_activity():
                     path = Path(broker.config.logs_path)
@@ -99,6 +105,78 @@ def create_dashboard(mcp_app, broker, tools: GmailTools, operator_token: str):
                         raise ValueError()
                     broker.approvals.resolve(pending, payload['approved'])
                     data = {'approved': payload['approved']}
+                elif action == 'agent-register':
+                    name = payload.get('name')
+                    ttl_hours = payload.get('ttl_hours', 720)
+                    if not isinstance(name, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,63}', name):
+                        raise ValueError()
+                    if type(ttl_hours) is not int or not 1 <= ttl_hours <= 8760:
+                        raise ValueError()
+                    registry = getattr(broker, 'agent_registry', None)
+                    if registry is None:
+                        return JSONResponse({'ok': False, 'reason': 'Agent identity management is unavailable.'}, status_code=503, headers=headers)
+                    credentials_path = getattr(broker.config, 'agents_path', None)
+                    if not credentials_path:
+                        credentials_path = str(Path(broker.config.credentials_path).parent / 'agents.sqlite3')
+                    credential_dir = Path(credentials_path).expanduser().parent / 'agent-credentials'
+                    credential_path = credential_dir / f'{name}.token'
+                    # Fail before creating an identity when a prior credential needs attention.
+                    if credential_path.exists():
+                        tools.audit('operator', 'agent:register', name, state.read_mode(broker.config.state_path), 'failed')
+                        return JSONResponse({'ok': False, 'reason': 'Choose a different agent name; existing identity credentials are not overwritten.'}, status_code=409, headers=headers)
+                    created = None
+                    try:
+                        created = registry.register(name, ttl_hours=ttl_hours)
+                        if credential_dir.is_symlink():
+                            raise OSError('unsafe credential directory')
+                        credential_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+                        directory_info = credential_dir.stat()
+                        if not credential_dir.is_dir() or directory_info.st_uid != os.getuid():
+                            raise OSError('unsafe credential directory')
+                        os.chmod(credential_dir, 0o700)
+                        fd = os.open(credential_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                        try:
+                            with os.fdopen(fd, 'w', encoding='ascii') as stream:
+                                stream.write(created['token'] + '\n')
+                        except Exception:
+                            try:
+                                credential_path.unlink()
+                            except OSError:
+                                pass
+                            raise
+                    except (ValueError, KeyError):
+                        tools.audit('operator', 'agent:register', name, state.read_mode(broker.config.state_path), 'failed')
+                        return JSONResponse({'ok': False, 'reason': 'That name may already be registered or reserved. Choose a different agent name.'}, status_code=400, headers=headers)
+                    except OSError:
+                        if created is not None:
+                            try:
+                                registry.revoke(created['agent']['id'])
+                            except Exception:
+                                pass
+                        tools.audit('operator', 'agent:register', name, state.read_mode(broker.config.state_path), 'failed')
+                        return JSONResponse({'ok': False, 'reason': 'Could not save the private credential file. The identity was revoked; check the credential folder before retrying.'}, status_code=500, headers=headers)
+                    except Exception:
+                        if created is not None:
+                            try:
+                                registry.revoke(created['agent']['id'])
+                            except Exception:
+                                pass
+                        tools.audit('operator', 'agent:register', name, state.read_mode(broker.config.state_path), 'failed')
+                        return JSONResponse({'ok': False, 'reason': 'Could not register this identity. Check the broker state and try again.'}, status_code=500, headers=headers)
+                    tools.audit('operator', 'agent:register', name, state.read_mode(broker.config.state_path), 'completed')
+                    data = {'agent': created['agent'], 'credential_path': str(credential_path.resolve())}
+                elif action == 'agent-revoke':
+                    agent_id = payload.get('id')
+                    if not isinstance(agent_id, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,63}', agent_id):
+                        raise ValueError()
+                    registry = getattr(broker, 'agent_registry', None)
+                    if registry is None:
+                        return JSONResponse({'ok': False, 'reason': 'Agent identity management is unavailable.'}, status_code=503, headers=headers)
+                    found = registry.revoke(agent_id)
+                    tools.audit('operator', 'agent:revoke', agent_id, state.read_mode(broker.config.state_path), 'completed' if found else 'failed')
+                    if not found:
+                        return JSONResponse({'ok': False, 'reason': 'Identity not found.'}, status_code=404, headers=headers)
+                    data = {'revoked': True}
                 elif action == 'mode':
                     data = {'mode': state.toggle_mode(broker.config.state_path)}
                 elif action == 'draft':
@@ -110,7 +188,7 @@ def create_dashboard(mcp_app, broker, tools: GmailTools, operator_token: str):
                 elif action == 'send':
                     if not isinstance(payload.get('draft_id'), str):
                         raise ValueError()
-                    result = await tools.send_draft('agentgate-local', payload['draft_id'])
+                    result = await tools.send_draft('operator', payload['draft_id'], trusted_operator=True)
                     return JSONResponse(result, headers=headers)
                 else:
                     return JSONResponse({'ok': False, 'reason': 'Unknown operation.'}, status_code=404, headers=headers)

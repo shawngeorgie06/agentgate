@@ -129,11 +129,15 @@ class Gmail:
         self._credentials.refresh(bounded_request)
         self.store.store(TOKEN_NAME, self._credentials.to_json())
 
-    def call(self, operation: str, **arguments) -> dict:
+    def call(self, operation: str, *, before_dispatch: Callable[[], None] | None = None, **arguments) -> dict:
         # googleapiclient's HTTP transport is not thread-safe; serialize calls.
         with self._lock:
             try:
                 service = self._get_service()
+                if before_dispatch is not None:
+                    before_dispatch()
+                if operation == 'send':
+                    arguments['before_dispatch'] = before_dispatch
                 return getattr(self, '_' + operation)(service, **arguments)
             except RefreshError:
                 self._credentials = None
@@ -200,17 +204,21 @@ class Gmail:
         return {'raw': message['raw'], 'threadId': message.get('threadId'),
                 'preview': describe_message(message['raw'])}
 
-    def _send(self, service, snapshot: dict):
+    def _send(self, service, snapshot: dict, before_dispatch: Callable[[], None] | None = None):
         payload = {'raw': snapshot['raw']}
         if snapshot.get('threadId'):
             payload['threadId'] = snapshot['threadId']
         # Sending the approved bytes avoids draft edits changing an approved email.
         # Keep the original draft: deleting it could discard concurrent user edits.
         if self._factory is not None:
+            if before_dispatch is not None:
+                before_dispatch()
             return service.users().messages().send(userId='me', body=payload).execute()
         # Renew immediately before dispatch so an approval wait or near-expiry
         # token does not require retrying a non-idempotent send.
         self._refresh()
+        if before_dispatch is not None:
+            before_dispatch()
         # httplib2 can replay POSTs after response loss. Requests' stock adapter
         # disables retries; disable redirects too, so this dispatch happens once.
         response = requests.post(

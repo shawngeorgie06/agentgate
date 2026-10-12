@@ -45,7 +45,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description='AgentGate local agent commands; JSON results on stdout')
     parser.add_argument('--token-file', default='~/.config/agentgate/mcp-token')
     parser.add_argument('--port', type=int, default=8765)
-    parser.add_argument('--agent', default='agentgate-local')
+    parser.add_argument('--agent', help='optional identity assertion; must match the authenticated credential')
     parser.add_argument('--timeout', type=positive_number, default=90, help='request timeout in seconds; allow time for terminal approval')
     commands = parser.add_subparsers(dest='command', required=True)
     commands.add_parser('status', help='check the running broker')
@@ -68,7 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 async def execute(args: argparse.Namespace) -> dict:
     token = read_token_file(args.token_file)
-    values = {'agent': args.agent}
+    values = {'agent': args.agent} if args.agent is not None else {}
     if args.command == 'status':
         tool, values = 'broker.status', {}
     elif args.command == 'search':

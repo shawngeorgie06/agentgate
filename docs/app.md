@@ -1,6 +1,6 @@
 # AgentGate local app
 
-The first app runs locally in your browser. It gives you a Gmail inbox, message reading, unsent draft creation and previews, approval buttons, access-mode control, and recent activity. Agents keep using the existing MCP endpoint or JSON commands. The app does not generate AI summaries yet or send iMessage notifications.
+The first app runs locally in your browser. It opens on **Agents**, where you can register identities, inspect expiry, and revoke access. It also gives you a Gmail inbox, message reading, unsent draft creation and previews, approval buttons, access-mode control, and recent activity. Agents keep using the existing MCP endpoint or JSON commands. The app does not generate AI summaries yet or send iMessage notifications.
 
 ## Setup
 
@@ -22,13 +22,14 @@ Your existing agent commands continue to use `http://127.0.0.1:8765/mcp`. The ap
 
 ## Using the app
 
+- **Agents:** register a unique identity, choose its lifetime, copy the private credential-file command, and revoke access when needed. See [identity setup and migration](agents.md).
 - **Inbox:** search with Gmail queries, select a message, and use “Load next page” for older results. Reading does not mark mail as read or delete anything.
 - **Drafts:** create a plain-text draft with To, Cc, Bcc, subject, and body. Browse existing Gmail drafts and their previews, including older pages. Existing drafts can be edited in Gmail; this version does not edit them in the app.
 - **Approvals:** agent requests appear automatically. “Review & request send” on a draft starts the same approval flow. Review the complete snapshot and click “Approve send” or “Reject”. Stale or expired requests cannot approve a later email. Attached files are listed by name/type; their contents are not displayed by the app, although Gmail’s raw MIME response includes attachment bytes inside the broker.
 - **Activity:** access decisions, expiry, and operation outcomes, without email content or credentials. Refresh to see the latest results.
 - **Agent access:** switch between trusted policy rules and asking for each agent operation. Every send requires approval in both modes. The operator's own read/draft actions are authorized by operator access, independently of agent policies.
 
-The agent name `agentgate-local` must permit draft access and escalation for app-initiated sends. Keep a finite approval timeout configured. If an operation fails after dispatch, check Gmail and activity before another attempt; delivery can be uncertain. The original draft remains after sending, and the broker blocks further send attempts for the same draft ID.
+App-initiated sends use the trusted operator role and always require approval. Agent-initiated sends follow the authenticated identity’s policies. Keep a finite approval timeout configured. If an operation fails after dispatch, check Gmail and activity before another attempt; delivery can be uncertain. The original draft remains after sending, and the broker blocks further send attempts for the same draft ID.
 
 ## Local security boundary
 

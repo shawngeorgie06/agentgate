@@ -6,10 +6,15 @@ import re
 import secrets
 import stat
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
+from fastmcp.server.auth.providers.jwt import StaticTokenVerifier, TokenVerifier
+from fastmcp.server.auth import AccessToken
 
 from broker.config import ConfigError
+
+if TYPE_CHECKING:
+    from broker.agent_registry import AgentRegistry
 
 
 def create_token_file(path: str) -> None:
@@ -40,3 +45,18 @@ def read_token_file(path: str) -> str:
 def token_verifier(path: str) -> StaticTokenVerifier:
     token = read_token_file(path)
     return StaticTokenVerifier(tokens={token: {'client_id': 'agentgate-local', 'scopes': ['agentgate']}})
+
+
+class RegistryTokenVerifier(TokenVerifier):
+    """FastMCP bearer verifier backed by the revocable identity registry."""
+
+    def __init__(self, registry: "AgentRegistry"):
+        super().__init__(required_scopes=[])
+        self.registry = registry
+
+    async def verify_token(self, token: str) -> AccessToken | None:
+        agent = self.registry.authenticate(token)
+        if agent is None:
+            return None
+        return AccessToken(token=token, client_id=agent["id"], scopes=["agentgate"],
+                           claims={"agent_id": agent["id"]})

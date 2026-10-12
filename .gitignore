@@ -8,3 +8,6 @@ logs/audit.log
 .venv/
 client_secret*.json
 oauth-client*.json
+
+data/agents.sqlite3*
+data/agent-credentials/

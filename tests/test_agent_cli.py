@@ -14,7 +14,7 @@ from tests.test_gmail import make_tools
 async def test_commands_use_gmail_tools_without_exporting_credentials(tmp_path, monkeypatch):
     broker, service, gmail, _ = make_tools(tmp_path)
     mcp = FastMCP('Agent commands test')
-    register_gmail_tools(mcp, broker, gmail)
+    register_gmail_tools(mcp, broker, gmail, trusted_agent='local-agent')
     path = tmp_path / 'token'
     create_token_file(str(path))
     addresses = []

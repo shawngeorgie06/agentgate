@@ -64,8 +64,8 @@ from broker.integrations.gmail import Gmail
 from broker.gmail_tools import register_gmail_tools
 from broker import mcp_server
 fake = FakeService()
-mcp_server.register_gmail_tools = lambda mcp, broker: register_gmail_tools(
-    mcp, broker, Gmail(broker.store, service_factory=lambda: fake)
+mcp_server.register_gmail_tools = lambda mcp, broker, **kwargs: register_gmail_tools(
+    mcp, broker, Gmail(broker.store, service_factory=lambda: fake), **kwargs
 )
 from broker.main import main
 main()
@@ -102,7 +102,7 @@ async def test_real_http_auth_and_terminal_send_approval(tmp_path, approve):
     master, slave = pty.openpty()
     error_log = open(tmp_path / 'server.log', 'w')
     process = subprocess.Popen(
-        [sys.executable, '-c', _SERVER, '--http', '--port', str(port), '--token-file', str(token_path)],
+        [sys.executable, '-c', _SERVER, '--http', '--port', str(port), '--token-file', str(token_path), '--bootstrap-agent', 'local-agent'],
         cwd=str(Path(__file__).resolve().parents[1]),
         env={**os.environ, 'TEST_TTY_FD': str(slave),
              'POLICIES_PATH': str(policies), 'STATE_PATH': str(tmp_path / 'mode.json'),

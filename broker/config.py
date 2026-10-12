@@ -46,6 +46,7 @@ class Config:
     token_ttl_minutes: int
     escalation_timeout_seconds: int
     master_password: str | None
+    agents_path: str | None = None
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Config":
@@ -53,6 +54,11 @@ class Config:
 
         def get(key: str) -> str:
             return env.get(key, _DEFAULTS[key])
+
+        agents_path = env.get(
+            "AGENTS_PATH",
+            os.path.join(os.path.dirname(get("CREDENTIALS_PATH")), "agents.sqlite3"),
+        )
 
         return cls(
             policies_path=_require_non_empty(get("POLICIES_PATH"), "POLICIES_PATH"),
@@ -64,4 +70,5 @@ class Config:
                 0, _require_int(get("ESCALATION_TIMEOUT_SECONDS"), "ESCALATION_TIMEOUT_SECONDS")
             ),
             master_password=env.get("AGENTGATE_MASTER_PASSWORD"),
+            agents_path=_require_non_empty(agents_path, "AGENTS_PATH"),
         )

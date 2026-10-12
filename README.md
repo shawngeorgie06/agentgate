@@ -6,7 +6,7 @@ AgentGate is a prototype credential broker and approval engine for AI agents. It
 
 - **Credential Storage**: Argon2id + AES-256-GCM encrypted credential storage with per-credential salts and nonces
 - **Policy Engine**: YAML-based declarative policies with time windows and auto-approval rules
-- **Two-Tier Approval**: Automatic approval for trusted agent/credential pairs; escalation to CLI operator for others
+- **Two-Tier Approval**: Automatic approval for trusted agent/credential pairs; escalation to the operator app or terminal for others
 - **Audit Logging**: Append-only JSON audit trail (no credential values logged)
 - **FastMCP Server**: Built-in Model Context Protocol server exposing credential, policy, and Gmail MCP tools for agent integration
 - **Runtime Mode Toggle**: Interactive CLI toggle between AUTO and MANUAL approval modes (state persisted to JSON)
@@ -58,7 +58,7 @@ Approve the first request with `y`, then deny the second with `n`. This demo exe
 Without a controlling terminal, the broker requires `AGENTGATE_MASTER_PASSWORD` and a positive `ESCALATION_TIMEOUT_SECONDS`. Automatic policies still work; requests needing an operator time out and are denied.
 
 **Request credentials from agents:**
-Agents connect to AgentGate via MCP and call `credential.request(agent, credential)`. The broker consults policies and audit state to approve or escalate the request.
+Agents connect to AgentGate via MCP and call `credential.request(credential)`; identity comes from authentication or trusted launcher configuration. The broker consults policies and audit state to approve or escalate the request.
 
 **Toggle approval mode:**
 Once the CLI is running, press `s` then Enter to toggle between AUTO and MANUAL approval modes. The decision is persisted to `state/mode.json` and read on every request (never cached).
@@ -91,7 +91,7 @@ policies:
       start: "HH:MM"
       end: "HH:MM"
     auto_approve: true|false   # auto-approve if time window matches
-    escalate: true             # if true, failed auto-approval escalates to CLI operator
+    escalate: true             # if true, failed auto-approval escalates to the operator app or terminal
 ```
 
 **Example:**
@@ -118,13 +118,13 @@ The first matching policy wins. Policies are evaluated in order.
 
 AgentGate exposes these core MCP tools for agent integration:
 
-1. **`credential.request`** — Request a credential by agent name and credential name. Returns `{granted: bool, token: str, token_expiry: int, value: str, reason: str}`.
+1. **`credential.request`** — Request a credential by name as the authenticated identity; an optional agent-name assertion must match. Returns `{granted: bool, token: str, token_expiry: int, value: str, reason: str}`.
 
 2. **`policy.list`** — List all policies and their current status. Returns `{policies: [{name, agent, credential, auto_approve, escalate, ...}]}`.
 
 3. **`policy.validate`** — Validate the policy file without applying it. Returns `{valid: bool, errors: [str]}`.
 
-4. **`policy.add`** — Add a new policy. **Always escalates to CLI operator for approval, regardless of mode.** Once approved, the policy is persisted to `policies/policies.yaml`.
+4. **`policy.add`** — Add a new policy. **Always escalates to the operator app or terminal for approval, regardless of mode.** Once approved, the policy is persisted to `policies/policies.yaml`.
 
 5. **`broker.status`** — Get current broker status: mode, policy count, request/escalation counts, and uptime. Returns `{mode: str, policies: int, requests: int, escalated: int, uptime_seconds: int}`.
 
@@ -133,7 +133,7 @@ AgentGate exposes these core MCP tools for agent integration:
 AgentGate runs in two modes:
 
 - **AUTO**: Policies with `auto_approve: true` grant credentials immediately. Policies with `auto_approve: false` still escalate to the operator.
-- **MANUAL**: All requests (even auto-approval policies) escalate to the CLI operator for interactive approval or denial.
+- **MANUAL**: All requests (even auto-approval policies) escalate to the operator app or terminal for approval or denial.
 
 Toggle modes by pressing `s` while the CLI is running. The mode is persisted to `state/mode.json`.
 
@@ -174,7 +174,7 @@ Credentials are encrypted at rest using:
 - **Encryption**: AES-256-GCM with per-credential salts and nonces
 - **Audit**: Credential decisions logged without credential values
 
-The broker accepts agent names supplied by MCP callers; it does not authenticate those identities. Use local trusted clients only. Credential values are omitted from the audit log but are returned to approved callers.
+HTTP MCP callers authenticate as registered agent identities; caller-supplied names cannot override that identity. Credentials can expire or be revoked without restarting the broker. STDIO clients use an operator-selected launcher identity. See [agent identities](docs/agents.md) for setup, migration, enforcement, and local filesystem boundaries. Legacy API-key values are still returned to approved callers; Gmail credentials remain broker-only.
 
 ## Token TTL
 
@@ -221,4 +221,4 @@ Tests cover:
 
 ### Local operator app
 
-Use the [AgentGate app](docs/app.md) for Gmail reading, draft creation/previews, send approvals, and activity in a browser window. Agent commands continue to work while approvals move out of the terminal. Try the sample-data preview with `.venv/bin/python examples/app_demo.py`.
+Use the [AgentGate app](docs/app.md) to register and revoke [agent identities](docs/agents.md), inspect activity, and approve requests. Gmail reading and draft creation/previews remain available. Agent commands continue to work while approvals move out of the terminal. Try the sample-data preview with `.venv/bin/python examples/app_demo.py`.

@@ -28,6 +28,15 @@ def test_resolve_master_password_prefers_env(tmp_path):
     assert main_mod.resolve_master_password(_cfg(tmp_path)) == "pw"
 
 
+def test_agents_path_defaults_beside_credentials_and_can_be_overridden(tmp_path):
+    assert _cfg(tmp_path).agents_path == str(tmp_path / "agents.sqlite3")
+    cfg = Config.from_env({
+        "CREDENTIALS_PATH": str(tmp_path / "creds.json"),
+        "AGENTS_PATH": str(tmp_path / "custom.sqlite3"),
+    })
+    assert cfg.agents_path == str(tmp_path / "custom.sqlite3")
+
+
 def test_build_broker_constructs_with_policies(tmp_path):
     cfg = _cfg(tmp_path)
     broker = main_mod.build_broker(cfg, "pw")

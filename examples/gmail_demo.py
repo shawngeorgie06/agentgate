@@ -55,7 +55,7 @@ async def main():
             })
             broker = build_broker(config, 'dummy-password')
             mcp = FastMCP('Offline Gmail demo')
-            register_gmail_tools(mcp, broker, DummyGmail())
+            register_gmail_tools(mcp, broker, DummyGmail(), trusted_agent='demo-agent')
             operator = asyncio.create_task(console_loop(broker, terminal))
             request = None
             try:

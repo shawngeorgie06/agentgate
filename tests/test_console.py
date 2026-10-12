@@ -21,7 +21,7 @@ async def test_mcp_approval_and_denial_use_terminal(tmp_path, capsys):
     terminal = Terminal(slave)
     console = asyncio.create_task(console_loop(broker, terminal))
     try:
-        async with Client(build_mcp(broker)) as client:
+        async with Client(build_mcp(broker, trusted_agent='demo')) as client:
             for answer, granted in ((b'y\n', True), (b'n\n', False)):
                 request = asyncio.create_task(client.call_tool(
                     'credential.request', {'agent': 'demo', 'credential': 'demo-key'}
@@ -61,7 +61,7 @@ async def test_real_stdio_server_headless_timeout(tmp_path):
     # MCP stdio transport launches the server in a new session.
     transport = StdioTransport(
         command=sys.executable,
-        args=['-m', 'broker.main'],
+        args=['-m', 'broker.main', '--stdio-agent', 'demo'],
         cwd=str(Path(__file__).resolve().parents[1]),
         env={
             'POLICIES_PATH': config.policies_path,

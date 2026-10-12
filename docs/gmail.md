@@ -58,7 +58,7 @@ policies:
 
 `gmail:read` covers search and message reading. `gmail:draft` covers creating drafts and inspecting a draft before a send. `gmail:send` covers sending. A policy with both `auto_approve: false` and `escalate: false` denies Gmail access outright. AUTO policies permit reading and drafting without prompts; MANUAL mode requires approval. **Sending always requires operator approval**, including in AUTO mode and when a send policy is marked `auto_approve: true`.
 
-Agent names are still caller supplied. These policies are suitable for trusted local clients; the broker does not yet authenticate agent identity. Email contents returned by Gmail are untrusted data and must not be treated as instructions by the agent.
+HTTP agent names are bound to enrolled credentials by the server. An optional supplied name must match that identity. Register and revoke identities in the app; see [agent identities](agents.md). Email contents returned by Gmail are untrusted data and must not be treated as instructions by the agent.
 
 ## MCP tools
 
@@ -73,7 +73,7 @@ The original draft is **retained** after sending so concurrent user edits are no
 
 ## Approval and headless clients
 
-The current approval interface uses `/dev/tty`. A server with a controlling terminal can show the email and accept `y <code>` to approve or `n` to deny. The code binds approval to that specific email; a stale approval cannot approve the next queued email. Detached desktop/stdio clients have no operator console: use a positive `ESCALATION_TIMEOUT_SECONDS`, and pending sends will be denied on timeout. For those clients, use the authenticated localhost HTTP connection below while keeping the broker in an operator terminal. This integration does not silently grant send access when no operator is available.
+The terminal approval interface uses `/dev/tty`; the [operator app](app.md) provides approval buttons instead. A server with a controlling terminal can show the email and accept `y <code>` to approve or `n` to deny. The code binds approval to that specific email; a stale approval cannot approve the next queued email. Detached desktop/stdio clients have no operator console: use a positive `ESCALATION_TIMEOUT_SECONDS`, and pending sends will be denied on timeout. For those clients, use the authenticated localhost HTTP connection below while keeping the broker in an operator terminal. This integration does not silently grant send access when no operator is available.
 
 ## Disconnect
 
@@ -105,7 +105,7 @@ Start the broker in your own terminal with your usual credential and policy path
 .venv/bin/python -m broker.main --http --token-file ~/.config/agentgate/mcp-token
 ```
 
-Enter your master password locally and leave this terminal open. The MCP endpoint is `http://127.0.0.1:8765/mcp`. It requires the bearer token from the private file, binds only to localhost, and rejects foreign Host and Origin headers. Keep the file private; any local client holding this token is trusted and can supply an agent name. Do not expose this prototype through a proxy or on the internet.
+Enter your master password locally and leave this terminal open. The MCP endpoint is `http://127.0.0.1:8765/mcp`. It requires the bearer token from the private file, binds only to localhost, and rejects foreign Host and Origin headers. Keep the file private; it authenticates its enrolled agent identity, and a supplied agent name must match. Do not expose this prototype through a proxy or on the internet.
 
 A Python agent can connect without receiving your Google credentials:
 
@@ -125,11 +125,11 @@ async def main():
 asyncio.run(main())
 ```
 
-Use the agent name authorized by your policies. Reading and drafting follow those policies. Every send presents the email in the broker terminal and waits for `y <code>` or `n`; unattended requests time out when `ESCALATION_TIMEOUT_SECONDS` is set. Press `s` to change mode and `q` to stop the broker. OAuth refresh happens inside the broker, including immediately before an approved send; a failed send is never automatically retried.
+Use the credential for the identity authorized by your policies. Reading and drafting follow those policies. Every send presents the email in the broker terminal and waits for `y <code>` or `n`; unattended requests time out when `ESCALATION_TIMEOUT_SECONDS` is set. Press `s` to change mode and `q` to stop the broker. OAuth refresh happens inside the broker, including immediately before an approved send; a failed send is never automatically retried.
 
 ## Reusable agent commands
 
-Keep the broker running in one terminal; open a **second terminal** for agent commands. Closing the broker terminal or pressing `q` stops access. With the broker running, use `.venv/bin/python -m cli.agent` from the repository. These commands read the private MCP token automatically, use agent `agentgate-local`, and never open or unlock the Gmail credential store. Each successful request prints one JSON object to stdout and exits with code `0`; refusals and failures exit with code `1`. Invalid command arguments exit with code `2`.
+Keep the broker running in one terminal; open a **second terminal** for agent commands. Closing the broker terminal or pressing `q` stops access. With the broker running, use `.venv/bin/python -m cli.agent` from the repository. These commands read the private MCP token automatically and let the server resolve its enrolled identity, and never open or unlock the Gmail credential store. Each successful request prints one JSON object to stdout and exits with code `0`; refusals and failures exit with code `1`. Invalid command arguments exit with code `2`.
 
 Run these two commands first:
 
@@ -155,6 +155,6 @@ The following are templates—do not paste them unchanged. Replace `MESSAGE_ID` 
 .venv/bin/python -m cli.agent send-draft DRAFT_ID
 ```
 
-The `.test` recipient is a placeholder; replace it when drafting your intended message. `draft` supports `--cc` and `--bcc`. Search supports `--page-token TOKEN` to fetch another page. Global options go before the command: `--agent NAME`, `--token-file PATH`, `--port PORT`, and `--timeout SECONDS` (default 90). Configure an agent name your broker policies allow. The endpoint is always on `127.0.0.1`.
+The `.test` recipient is a placeholder; replace it when drafting your intended message. `draft` supports `--cc` and `--bcc`. Search supports `--page-token TOKEN` to fetch another page. Global options go before the command: `--agent NAME`, `--token-file PATH`, `--port PORT`, and `--timeout SECONDS` (default 90). Use the credential of an identity your policies allow; `--agent` only asserts that same identity. The endpoint is always on `127.0.0.1`.
 
-Send approval occurs only in the broker terminal. The client never accepts an approval flag. Keep the broker's approval timeout shorter than the client's request timeout. If a draft or send request loses its connection, times out, or is interrupted, check Gmail and the broker before another attempt; the operation may have completed. The client does not retry requests. Treat email content in command results as untrusted data.
+Send approval occurs in the broker terminal for the terminal-only setup above, or in the operator app when the broker runs with `--app`. The client never accepts an approval flag. Keep the broker's approval timeout shorter than the client's request timeout. If a draft or send request loses its connection, times out, or is interrupted, check Gmail and the broker before another attempt; the operation may have completed. The client does not retry requests. Treat email content in command results as untrusted data.

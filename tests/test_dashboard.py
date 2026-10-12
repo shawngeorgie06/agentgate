@@ -1,6 +1,7 @@
 import asyncio
 import dataclasses
 import json
+import os
 from contextlib import asynccontextmanager
 
 import httpx2 as httpx
@@ -8,6 +9,7 @@ import pytest
 from fastmcp import Client
 
 from broker.dashboard import create_dashboard
+from broker.agent_registry import AgentRegistry
 from broker.http_auth import create_token_file, read_token_file, token_verifier
 from broker.mcp_server import build_mcp
 from tests.test_gmail import make_tools, pending
@@ -19,7 +21,7 @@ async def dashboard(tmp_path):
     path = tmp_path / 'agent-token'
     create_token_file(str(path))
     agent_token = read_token_file(str(path))
-    mcp = build_mcp(broker, auth=token_verifier(str(path)), gmail_tools=tools)
+    mcp = build_mcp(broker, auth=token_verifier(str(path)), gmail_tools=tools, trusted_agent='local-agent')
     app = create_dashboard(mcp.http_app(path='/mcp'), broker, tools, 'operator-secret-credential')
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://127.0.0.1:8765', headers={'Authorization':'Bearer operator-secret-credential'}) as client:
@@ -87,6 +89,53 @@ async def test_app_send_timeout_and_operator_reads_drafts_activity(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_owner_send_review_survives_revoked_bootstrap_identity(tmp_path):
+    async with dashboard(tmp_path) as (client, broker, service, tools, mcp, agent_token):
+        registry = AgentRegistry(str(tmp_path / 'dashboard-agents.sqlite3'))
+        broker.agent_registry = registry
+        bootstrap = registry.register('agentgate-local')
+        assert registry.revoke('agentgate-local')
+
+        owner_send = asyncio.create_task(client.post('/api/send', json={'draft_id':'draft-1'}))
+        request = await pending(broker)
+        assert request.agent == 'operator'
+        assert request.credential == 'gmail:send'
+        assert registry.authenticate(bootstrap['token']) is None
+
+        approved = await client.post('/api/approval', json={'id':request.request_id,'approved':True})
+        assert approved.json()['ok']
+        response = await owner_send
+        assert response.json()['ok']
+        assert any(call[1] == 'send' for call in service.calls)
+        activity = (await client.get('/api/activity')).json()['data']['activity']
+        assert any(row['agent'] == 'operator' and row['credential_requested'] == 'gmail:send' for row in activity)
+        assert bootstrap['token'] not in json.dumps(activity)
+
+
+@pytest.mark.asyncio
+async def test_policy_change_approval_exposes_complete_frozen_proposal(tmp_path):
+    async with dashboard(tmp_path) as (client, broker, service, tools, mcp, agent_token):
+        policy = {
+            'name':'review-only', 'agent':'example-agent', 'credential':'gmail:read',
+            'auto_approve':False, 'escalate':True,
+        }
+        async with Client(mcp) as agent:
+            proposal = asyncio.create_task(agent.call_tool('policy.add', {'policy':policy, 'agent':'local-agent'}))
+            request = await pending(broker)
+            response = await client.get('/api/status')
+            shown = response.json()['data']['pending']
+            assert shown['id'] == request.request_id
+            assert shown['credential'] == 'policy.add:review-only'
+            assert shown['preview'] == policy
+            assert shown['preview']['agent'] == 'example-agent'
+            assert shown['preview']['credential'] == 'gmail:read'
+            assert shown['preview']['auto_approve'] is False
+            rejected = await client.post('/api/approval', json={'id':request.request_id,'approved':False})
+            assert rejected.json()['ok']
+            assert (await proposal).data['added'] is False
+
+
+@pytest.mark.asyncio
 async def test_draft_pagination_and_attempt_marker(tmp_path):
     from types import SimpleNamespace
     async with dashboard(tmp_path) as (client, broker, service, tools, mcp, agent_token):
@@ -100,3 +149,74 @@ async def test_draft_pagination_and_attempt_marker(tmp_path):
         assert page['next_page_token'] == 'older-drafts'
         assert page['drafts'][0]['attempted'] is True
         assert calls == [{'userId':'me','maxResults':10,'pageToken':'older-drafts'}]
+
+
+@pytest.mark.asyncio
+async def test_agent_operator_routes_export_private_credential_and_revoke(tmp_path):
+    async with dashboard(tmp_path) as (client, broker, service, tools, mcp, agent_token):
+        registry = AgentRegistry(str(tmp_path / 'agents.sqlite3'))
+        broker.agent_registry = registry
+        created = await client.post('/api/agent-register', json={'name':'sample-helper','ttl_hours':24})
+        assert created.status_code == 200
+        data = created.json()['data']
+        assert data['agent']['id'] == 'sample-helper'
+        assert data['agent']['status'] == 'active'
+        assert data['agent']['expires_at']
+        assert 'token' not in created.json()['data']
+        credential = open(data['credential_path'], encoding='ascii').read().strip()
+        assert credential and credential not in created.text
+        assert (tmp_path / 'agent-credentials').stat().st_mode & 0o777 == 0o700
+        assert os.stat(data['credential_path']).st_mode & 0o777 == 0o600
+        assert registry.authenticate(credential)['id'] == 'sample-helper'
+        assert (await client.get('/api/agents', headers={'Authorization':f'Bearer {credential}'})).status_code == 401
+        assert (await client.post('/api/agent-register', json={'name':'second-agent','ttl_hours':24}, headers={'Authorization':f'Bearer {credential}'})).status_code == 401
+        assert (await client.post('/api/agent-revoke', json={'id':'sample-helper'}, headers={'Authorization':f'Bearer {credential}'})).status_code == 401
+        listed = await client.get('/api/agents')
+        assert listed.json()['data']['agents'][0]['id'] == 'sample-helper'
+        assert credential not in open(broker.config.logs_path, encoding='utf-8').read()
+        assert (await client.post('/api/agent-revoke', json={'id':'sample-helper'})).json()['data']['revoked']
+        assert registry.authenticate(credential) is None
+        assert registry.list_agents()[0]['status'] == 'revoked'
+        assert (await client.get('/api/agents')).json()['data']['agents'][0]['status'] == 'revoked'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('payload', [
+    {'name':'../outside', 'ttl_hours':24},
+    {'name':'invalid-name!', 'ttl_hours':24},
+    {'name':'valid-name', 'ttl_hours':0},
+    {'name':'valid-name', 'ttl_hours':8761},
+    {'name':'valid-name', 'ttl_hours':1.5},
+])
+async def test_agent_registration_rejects_invalid_name_or_ttl(tmp_path, payload):
+    async with dashboard(tmp_path) as (client, broker, service, tools, mcp, agent_token):
+        broker.agent_registry = AgentRegistry(str(tmp_path / 'agents.sqlite3'))
+        response = await client.post('/api/agent-register', json=payload)
+        assert response.status_code == 400
+        assert not broker.agent_registry.list_agents()
+
+
+@pytest.mark.asyncio
+async def test_agent_export_conflict_does_not_create_or_reissue_identity(tmp_path):
+    async with dashboard(tmp_path) as (client, broker, service, tools, mcp, agent_token):
+        broker.agent_registry = AgentRegistry(str(tmp_path / 'agents.sqlite3'))
+        credential_dir = tmp_path / 'agent-credentials'
+        credential_dir.mkdir(mode=0o700)
+        credential_path = credential_dir / 'already-there.token'
+        credential_path.write_text('keep-me', encoding='ascii')
+        response = await client.post('/api/agent-register', json={'name':'already-there','ttl_hours':720})
+        assert response.status_code == 409
+        assert credential_path.read_text(encoding='ascii') == 'keep-me'
+        assert broker.agent_registry.list_agents() == []
+
+
+@pytest.mark.asyncio
+async def test_agent_routes_report_unavailable_registry_safely(tmp_path):
+    async with dashboard(tmp_path) as (client, broker, service, tools, mcp, agent_token):
+        broker.agent_registry = None
+        response = await client.get('/api/agents')
+        assert response.status_code == 200
+        assert response.json()['data'] == {'agents': [], 'available': False}
+        register = await client.post('/api/agent-register', json={'name':'sample-helper','ttl_hours':720})
+        assert register.status_code == 503
+        assert 'Traceback' not in register.text

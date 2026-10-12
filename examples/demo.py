@@ -31,7 +31,7 @@ async def main():
         broker.store.store('demo-key', 'dummy-value-only')
         operator = asyncio.create_task(console_loop(broker, terminal))
         try:
-            async with Client(build_mcp(broker)) as client:
+            async with Client(build_mcp(broker, trusted_agent='demo-agent')) as client:
                 for instruction in ('Approve with y', 'Deny with n'):
                     print(f'\n{instruction}: requesting demo-key through MCP.')
                     request = asyncio.create_task(client.call_tool(

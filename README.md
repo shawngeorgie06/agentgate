@@ -246,3 +246,7 @@ Agent commands (replace the example identity path with your own private credenti
 ```
 
 Issue creation requires a stable `--request-id` for each logical issue. Reuse that same ID when checking an uncertain request; the encrypted attempt ledger blocks repeated dispatch across broker restarts. Do not generate a new ID to retry a request whose outcome is unknown. No non-idempotent provider action is automatically retried.
+
+### macOS background app
+
+Use the native **AgentGate.app** to save the existing vault unlock in macOS Keychain and open the local web interface. A per-user LaunchAgent runs the broker quietly at login, supervises restarts, and keeps it available after the browser or native opener closes. The app menu can enable/disable automatic startup or forget the saved unlock. See [background setup and lifecycle](docs/background.md). This runs on your Mac; it does not host AgentGate in the cloud.

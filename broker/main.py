@@ -7,6 +7,7 @@ import os
 import sys
 import secrets
 import webbrowser
+from pathlib import Path
 import uvicorn
 from argon2.exceptions import Argon2Error
 
@@ -54,11 +55,12 @@ def format_status_line(broker: Broker) -> str:
     )
 
 
-async def run(
+async def _run_locked(
     config: Config | None = None, *, http: bool = False,
     port: int = 8765, token_file: str | None = None,
     operator_token_file: str | None = None, open_app: bool = True,
     bootstrap_agent: str = 'agentgate-local', stdio_agent: str = 'agentgate-local',
+    keychain_helper: str | None = None,
 ) -> None:
     config = config or Config.from_env()
     if http and not token_file:
@@ -77,18 +79,25 @@ async def run(
         registry = AgentRegistry(agents_path)
         registry.import_token(bootstrap_agent, read_token_file(token_file))
         auth = RegistryTokenVerifier(registry)
-    terminal = open_terminal()
+    terminal = None if keychain_helper else open_terminal()
     tasks = []
     http_server = None
     server_task = None
     launch_task = None
     try:
         if terminal is None:
-            if not config.master_password:
+            if not config.master_password and not keychain_helper:
                 raise ConfigError("headless MCP requires AGENTGATE_MASTER_PASSWORD")
             if not config.escalation_timeout_seconds:
                 raise ConfigError("headless MCP requires ESCALATION_TIMEOUT_SECONDS > 0")
-        master_password = resolve_master_password(config)
+        if keychain_helper:
+            from broker.mac_keychain import read_password, KeychainError
+            try:
+                master_password = await asyncio.to_thread(read_password, keychain_helper, config.credentials_path)
+            except KeychainError:
+                raise ConfigError('Could not unlock AgentGate with macOS Keychain. Open AgentGate to set up or unlock access.') from None
+        else:
+            master_password = resolve_master_password(config)
         broker = build_broker(config, master_password)
         broker.agent_registry = registry
         if registry is not None:
@@ -115,6 +124,7 @@ async def run(
                 app = create_dashboard(app, broker, gmail_tools, operator_token, github=github_tools.github)
             http_server = uvicorn.Server(uvicorn.Config(
                 app, host='127.0.0.1', port=port, lifespan='on',
+                access_log=not bool(keychain_helper),
                 timeout_graceful_shutdown=2,
             ))
             server_task = asyncio.create_task(http_server.serve())
@@ -152,6 +162,23 @@ async def run(
             terminal.close()
 
 
+async def run(
+    config: Config | None = None, *, http: bool = False,
+    port: int = 8765, token_file: str | None = None,
+    operator_token_file: str | None = None, open_app: bool = True,
+    bootstrap_agent: str = 'agentgate-local', stdio_agent: str = 'agentgate-local',
+    keychain_helper: str | None = None,
+) -> None:
+    from broker.process_lock import CredentialProcessLock
+    config = config or Config.from_env()
+    lock_path = str(Path(config.credentials_path).expanduser().resolve()) + '.broker.lock'
+    with CredentialProcessLock(lock_path):
+        await _run_locked(config, http=http, port=port, token_file=token_file,
+                          operator_token_file=operator_token_file, open_app=open_app,
+                          bootstrap_agent=bootstrap_agent, stdio_agent=stdio_agent,
+                          keychain_helper=keychain_helper)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description='AgentGate MCP broker')
     parser.add_argument('--http', action='store_true', help='serve authenticated MCP on localhost')
@@ -161,6 +188,7 @@ def main() -> None:
     parser.add_argument('--stdio-agent', default='agentgate-local', help='trusted identity for STDIO clients')
     parser.add_argument('--app', action='store_true', help='enable the local operator app and open its window')
     parser.add_argument('--operator-token-file', help='separate private app credential, required with --app')
+    parser.add_argument('--keychain-helper', help='private macOS Keychain helper for background startup')
     parser.add_argument('--no-open', action='store_true', help='do not automatically open the app browser')
     args = parser.parse_args()
     if args.app and not args.operator_token_file:
@@ -170,7 +198,8 @@ def main() -> None:
     try:
         asyncio.run(run(http=args.http or args.app, port=args.port, token_file=args.token_file,
                         operator_token_file=args.operator_token_file, open_app=not args.no_open,
-                        bootstrap_agent=args.bootstrap_agent, stdio_agent=args.stdio_agent))
+                        bootstrap_agent=args.bootstrap_agent, stdio_agent=args.stdio_agent,
+                        keychain_helper=args.keychain_helper))
     except ConfigError as exc:
         print(f"[AgentGate] configuration error: {exc}", file=sys.stderr)
         raise SystemExit(2)

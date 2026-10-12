@@ -4,6 +4,7 @@ import base64
 import json
 import os
 import threading
+import tempfile
 
 from argon2.low_level import Type, hash_secret_raw
 from cryptography.exceptions import InvalidTag
@@ -49,11 +50,18 @@ class CredentialStore:
         return {"salt": _b64e(os.urandom(_SALT_LEN)), "credentials": {}}
 
     def _write(self, data: dict) -> None:
-        os.makedirs(os.path.dirname(os.path.abspath(self._path)), exist_ok=True)
-        tmp = f"{self._path}.tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, indent=2)
-        os.replace(tmp, self._path)
+        directory = os.path.dirname(os.path.abspath(self._path))
+        os.makedirs(directory, mode=0o700, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix='.agentgate-credentials-', dir=directory)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                json.dump(data, stream, indent=2)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, self._path)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
 
     def _derive_key(self, salt: bytes) -> bytes:
         return hash_secret_raw(

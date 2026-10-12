@@ -11,3 +11,4 @@ oauth-client*.json
 
 data/agents.sqlite3*
 data/agent-credentials/
+*.broker.lock

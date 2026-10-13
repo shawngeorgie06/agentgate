@@ -38,6 +38,17 @@ MODEL_FAILED_MESSAGE = 'The local model could not complete this request.'
 FALLBACK_MESSAGE = 'I could not produce a reply for that request.'
 NO_RESULTS = 'No matching items were found.'
 
+# Notes handed to the model in place of result data, so it can word the reply itself.
+# The fixed messages above are used only when the model cannot answer.
+REFUSAL_NOTE = ('AgentGate ran nothing for this request. This iMessage assistant is read-only: '
+                'it can check unread Gmail, search and read Gmail messages, list GitHub repos, '
+                'list open issues, and read repository files. It cannot send, draft, create, edit, '
+                'delete, or change anything. Explain this to the user.')
+MALFORMED_NOTE = ('AgentGate could not tell exactly what to look up from that request. Ask the user '
+                  'for the missing detail, such as what to search for or the repository owner and name.')
+FAILURE_NOTE = ('AgentGate tried to look this up but the read did not succeed, so no data was retrieved. '
+                'This agent may not have permission for it, or the service may be unavailable.')
+
 
 class _Malformed(Exception):
     pass
@@ -175,22 +186,22 @@ class ReadOnlyMessageAgent:
             return MALFORMED_MESSAGE, 'denied', None
         action = plan['action']
         if action not in READ_ACTIONS:
-            return READ_ONLY_MESSAGE, 'denied', None
+            return await self._say(prompt, REFUSAL_NOTE, history, READ_ONLY_MESSAGE), 'denied', None
         try:
             args = _parse_args(action, plan)
         except _Malformed:
-            return MALFORMED_MESSAGE, 'denied', action
+            return await self._say(prompt, MALFORMED_NOTE, history, MALFORMED_MESSAGE), 'denied', action
         if action == 'unsupported':
-            return UNSUPPORTED_MESSAGE, 'completed', action
+            return await self._say(prompt, REFUSAL_NOTE, history, UNSUPPORTED_MESSAGE), 'completed', action
 
         try:
             context = await self._gather(action, args, agent_name, identity_guard)
         except _Inactive:
             return INACTIVE_MESSAGE, 'denied', action
-        except _ToolFailed:
-            return UNABLE_MESSAGE, 'failed', action
         except Exception:
-            return UNABLE_MESSAGE, 'failed', action
+            if not _active(identity_guard):
+                return INACTIVE_MESSAGE, 'denied', action
+            return await self._say(prompt, FAILURE_NOTE, history, UNABLE_MESSAGE), 'failed', action
 
         if not _active(identity_guard):
             return INACTIVE_MESSAGE, 'denied', action
@@ -199,6 +210,15 @@ class ReadOnlyMessageAgent:
         except Exception:
             return MODEL_FAILED_MESSAGE, 'failed', action
         return _clean_reply(answer), 'completed', action
+
+    async def _say(self, prompt, note, history, fallback):
+        """Let the model word a reply from a fixed AgentGate note; use the fixed text if it can't."""
+        try:
+            answer = await self._model.answer(prompt, f'AgentGate note: {note}', history)
+        except Exception:
+            return fallback
+        text = _clean_reply(answer)
+        return fallback if text == FALLBACK_MESSAGE else text
 
     async def _gather(self, action, args, agent_name, guard) -> str:
         if action == 'chat':
@@ -220,7 +240,7 @@ class ReadOnlyMessageAgent:
         if action == 'gmail_read':
             data = await self._call(self._gmail, agent_name, 'gmail:read', 'read', guard,
                                     message_id=args['message_id'])
-            return _message_block(data)[:CONTEXT_LIMIT]
+            return _message_block(data)[:CONTEXT_LIMIT] or NO_RESULTS
         if action == 'github_repos':
             data = await self._call(self._github, agent_name, 'github:read', 'repos', guard,
                                     per_page=REPO_LIMIT, page=1)

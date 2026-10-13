@@ -657,6 +657,79 @@ async def test_concurrent_pairing_starts_never_orphan_a_pairing_task(tmp_path, r
     assert live_tasks('_pair') == [] and live_tasks('_run_loop') == []
 
 
+class HistoryModel(FakeModel):
+    def __init__(self):
+        super().__init__()
+        self.histories = []
+        self.count = 0
+
+    async def plan(self, prompt, history=''):
+        self.histories.append(history)
+        return await super().plan(prompt, history)
+
+    async def answer(self, prompt, context, history=''):
+        self.count += 1
+        return f'reply {self.count}'
+
+
+async def command(world, clock, rowid, text):
+    before = len(world.sent)
+    world.queue.put_nowait(event(clock, rowid, text, guid=f'h{rowid}'))
+    await wait_until(lambda: len(world.sent) == before + 1)
+    clock.advance(6)
+
+
+async def test_replies_see_recent_conversation_in_memory_only(tmp_path, registry):
+    world, clock, model = FakeWorld(), Clock(), HistoryModel()
+    service = make_service(tmp_path, world, clock, registry=registry, model=model)
+    await pair(service, world)
+    await service.enable()
+    await command(world, clock, 900, '/agent hi there')
+    await command(world, clock, 901, '/agent what did I just say?')
+    assert model.histories[0] == ''
+    assert model.histories[1] == 'User: hi there\nAgentGate: reply 1'
+    assert 'hi there' not in json.dumps(service.status())
+    for path in (tmp_path / 'config').rglob('*'):
+        if path.is_file():
+            assert b'hi there' not in path.read_bytes()
+
+    await service.disable()
+    await service.enable()
+    await command(world, clock, 902, '/agent fresh start')
+    assert model.histories[2] == ''
+    await service.stop()
+
+
+async def test_revocation_clears_conversation_memory(tmp_path, registry):
+    world, clock, model = FakeWorld(), Clock(), HistoryModel()
+    service = make_service(tmp_path, world, clock, registry=registry, model=model)
+    await pair(service, world)
+    await service.enable()
+    await command(world, clock, 900, '/agent remember this')
+    registry.revoke('helper')
+    world.queue.put_nowait(event(clock, 901, '/agent hi', guid='h901'))
+    await wait_until(lambda: service.status()['error'] == svc.ERR_REVOKED)
+    assert service._conversation.text(clock()) == ''
+    await service.stop()
+
+
+async def test_conversation_memory_is_bounded_and_expires(tmp_path, registry, monkeypatch):
+    world, clock, model = FakeWorld(), Clock(), HistoryModel()
+    service = make_service(tmp_path, world, clock, registry=registry, model=model)
+    await pair(service, world)
+    await service.enable()
+    for n in range(12):
+        await command(world, clock, 900 + n, '/agent ' + 'x' * 500 + str(n))
+    history = model.histories[-1]
+    assert len(history) <= svc.CONVERSATION_LIMIT
+    assert history.endswith('AgentGate: reply 11')
+    assert history.startswith('User: ')
+    clock.advance(svc.CONVERSATION_TTL.total_seconds() + 1)
+    await command(world, clock, 950, '/agent later')
+    assert model.histories[-1] == ''
+    await service.stop()
+
+
 async def test_disable_stops_pairing_as_well_as_the_loop(tmp_path, registry):
     world, clock = FakeWorld(), Clock()
     service = make_service(tmp_path, world, clock, registry=registry)

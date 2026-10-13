@@ -34,6 +34,9 @@ STABLE_AFTER = dt.timedelta(seconds=60)
 HOURLY_WINDOW = dt.timedelta(hours=1)
 HOURLY_LIMIT = 30
 RECENT_LIMIT = 20
+CONVERSATION_TURNS = 6
+CONVERSATION_LIMIT = 2000
+CONVERSATION_TTL = dt.timedelta(minutes=30)
 SETTINGS_FILE = 'imessage.json'
 SETTINGS_LIMIT = 4096
 PAIRED_CONFIRMATION = 'AgentGate paired.'
@@ -257,6 +260,36 @@ def _parse_command(event, chat_id):
     return message_id, event.get('rowid'), event.get('date'), request
 
 
+class _Conversation:
+    """Recent exchanges in the paired chat, so replies can follow the thread. Memory only, never saved."""
+
+    def __init__(self):
+        self._turns = []
+        self._last = None
+
+    def text(self, now):
+        if self._last is None or now - self._last > CONVERSATION_TTL:
+            self.clear()
+            return ''
+        blocks, total = [], 0
+        for user, reply in reversed(self._turns):
+            block = f'User: {user}\nAgentGate: {reply}'
+            total += len(block) + (1 if blocks else 0)
+            if total > CONVERSATION_LIMIT:
+                break
+            blocks.append(block)
+        return '\n'.join(reversed(blocks))
+
+    def add(self, user, reply, now):
+        self._turns.append((user, reply))
+        del self._turns[:-CONVERSATION_TURNS]
+        self._last = now
+
+    def clear(self):
+        self._turns.clear()
+        self._last = None
+
+
 class _Halt(Exception):
     """Stops the command loop and disables the agent with a safe reason code."""
 
@@ -281,6 +314,7 @@ class IMessageService:
         self._agent = ReadOnlyMessageAgent(audit, gmail_tools, github_tools, model)
         self._clock = clock or _utcnow
         self._limiter = _CommandLimiter()
+        self._conversation = _Conversation()
         self._settings, self._error = _read_settings(self._settings_path)
         self._unreadable = self._error == ERR_UNREADABLE
         self._loop_task = None
@@ -562,6 +596,7 @@ class IMessageService:
         self._loop_task = asyncio.create_task(self._run_loop(paired['chat_id'], paired['agent_id']))
 
     async def _stop_loop(self):
+        self._conversation.clear()
         task, self._loop_task = self._loop_task, None
         if task is not None:
             if not task.done():
@@ -569,6 +604,7 @@ class IMessageService:
             await asyncio.gather(task, return_exceptions=True)
 
     def _halt(self, code):
+        self._conversation.clear()
         if not self._unreadable:
             self._save({'enabled': False, 'paired': self._settings['paired']})
         self._error = code
@@ -625,7 +661,8 @@ class IMessageService:
             self._ledger.mark_result(message_id, 'skipped')
             return
         self._ledger.mark_attempted(message_id)
-        reply = await self._agent.reply(agent_id, lambda: self._agent_active(agent_id), request)
+        history = self._conversation.text(self._clock())
+        reply = await self._agent.reply(agent_id, lambda: self._agent_active(agent_id), request, history)
         try:
             await bridge.send_text(reply)
         except MessagesBridgeError as error:
@@ -636,6 +673,7 @@ class IMessageService:
                 raise _Restart()
             return
         self._ledger.mark_result(message_id, 'sent')
+        self._conversation.add(request, reply, self._clock())
 
     async def _notify(self, bridge, text):
         try:

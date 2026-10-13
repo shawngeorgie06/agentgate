@@ -148,27 +148,31 @@ def _handle_key(value):
     return digits or None
 
 
+_ONE_TO_ONE_GUID_PREFIXES = ('iMessage;-;', 'any;-;')
+
+
 def is_self_chat(chat):
-    """True only for a 1:1 iMessage chat whose single participant is the signed-in account's own handle.
+    """True only for a 1:1 iMessage chat whose single participant is one of your own handles.
 
     Checks: is_group is exactly False; service is exactly 'iMessage'; the GUID is a
-    one-to-one iMessage GUID ('iMessage;-;...'); participants is exactly one handle;
-    account_login is present; and the normalized participant equals the normalized
-    account login. Anything missing or ambiguous is refused.
+    one-to-one GUID ('iMessage;-;...' or, on newer macOS, 'any;-;...'); participants is
+    exactly one handle; and that participant equals either the account login or the
+    handle you last sent from in this chat (in a chat with someone else, that handle is
+    yours and the participant is theirs). Anything missing or ambiguous is refused.
     """
     if not isinstance(chat, dict) or chat.get('is_group') is not False:
         return False
     if chat.get('service') != 'iMessage':
         return False
     guid = chat.get('guid')
-    if not isinstance(guid, str) or not guid.startswith('iMessage;-;'):
+    if not isinstance(guid, str) or not guid.startswith(_ONE_TO_ONE_GUID_PREFIXES):
         return False
     participants = chat.get('participants')
     if not isinstance(participants, list) or len(participants) != 1:
         return False
-    me = _handle_key(chat.get('account_login'))
     other = _handle_key(participants[0])
-    return me is not None and me == other
+    mine = {_handle_key(chat.get('account_login')), _handle_key(chat.get('last_addressed_handle'))}
+    return other is not None and other in mine
 
 
 def _normalize_chat(value, chat_id):
@@ -181,11 +185,14 @@ def _normalize_chat(value, chat_id):
     if not isinstance(participants, list) or not all(
             isinstance(p, str) and 0 < len(p) <= MAX_SENDER_CHARS for p in participants):
         return None
-    account = value.get('account_login')
+    account, addressed = value.get('account_login'), value.get('last_addressed_handle')
     if not isinstance(account, str) or len(account) > MAX_SENDER_CHARS:
         account = None
+    if not isinstance(addressed, str) or len(addressed) > MAX_SENDER_CHARS:
+        addressed = None
     return {'id': chat_id, 'guid': guid, 'service': service, 'is_group': is_group,
-            'participants': participants, 'account_login': account}
+            'participants': participants, 'account_login': account,
+            'last_addressed_handle': addressed}
 
 
 def _normalize_message(message, paired_chat_id):

@@ -307,6 +307,18 @@ async def test_pairing_accepts_exact_code_in_one_to_one_self_chat(tmp_path, regi
     await service.stop()
 
 
+async def test_pairing_accepts_self_chat_identified_by_last_addressed_handle(tmp_path, registry):
+    # macOS 27 shape: 'any;-;' GUID, email login, phone self-chat.
+    world, clock = FakeWorld(), Clock()
+    world.chats[SELF_CHAT] = self_chat(guid='any;-;' + HANDLE, account_login='me@icloud.com',
+                                       last_addressed_handle=HANDLE)
+    service = make_service(tmp_path, world, clock, registry=registry)
+    await pair(service, world)
+    assert service.status()['paired'] is True
+    assert world.sent == [(SELF_CHAT, 'AgentGate paired.')]
+    await service.stop()
+
+
 @pytest.mark.parametrize('case', ['group', 'other_participant', 'sms', 'not_from_me', 'extra_text', 'wrong_case', 'other_code'])
 async def test_pairing_ignores_everything_but_the_exact_code_in_a_self_chat(tmp_path, registry, case):
     world, clock = FakeWorld(), Clock()

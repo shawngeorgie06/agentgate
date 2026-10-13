@@ -395,6 +395,20 @@ def test_is_self_chat_accepts_only_one_to_one_chat_with_own_handle():
     assert not is_self_chat(_chat(account_login=''))
 
 
+def test_is_self_chat_accepts_any_service_guid_and_last_addressed_handle():
+    # Observed on macOS 27: 1:1 GUIDs use 'any;-;', account_login is the Apple ID
+    # email, and the self-chat participant equals the handle you send from.
+    real = dict(guid='any;-;+15550100', account_login='me@icloud.com',
+                last_addressed_handle='+15550100')
+    assert is_self_chat(_chat(**real))
+    # A chat with someone else: you address it from your handle, they are the participant.
+    assert not is_self_chat(_chat(**{**real, 'participants': ['+15550199']}))
+    assert not is_self_chat(_chat(**{**real, 'guid': 'any;+;chat123'}))
+    assert not is_self_chat(_chat(**{**real, 'service': 'SMS'}))
+    assert not is_self_chat(_chat(**{**real, 'last_addressed_handle': None}))
+    assert not is_self_chat(_chat(**{**real, 'last_addressed_handle': ''}))
+
+
 @pytest.mark.parametrize('mode', ['chat_group', 'chat_sms', 'chat_two', 'chat_other_account'])
 async def test_start_refuses_unverified_paired_chat(tmp_path, mode):
     helper = make_helper(tmp_path, mode=mode)
@@ -481,6 +495,7 @@ async def test_pairing_bridge_lists_candidates_and_history(tmp_path):
     assert history[0]['is_from_me'] is True and history[0]['text'] == '/agent pair AG-TEST23'
     assert history[1]['text'] == ''
     assert chat['guid'] == GUID and chat['account_login'] == 'P:+15550100'
+    assert chat['last_addressed_handle'] is None
 
 
 async def test_pairing_bridge_cannot_send_or_subscribe(tmp_path):

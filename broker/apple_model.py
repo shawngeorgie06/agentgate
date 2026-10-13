@@ -35,12 +35,13 @@ class AppleModel:
     def plan(self, prompt, history=''):
         return self._call({'mode': 'plan', 'prompt': prompt, 'history': history})
 
-    def answer(self, prompt, context, history=''):
-        return self._call({'mode': 'answer', 'prompt': prompt, 'context': context, 'history': history})
+    def answer(self, prompt, context, history='', style=''):
+        return self._call({'mode': 'answer', 'prompt': prompt, 'context': context, 'history': history,
+                           'style': style})
 
     def _call(self, request):
         mode = request['mode']
-        for field, limit in [('prompt', 2000), ('history', 4000), ('context', 6000)]:
+        for field, limit in [('prompt', 2000), ('history', 4000), ('context', 6000), ('style', 500)]:
             if field in request:
                 value = request[field]
                 if not isinstance(value, str) or len(value) > limit or '\x00' in value:

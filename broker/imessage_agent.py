@@ -5,6 +5,7 @@ import re
 
 PROMPT_LIMIT = 2000
 HISTORY_LIMIT = 2000
+STYLE_LIMIT = 500
 CONTEXT_LIMIT = 6000
 REPLY_LIMIT = 1200
 MESSAGE_LIMIT = 3
@@ -164,8 +165,9 @@ class ReadOnlyMessageAgent:
         self._github = github_tools
         self._model = model
 
-    async def reply(self, agent_name: str, identity_guard, prompt: str, history: str = '') -> str:
-        text, decision, action = await self._run(agent_name, identity_guard, prompt, history)
+    async def reply(self, agent_name: str, identity_guard, prompt: str, history: str = '',
+                    style: str = '') -> str:
+        text, decision, action = await self._run(agent_name, identity_guard, prompt, history, style)
         if self._audit is not None:
             label = action if action in READ_ACTIONS else 'invalid'
             self._audit.log(agent=agent_name, credential_requested=f'imessage:{label}',
@@ -173,9 +175,10 @@ class ReadOnlyMessageAgent:
                             token_expiry=None)
         return text
 
-    async def _run(self, agent_name, identity_guard, prompt, history):
+    async def _run(self, agent_name, identity_guard, prompt, history, style):
         prompt = _bounded(prompt, PROMPT_LIMIT)
         history = _bounded(history, HISTORY_LIMIT)
+        style = _bounded(style, STYLE_LIMIT)
         try:
             plan = await self._model.plan(prompt, history)
         except Exception:
@@ -186,13 +189,13 @@ class ReadOnlyMessageAgent:
             return MALFORMED_MESSAGE, 'denied', None
         action = plan['action']
         if action not in READ_ACTIONS:
-            return await self._say(prompt, REFUSAL_NOTE, history, READ_ONLY_MESSAGE), 'denied', None
+            return await self._say(prompt, REFUSAL_NOTE, history, style, READ_ONLY_MESSAGE), 'denied', None
         try:
             args = _parse_args(action, plan)
         except _Malformed:
-            return await self._say(prompt, MALFORMED_NOTE, history, MALFORMED_MESSAGE), 'denied', action
+            return await self._say(prompt, MALFORMED_NOTE, history, style, MALFORMED_MESSAGE), 'denied', action
         if action == 'unsupported':
-            return await self._say(prompt, REFUSAL_NOTE, history, UNSUPPORTED_MESSAGE), 'completed', action
+            return await self._say(prompt, REFUSAL_NOTE, history, style, UNSUPPORTED_MESSAGE), 'completed', action
 
         try:
             context = await self._gather(action, args, agent_name, identity_guard)
@@ -201,20 +204,20 @@ class ReadOnlyMessageAgent:
         except Exception:
             if not _active(identity_guard):
                 return INACTIVE_MESSAGE, 'denied', action
-            return await self._say(prompt, FAILURE_NOTE, history, UNABLE_MESSAGE), 'failed', action
+            return await self._say(prompt, FAILURE_NOTE, history, style, UNABLE_MESSAGE), 'failed', action
 
         if not _active(identity_guard):
             return INACTIVE_MESSAGE, 'denied', action
         try:
-            answer = await self._model.answer(prompt, context, history)
+            answer = await self._model.answer(prompt, context, history, style)
         except Exception:
             return MODEL_FAILED_MESSAGE, 'failed', action
         return _clean_reply(answer), 'completed', action
 
-    async def _say(self, prompt, note, history, fallback):
+    async def _say(self, prompt, note, history, style, fallback):
         """Let the model word a reply from a fixed AgentGate note; use the fixed text if it can't."""
         try:
-            answer = await self._model.answer(prompt, f'AgentGate note: {note}', history)
+            answer = await self._model.answer(prompt, f'AgentGate note: {note}', history, style)
         except Exception:
             return fallback
         text = _clean_reply(answer)

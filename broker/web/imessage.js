@@ -43,6 +43,7 @@ const ERROR_TEXT = {
   agent_revoked: 'The paired agent was revoked. Pair an active agent to continue.',
   messages_database_changed: 'The Messages database changed. Re-pair to continue.',
   ledger_unavailable: 'The iMessage record could not be opened.',
+  style_not_reset: 'The texting style could not be cleared. Try Reset style again.',
   send_uncertain: 'A reply may or may not have been sent. It will not be retried automatically.',
   send_blocked: 'An earlier reply is still unresolved, so this reply was not sent.',
   send_failed: 'The iMessage helper could not send the reply.',
@@ -138,6 +139,12 @@ export async function renderIMessage(container, api) {
     if (status.paired) body.append(pairedView(status));
     else if (status.available && status.pairing) body.append(pendingView(status.pairing));
     else if (status.available) body.append(unpairedView());
+    // A learned style outlives pairing, so its Reset stays reachable after unpairing.
+    if (!status.paired && status.style?.messages > 0) {
+      const card = element('article', undefined, 'card');
+      card.append(styleView(status.style));
+      body.append(card);
+    }
     body.append(recentView(Array.isArray(status.recent) ? status.recent : []));
     if (status.error) setMessage(errorText(status.error), true);
   }
@@ -284,7 +291,29 @@ export async function renderIMessage(container, api) {
     }, 'iMessage unpaired.'));
     confirm.append(keep, unpair);
     card.append(confirm);
+    card.append(styleView(status.style));
     return card;
+  }
+
+  // Texting-style learning. Only counts are kept by the broker, so there is nothing to preview here.
+  function styleView(style) {
+    const section = element('div', undefined, 'imessage-style');
+    section.append(element('h4', 'Texting style'));
+    const count = Number.isInteger(style?.messages) ? style.messages : 0;
+    const needed = Number.isInteger(style?.needed) ? style.needed : 5;
+    let text = 'Replies will start sounding like you after a few "/agent" messages.';
+    if (count > 0 && style.learning) text = `Learning how you text: ${count} of ${needed} messages so far.`;
+    else if (count > 0) text = `Replies match how you text, learned from ${count} of your messages.`;
+    section.append(element('p', text, 'hint'));
+    section.append(element('p', 'Only counts like message length, capitalization, punctuation, and common texting words are kept, never your messages.', 'hint'));
+    if (count > 0) {
+      const reset = button('Reset style', '', () => run([reset], async () => {
+        await post('imessage-style-reset');
+        await load();
+      }, 'Texting style reset.'));
+      section.append(reset);
+    }
+    return section;
   }
 
   function recentView(rows) {

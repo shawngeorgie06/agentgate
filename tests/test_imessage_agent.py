@@ -7,7 +7,7 @@ class Model:
     async def plan(self, prompt, history=''):
         self.plans.append(prompt)
         return {'action': self.action, **self.args}
-    async def answer(self, prompt, context, history=''):
+    async def answer(self, prompt, context, history='', style=''):
         self.contexts.append(context)
         return 'Summary'
 
@@ -31,7 +31,7 @@ async def test_unread_bounded_authorized_tools_and_sanitized_context():
     assert 'SECRET' not in model.contexts[0]
 
 class FailingAnswerModel(Model):
-    async def answer(self, prompt, context, history=''):
+    async def answer(self, prompt, context, history='', style=''):
         self.contexts.append(context)
         raise RuntimeError('model down')
 
@@ -72,7 +72,7 @@ async def test_chat_gets_empty_context_and_conversation_history():
         async def plan(self, prompt, history=''):
             self.plan_history = history
             return await super().plan(prompt, history)
-        async def answer(self, prompt, context, history=''):
+        async def answer(self, prompt, context, history='', style=''):
             self.answer_history = history
             return await super().answer(prompt, context, history)
     model, tools = HistoryModel('chat'), Tools()
@@ -105,7 +105,7 @@ async def test_malformed_arguments_fail_closed():
 @pytest.mark.asyncio
 async def test_prompt_context_and_reply_bounds():
     class LongModel(Model):
-        async def answer(self, prompt, context, history=''):
+        async def answer(self, prompt, context, history='', style=''):
             assert len(context) <= 6000
             assert len(history) <= 2000
             return 'x' * 3000
@@ -123,3 +123,16 @@ async def test_gmail_read_without_data_never_reaches_model_as_chat():
     model, tools = Model('gmail_read', message_id='abc123'), EmptyRead()
     await ReadOnlyMessageAgent(None, tools, tools, model).reply('reader', lambda: True, 'read it')
     assert model.contexts and model.contexts[0] != ''
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('action', ['chat', 'unsupported', 'gmail_unread'])
+async def test_style_notes_reach_every_answer(action):
+    class StyleModel(Model):
+        styles = []
+        async def answer(self, prompt, context, history='', style=''):
+            self.styles.append(style)
+            return 'Summary'
+    model, tools = StyleModel(action), Tools()
+    await ReadOnlyMessageAgent(None, tools, tools, model).reply('reader', lambda: True, 'yo', style='writes in all lowercase')
+    assert model.styles == ['writes in all lowercase']

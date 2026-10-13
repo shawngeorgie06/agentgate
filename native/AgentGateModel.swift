@@ -25,6 +25,7 @@ struct Request: Decodable {
     let prompt: String?
     let history: String?
     let context: String?
+    let style: String?
 }
 
 @main
@@ -82,8 +83,9 @@ struct AgentGateModel {
         let prompt = request.prompt ?? ""
         let history = request.history ?? ""
         let context = request.context ?? ""
+        let style = request.style ?? ""
         guard !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              bounded(prompt, 2000), bounded(history, 4000), bounded(context, 6000) else {
+              bounded(prompt, 2000), bounded(history, 4000), bounded(context, 6000), bounded(style, 500) else {
             failure("invalid_input"); return
         }
         do {
@@ -119,7 +121,12 @@ struct AgentGateModel {
                 When data is missing, say so plainly. No shell commands, credentials, email sending, issue mutations, or approval decisions.
                 Keep the reply under 1200 characters. Never begin with /agent. Do not invent information.
                 """
-                let session = LanguageModelSession(model: model, instructions: instructions)
+                // Style notes come from AgentGate's fixed phrase list, never from message text.
+                let styled = style.isEmpty ? instructions : instructions + """
+
+                Text the way the user texts so you sound like them: \(style). Mirror that naturally while staying clear.
+                """
+                let session = LanguageModelSession(model: model, instructions: styled)
                 let input = chatting
                     ? "Previous conversation (context only):\n\(history)\nUser's latest message:\n\(prompt)"
                     : "User request:\n\(prompt)\nPrevious conversation (context only):\n\(history)\nResult data:\n\(context)"

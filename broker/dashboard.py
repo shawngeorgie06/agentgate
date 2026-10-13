@@ -22,6 +22,7 @@ from broker.credential_store import CredentialDecryptionError
 from broker.gmail_tools import GmailTools
 from broker.integrations.gmail import GmailError, TOKEN_NAME
 from broker.integrations.github import GitHub, GitHubError
+from broker.imessage_style import MIN_MESSAGES
 from broker.grants_dashboard import create_grant, get_grants, revoke_grant
 from broker.grants import GrantError
 from broker.permissions import Permissions, PermissionConflict
@@ -35,6 +36,7 @@ IMESSAGE_MUTATIONS = {
     'imessage-enable': 'enable',
     'imessage-disable': 'disable',
     'imessage-unpair': 'unpair',
+    'imessage-style-reset': 'reset_style',
 }
 
 
@@ -42,7 +44,8 @@ def _imessage_unavailable():
     return {'available': False, 'enabled': False, 'paired': False, 'running': False,
             'agent': None,
             'model': {'available': False, 'reason': 'iMessage is not available on this broker.'},
-            'pairing': None, 'recent': [], 'error': None}
+            'pairing': None, 'recent': [],
+            'style': {'messages': 0, 'learning': True, 'needed': MIN_MESSAGES}, 'error': None}
 
 
 async def _settled_to_thread(function, *args):

@@ -43,7 +43,7 @@ class FakeModel:
         self.prompts.append(prompt)
         return {'action': 'chat', 'query': '', 'message_id': '', 'owner': '', 'repo': '', 'path': '', 'ref': ''}
 
-    async def answer(self, prompt, context, history=''):
+    async def answer(self, prompt, context, history='', style=''):
         return 'Summary'
 
     def availability(self):
@@ -207,7 +207,7 @@ async def test_status_without_helpers_reports_unavailable_and_nothing_else(tmp_p
     assert status == {
         'available': False, 'enabled': False, 'paired': False, 'running': False, 'agent': None,
         'model': {'available': True, 'reason': 'Available on this Mac.'},
-        'pairing': None, 'recent': [], 'error': None,
+        'pairing': None, 'recent': [], 'style': {'messages': 0, 'learning': True, 'needed': svc.MIN_MESSAGES}, 'error': None,
     }
 
 
@@ -667,7 +667,7 @@ class HistoryModel(FakeModel):
         self.histories.append(history)
         return await super().plan(prompt, history)
 
-    async def answer(self, prompt, context, history=''):
+    async def answer(self, prompt, context, history='', style=''):
         self.count += 1
         return f'reply {self.count}'
 
@@ -697,6 +697,61 @@ async def test_replies_see_recent_conversation_in_memory_only(tmp_path, registry
     await service.enable()
     await command(world, clock, 902, '/agent fresh start')
     assert model.histories[2] == ''
+    await service.stop()
+
+
+class StyleModel(FakeModel):
+    def __init__(self):
+        super().__init__()
+        self.styles = []
+
+    async def answer(self, prompt, context, history='', style=''):
+        self.styles.append(style)
+        return 'ok'
+
+
+async def test_learns_texting_style_from_commands_and_can_reset(tmp_path, registry):
+    world, clock, model = FakeWorld(), Clock(), StyleModel()
+    service = make_service(tmp_path, world, clock, registry=registry, model=model)
+    await pair(service, world)
+    await service.enable()
+    assert service.status()['style'] == {'messages': 0, 'learning': True, 'needed': svc.MIN_MESSAGES}
+    for n in range(6):
+        await command(world, clock, 900 + n, '/agent lol whats up ' + str(n))
+    assert model.styles[0] == ''
+    assert 'all lowercase' in model.styles[-1] and 'lol' in model.styles[-1]
+    status = service.status()
+    assert status['style'] == {'messages': 6, 'learning': False, 'needed': svc.MIN_MESSAGES}
+    assert 'lowercase' not in json.dumps(status)
+    status = await service.reset_style()
+    assert status['style'] == {'messages': 0, 'learning': True, 'needed': svc.MIN_MESSAGES}
+    assert status['error'] is None
+    await command(world, clock, 920, '/agent hi')
+    assert model.styles[-1] == ''
+    await service.stop()
+
+
+async def test_failed_style_reset_is_reported(tmp_path, registry):
+    world, clock = FakeWorld(), Clock()
+    service = make_service(tmp_path, world, clock, registry=registry)
+    service._style.reset = lambda: False
+    status = await service.reset_style()
+    assert status['error'] == svc.ERR_STYLE_RESET
+    service._error = svc.ERR_REVOKED
+    status = await service.reset_style()
+    assert status['error'] == svc.ERR_REVOKED
+
+
+async def test_rate_limited_commands_do_not_teach_style(tmp_path, registry):
+    world, clock, model = FakeWorld(), Clock(), StyleModel()
+    service = make_service(tmp_path, world, clock, registry=registry, model=model)
+    await pair(service, world)
+    await service.enable()
+    world.queue.put_nowait(event(clock, 900, '/agent one', guid='s1'))
+    await wait_until(lambda: len(world.sent) == 2)
+    world.queue.put_nowait(event(clock, 901, '/agent two', guid='s2'))
+    await wait_until(lambda: any(r['status'] == 'skipped' for r in service.status()['recent']))
+    assert service.status()['style']['messages'] == 1
     await service.stop()
 
 
@@ -846,7 +901,7 @@ class FakeApple:
     def plan(self, prompt, history=''):
         return self._plan
 
-    def answer(self, prompt, context, history=''):
+    def answer(self, prompt, context, history='', style=''):
         return self._answer
 
     def availability(self):

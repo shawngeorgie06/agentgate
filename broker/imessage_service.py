@@ -21,6 +21,7 @@ from broker.apple_model import AppleModel
 from broker.imessage_agent import ReadOnlyMessageAgent
 from broker.imessage_bridge import MessagesBridge, MessagesBridgeError, is_self_chat, verify_helper
 from broker.imessage_state import MessageLedger, MessageLedgerError
+from broker.imessage_style import MIN_MESSAGES, TextingStyle
 
 PAIRING_POLL_SECONDS = 2.0
 PAIRING_TTL = dt.timedelta(minutes=10)
@@ -38,6 +39,7 @@ CONVERSATION_TURNS = 6
 CONVERSATION_LIMIT = 2000
 CONVERSATION_TTL = dt.timedelta(minutes=30)
 SETTINGS_FILE = 'imessage.json'
+STYLE_FILE = 'imessage-style.json'
 SETTINGS_LIMIT = 4096
 PAIRED_CONFIRMATION = 'AgentGate paired.'
 RATE_NOTICE = 'AgentGate is handling recent requests. Please wait a moment before sending another.'
@@ -54,6 +56,7 @@ ERR_LOOP = 'loop_failed'
 ERR_REVOKED = 'agent_revoked'
 ERR_STALE = 'messages_database_changed'
 ERR_LEDGER = 'ledger_unavailable'
+ERR_STYLE_RESET = 'style_not_reset'
 RESTART_CODES = frozenset({'send_uncertain', 'send_blocked'})
 
 
@@ -101,7 +104,8 @@ class UnavailableIMessageService:
     def status(self):
         return {'available': False, 'enabled': False, 'paired': False, 'running': False, 'agent': None,
                 'model': {'available': False, 'reason': 'iMessage is not available on this broker.'},
-                'pairing': None, 'recent': [], 'error': self._error}
+                'pairing': None, 'recent': [], 'style': {'messages': 0, 'learning': True, 'needed': MIN_MESSAGES},
+                'error': self._error}
 
     async def snapshot(self):
         return self.status()
@@ -127,6 +131,9 @@ class UnavailableIMessageService:
     async def unpair(self):
         return self.status()
 
+    async def reset_style(self):
+        return self.status()
+
 
 class AsyncAppleModel:
     """Async adapter over AppleModel. Blocking helper calls run in a worker thread."""
@@ -137,8 +144,8 @@ class AsyncAppleModel:
     async def plan(self, prompt, history=''):
         return _data(await asyncio.to_thread(self._apple.plan, prompt, history))
 
-    async def answer(self, prompt, context, history=''):
-        data = _data(await asyncio.to_thread(self._apple.answer, prompt, context, history))
+    async def answer(self, prompt, context, history='', style=''):
+        data = _data(await asyncio.to_thread(self._apple.answer, prompt, context, history, style))
         text = data.get('text')
         if not isinstance(text, str):
             raise ModelError('model_failed')
@@ -315,6 +322,7 @@ class IMessageService:
         self._clock = clock or _utcnow
         self._limiter = _CommandLimiter()
         self._conversation = _Conversation()
+        self._style = TextingStyle(self._config_dir / STYLE_FILE)
         self._settings, self._error = _read_settings(self._settings_path)
         self._unreadable = self._error == ERR_UNREADABLE
         self._loop_task = None
@@ -342,6 +350,8 @@ class IMessageService:
             'model': self._model_availability(),
             'pairing': self._pairing_view(),
             'recent': self._recent(),
+            'style': {'messages': self._style.count(), 'learning': self._style.count() < MIN_MESSAGES,
+                      'needed': MIN_MESSAGES},
             'error': self._error,
         }
 
@@ -521,6 +531,15 @@ class IMessageService:
             await bridge.close()
 
     @_serialized
+    async def reset_style(self):
+        if not self._style.reset():
+            # Keep a more important error, such as why the loop halted, on screen.
+            self._error = self._error or ERR_STYLE_RESET
+        elif self._error == ERR_STYLE_RESET:
+            self._error = None
+        return self.status()
+
+    @_serialized
     async def unpair(self):
         await self._stop_loop()
         await self._cancel_pairing()
@@ -661,8 +680,10 @@ class IMessageService:
             self._ledger.mark_result(message_id, 'skipped')
             return
         self._ledger.mark_attempted(message_id)
+        self._style.observe(request)
         history = self._conversation.text(self._clock())
-        reply = await self._agent.reply(agent_id, lambda: self._agent_active(agent_id), request, history)
+        reply = await self._agent.reply(agent_id, lambda: self._agent_active(agent_id), request, history,
+                                        self._style.notes())
         try:
             await bridge.send_text(reply)
         except MessagesBridgeError as error:

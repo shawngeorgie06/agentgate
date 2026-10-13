@@ -113,3 +113,17 @@ def test_helper_gets_minimal_env_and_neutral_cwd(tmp_path, monkeypatch):
     assert 'AGENTGATE_MASTER_PASSWORD' not in seen
     assert set(seen) <= {'PATH', 'HOME', 'PWD', 'SHLVL', '_'}
     assert cwd_dump.read_text().strip() == '/'
+
+
+def test_answer_passes_bounded_style(tmp_path):
+    model = AppleModel(helper(tmp_path))
+    ok = response({'ok': True, 'data': {'text': 'hey'}})
+    with patch('broker.apple_model.subprocess.run', return_value=ok) as run:
+        assert model.answer('hi', '', '', style='writes in all lowercase')['ok']
+        assert json.loads(run.call_args.kwargs['input'])['style'] == 'writes in all lowercase'
+    with patch('broker.apple_model.subprocess.run', return_value=ok) as run:
+        assert model.answer('hi', '')['ok']
+        assert json.loads(run.call_args.kwargs['input'])['style'] == ''
+    with patch('broker.apple_model.subprocess.run', return_value=ok) as run:
+        assert not model.answer('hi', '', '', style='x' * 501)['ok']
+        assert not run.called

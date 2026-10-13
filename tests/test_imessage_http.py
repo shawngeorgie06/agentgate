@@ -51,8 +51,12 @@ class FakeIMessage:
     async def unpair(self):
         return self._record('unpair')
 
+    async def reset_style(self):
+        return self._record('reset_style')
 
-MUTATIONS = ['imessage-pair-cancel', 'imessage-enable', 'imessage-disable', 'imessage-unpair']
+
+MUTATIONS = ['imessage-pair-cancel', 'imessage-enable', 'imessage-disable', 'imessage-unpair',
+             'imessage-style-reset']
 
 
 @pytest.mark.asyncio
@@ -87,7 +91,8 @@ async def test_missing_or_none_service_reports_unavailable_defaults(tmp_path):
             'available': False, 'enabled': False, 'paired': False, 'running': False,
             'agent': None,
             'model': {'available': False, 'reason': 'iMessage is not available on this broker.'},
-            'pairing': None, 'recent': [], 'error': None,
+            'pairing': None, 'recent': [], 'style': {'messages': 0, 'learning': True, 'needed': 5},
+            'error': None,
         }
         assert 'imessage_service' not in vars(broker)
         missing = await client.get('/api/imessage')
@@ -163,6 +168,7 @@ async def test_pair_maps_value_error_to_safe_400(tmp_path):
     ('imessage-enable', 'enable'),
     ('imessage-disable', 'disable'),
     ('imessage-unpair', 'unpair'),
+    ('imessage-style-reset', 'reset_style'),
 ])
 async def test_mutation_actions_call_matching_service_method(tmp_path, action, method):
     async with dashboard(tmp_path) as (client, broker, service, tools, mcp, agent_token):

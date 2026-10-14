@@ -32,7 +32,7 @@ APPROVAL_POLL_SECONDS = 2.0
 _PLAIN_GITHUB_NAME = re.compile(r'[A-Za-z0-9_.-]{1,100}')
 APPROVAL_TRACK_LIMIT = 256
 SUMMARY_LIMIT = 300
-BODY_PREVIEW_LIMIT = 200
+BODY_LIMIT = 200
 PAIRING_TTL = dt.timedelta(minutes=10)
 PAIRING_HISTORY_LIMIT = 10
 CHAT_LIST_LIMIT = 25
@@ -382,34 +382,38 @@ def _recipient_heads(details):
     return head or None
 
 
-def _body_preview(details) -> str:
+def _whole_body(details):
+    """The email's only text when the approval text can show all of it, else None.
+
+    HTML alternatives, extra parts, attachments and Reply-To would reach the recipient unseen.
+    """
+    if details.get('attachments') != [] or details.get('reply_to') != []:
+        return None
     parts = details.get('parts')
-    if not isinstance(parts, list):
+    if parts == []:
         return ''
-    texts = [part for part in parts if isinstance(part, dict) and isinstance(part.get('content'), str)]
-    plain = [part['content'] for part in texts if part.get('type') == 'text/plain']
-    chosen = plain or [part['content'] for part in texts]
-    text = _clean(chosen[0]) if chosen else ''
-    return text if len(text) <= BODY_PREVIEW_LIMIT else text[:BODY_PREVIEW_LIMIT] + '\u2026'
+    if not isinstance(parts, list) or len(parts) != 1:
+        return None
+    part = parts[0]
+    if not isinstance(part, dict) or part.get('type') != 'text/plain' or not isinstance(part.get('content'), str):
+        return None
+    return _clean(part['content'])
 
 
 def _bounded(head, body):
-    """Recipients and subject must fit SUMMARY_LIMIT; the body preview follows them. None means too long."""
+    """Recipients and subject must fit SUMMARY_LIMIT and the body BODY_LIMIT. None means too long."""
     headline = '. '.join(head)
-    if len(headline) > SUMMARY_LIMIT:
+    if len(headline) > SUMMARY_LIMIT or len(body) > BODY_LIMIT:
         return None
     return '. '.join(head + ([f'Body: {body}'] if body else []))
 
 
-def _email_summary(details, recipients):
+def _email_summary(details, recipients, body):
     head = list(recipients)
     subject = _field(details, 'subject')
     if subject:
         head.append(f'Subject: {_quoted(subject)}')
-    attachments = details.get('attachments')
-    if isinstance(attachments, list) and attachments:
-        head.append('With attachments')
-    return _bounded(head, _body_preview(details))
+    return _bounded(head, body)
 
 
 def _github_names_plain(details) -> bool:
@@ -421,7 +425,6 @@ def _github_names_plain(details) -> bool:
 def _issue_summary(details):
     head = [f'Repo: {_field(details, "owner")}/{_field(details, "repo")}', f'Title: {_quoted(_field(details, "title"))}']
     body = _clean(details['body']) if isinstance(details.get('body'), str) else ''
-    body = body if len(body) <= BODY_PREVIEW_LIMIT else body[:BODY_PREVIEW_LIMIT] + '\u2026'
     return _bounded(head, body)
 
 
@@ -445,9 +448,10 @@ def _announcement(pending) -> tuple[str, bool]:
         return _dashboard_text(agent), False
     if pending.credential == EMAIL_SEND:
         recipients = _recipient_heads(details)
-        if recipients is None:
+        body = _whole_body(details)
+        if recipients is None or body is None:
             return _dashboard_text(agent), False
-        summary = _email_summary(details, recipients)
+        summary = _email_summary(details, recipients, body)
     elif pending.credential == GITHUB_WRITE and _github_names_plain(details) and _field(details, 'title'):
         summary = _issue_summary(details)
     else:

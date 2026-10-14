@@ -84,6 +84,7 @@ def describe_message(raw: str) -> dict:
         'to': message.get_all('To', []),
         'cc': message.get_all('Cc', []),
         'bcc': message.get_all('Bcc', []),
+        'reply_to': message.get_all('Reply-To', []),
         'subject': message.get('Subject', ''),
         'date': message.get('Date', ''),
         'parts': parts,

@@ -431,3 +431,14 @@ def test_send_renews_token_before_dispatch_without_retry(tmp_path, monkeypatch):
     with pytest.raises(GmailError, match='HTTP 401'):
         gmail.call('send', snapshot={'raw': raw_message()})
     assert events == ['refresh', 'send']
+
+
+def test_describe_message_exposes_reply_to():
+    from email.message import EmailMessage
+    import base64
+    message = EmailMessage()
+    message['To'] = 'bob@example.com'
+    message['Reply-To'] = 'other@example.com'
+    message.set_content('Hi')
+    raw = base64.urlsafe_b64encode(message.as_bytes()).decode('ascii')
+    assert describe_message(raw)['reply_to'] == ['other@example.com']

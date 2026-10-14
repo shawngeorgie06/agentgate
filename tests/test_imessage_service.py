@@ -1012,7 +1012,8 @@ async def test_async_apple_model_raises_on_failure_envelopes():
 def email_details(**changes):
     value = {'draft_id': 'd1', 'from': ['me@example.com'], 'to': ['bob@example.com'],
              'cc': ['carol@example.com'], 'bcc': [], 'subject': 'Quarterly numbers', 'date': 'Mon',
-             'parts': [{'type': 'text/plain', 'content': 'Hello team'}], 'attachments': [], 'sha256': 'abc'}
+             'reply_to': [], 'parts': [{'type': 'text/plain', 'content': 'Hello team'}], 'attachments': [],
+             'sha256': 'abc'}
     value.update(changes)
     return json.dumps(value)
 
@@ -1060,15 +1061,49 @@ async def test_pending_email_is_announced_once_with_recipients_subject_and_body_
     await service.stop()
 
 
-async def test_email_body_preview_is_capped_and_marked_truncated(tmp_path, registry):
+HIDDEN_EMAIL_CONTENT = {
+    'long body': {'parts': [{'type': 'text/plain', 'content': 'a' * 300 + 'TAILMARK'}]},
+    'html alternative': {'parts': [{'type': 'text/plain', 'content': 'Hello team'},
+                                   {'type': 'text/html', 'content': '<p>TAILMARK</p>'}]},
+    'html only': {'parts': [{'type': 'text/html', 'content': '<p>TAILMARK</p>'}]},
+    'second plain part': {'parts': [{'type': 'text/plain', 'content': 'Hello team'},
+                                    {'type': 'text/plain', 'content': 'TAILMARK'}]},
+    'attachment': {'attachments': [{'filename': 'TAILMARK.pdf', 'type': 'application/pdf'}]},
+    'reply-to': {'reply_to': ['TAILMARK@evil.example']},
+    'reply-to unknown': {'reply_to': None},
+}
+
+
+@pytest.mark.parametrize('case', sorted(HIDDEN_EMAIL_CONTENT))
+async def test_email_with_content_the_text_cannot_show_gets_no_code(tmp_path, registry, case):
     world, clock = FakeWorld(), Clock()
     service, queue = await approvals_on(tmp_path, world, clock, registry)
-    details = email_details(parts=[{'type': 'text/plain', 'content': 'a' * 300 + 'TAILMARK'}])
-    task = await submit(queue, details=details)
-    await wait_until(lambda: approval_texts(world))
-    text = approval_texts(world)[0]
-    assert 'a' * 200 + '\u2026' in text and 'a' * 201 not in text
-    assert 'TAILMARK' not in text
+    changes = dict(HIDDEN_EMAIL_CONTENT[case])
+    details = json.loads(email_details(**changes))
+    if changes.get('reply_to', []) is None:
+        del details['reply_to']
+    task = await submit(queue, details=json.dumps(details))
+    expected = TOO_LONG_TEXT if case == 'long body' else DASHBOARD_TEXT
+    await wait_until(lambda: (SELF_CHAT, expected) in world.sent)
+    assert approval_texts(world) == []
+    assert all('TAILMARK' not in text for _chat, text in world.sent)
+    code = queue.get_pending().approval_code
+    world.queue.put_nowait(event(clock, 905, f'approve {code}', guid='hidden-1'))
+    await wait_until(lambda: (SELF_CHAT, svc.NO_MATCH_REPLY) in world.sent)
+    assert not task.done()
+    queue.resolve(queue.get_pending(), False)
+    await task
+    await service.stop()
+
+
+async def test_long_issue_body_gets_too_long_text_and_no_code(tmp_path, registry):
+    world, clock = FakeWorld(), Clock()
+    service, queue = await approvals_on(tmp_path, world, clock, registry)
+    github = json.dumps({'owner': 'octo', 'repo': 'widgets', 'title': 'Crash', 'body': 'a' * 300 + 'TAILMARK'})
+    task = await submit(queue, 'github:write', github)
+    await wait_until(lambda: (SELF_CHAT, TOO_LONG_TEXT) in world.sent)
+    assert approval_texts(world) == []
+    assert all('TAILMARK' not in text for _chat, text in world.sent)
     queue.resolve(queue.get_pending(), False)
     await task
     await service.stop()
@@ -1130,19 +1165,6 @@ async def test_format_and_control_characters_are_stripped_from_every_field(tmp_p
     assert 'To: bob@example.com. Subject: "Quarterly numbers". Body: Hi there. Reply' in text
     for character in ('\u200b', '\u202e', '\u200d', '\n', '\x1b', '\x00', '\x07'):
         assert character not in text
-    queue.resolve(queue.get_pending(), False)
-    await task
-    await service.stop()
-
-
-async def test_attachments_are_mentioned_without_listing_them(tmp_path, registry):
-    world, clock = FakeWorld(), Clock()
-    service, queue = await approvals_on(tmp_path, world, clock, registry)
-    details = email_details(attachments=[{'filename': 'secret-plan.pdf', 'type': 'application/pdf'}])
-    task = await submit(queue, details=details)
-    await wait_until(lambda: approval_texts(world))
-    text = approval_texts(world)[0]
-    assert 'With attachments' in text and 'secret-plan' not in text
     queue.resolve(queue.get_pending(), False)
     await task
     await service.stop()

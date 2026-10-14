@@ -25,7 +25,7 @@ _TEXT_PLAIN = re.compile(r'text/plain(?:;\s*charset="?(?:utf-8|us-ascii)"?)?', r
 _TRANSFER_ENCODINGS = frozenset({'7bit', '8bit', 'quoted-printable', 'base64'})
 _REPEATABLE_HEADERS = frozenset({'to', 'cc', 'bcc'})
 # Default-ignorable code points outside the C* categories, plus blanks that render as nothing.
-_INVISIBLE = frozenset('͏ᅟᅠ឴឵᠋᠌᠍᠏ㅤﾠ⠀')
+_INVISIBLE = frozenset('͏ᅟᅠ឴឵᠋᠌᠍᠏ㅤﾠ⠀' + '\U00016fe4')
 
 
 def _shown_as_written(character: str) -> bool:

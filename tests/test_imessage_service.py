@@ -1109,6 +1109,7 @@ HIDDEN_EMAIL_CONTENT = {
     'display name': {'to': ['TAILMARK Builder <bob@example.com>']},
     'invisible in body': {'parts': [{'type': 'text/plain', 'content': 'Hi\u200bTAILMARK'}]},
     'grapheme joiner in body': {'parts': [{'type': 'text/plain', 'content': 'Hi\u034fTAILMARK'}]},
+    'khitan filler in body': {'parts': [{'type': 'text/plain', 'content': 'Hi\U00016fe4TAILMARK'}]},
     'mongolian selector in body': {'parts': [{'type': 'text/plain', 'content': 'Hi\u180bTAILMARK'}]},
     'control in body': {'parts': [{'type': 'text/plain', 'content': 'Hi\x1bTAILMARK'}]},
     'lone carriage return': {'parts': [{'type': 'text/plain', 'content': 'Hi\rTAILMARK'}]},

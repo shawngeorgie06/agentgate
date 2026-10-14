@@ -10,6 +10,7 @@ import pytest
 
 from broker import imessage_service as svc
 from broker.agent_registry import AgentRegistry
+from broker.approval import ApprovalQueue
 from broker.imessage_bridge import MessagesBridgeError
 from broker.imessage_service import AsyncAppleModel, IMessageService, ModelError
 
@@ -150,7 +151,7 @@ def event(clock, rowid, text, *, chat_id=SELF_CHAT, from_me=True, is_group=False
             'is_group': is_group, 'sender': ''}
 
 
-def make_service(tmp_path, world, clock, *, registry=None, helpers=True, model=None):
+def make_service(tmp_path, world, clock, *, registry=None, helpers=True, model=None, approvals=None, gmail=None):
     registry = registry or AgentRegistry(tmp_path / 'agents.sqlite3')
     bin_dir = tmp_path / 'bin'
     bin_dir.mkdir(exist_ok=True)
@@ -160,9 +161,10 @@ def make_service(tmp_path, world, clock, *, registry=None, helpers=True, model=N
         for path in (imsg, model_helper):
             path.write_text('#!/bin/sh\n')
             path.chmod(0o700)
-    return IMessageService(tmp_path / 'config', registry, FakeTools(), FakeTools(),
+    return IMessageService(tmp_path / 'config', registry, gmail or FakeTools(), FakeTools(),
                            imsg_path=imsg, model_helper_path=model_helper,
-                           bridge_factory=world.bridge, model=model or FakeModel(), clock=clock)
+                           bridge_factory=world.bridge, model=model or FakeModel(), clock=clock,
+                           approvals=approvals)
 
 
 def settings_path(tmp_path):
@@ -190,6 +192,7 @@ async def pair(service, world, agent_id='helper'):
 def fast_timers(monkeypatch):
     monkeypatch.setattr(svc, 'PAIRING_POLL_SECONDS', 0.01)
     monkeypatch.setattr(svc, 'RETRY_BASE_SECONDS', 0.01)
+    monkeypatch.setattr(svc, 'APPROVAL_POLL_SECONDS', 0.01)
 
 
 @pytest.fixture
@@ -208,6 +211,7 @@ async def test_status_without_helpers_reports_unavailable_and_nothing_else(tmp_p
         'available': False, 'enabled': False, 'paired': False, 'running': False, 'agent': None,
         'model': {'available': True, 'reason': 'Available on this Mac.'},
         'pairing': None, 'recent': [], 'style': {'messages': 0, 'learning': True, 'needed': svc.MIN_MESSAGES}, 'error': None,
+        'approvals': False,
     }
 
 
@@ -301,7 +305,8 @@ async def test_pairing_accepts_exact_code_in_one_to_one_self_chat(tmp_path, regi
     assert status['paired'] is True and status['enabled'] is False and status['pairing'] is None
     assert status['agent'] == {'id': 'helper', 'name': 'helper'}
     assert json.loads(settings_path(tmp_path).read_text()) == {
-        'enabled': False, 'paired': {'chat_id': SELF_CHAT, 'agent_id': 'helper'}, 'halted': None}
+        'enabled': False, 'paired': {'chat_id': SELF_CHAT, 'agent_id': 'helper'}, 'halted': None,
+        'approvals': False}
     assert stat.S_IMODE(os.stat(settings_path(tmp_path)).st_mode) == 0o600
     assert world.sent == [(SELF_CHAT, 'AgentGate paired.')]
     await service.stop()
@@ -449,7 +454,8 @@ async def test_enable_disable_unpair_persist_and_restart_respects_enabled_flag(t
 
     unpaired = await service.unpair()
     assert unpaired['paired'] is False and unpaired['enabled'] is False and unpaired['agent'] is None
-    assert json.loads(settings_path(tmp_path).read_text()) == {'enabled': False, 'paired': None, 'halted': None}
+    assert json.loads(settings_path(tmp_path).read_text()) == {
+        'enabled': False, 'paired': None, 'halted': None, 'approvals': False}
     await service.stop()
 
 
@@ -999,3 +1005,649 @@ async def test_async_apple_model_raises_on_failure_envelopes():
     with pytest.raises(ModelError):
         await model.answer('p', 'ctx')
     assert model.availability() == {'available': False, 'reason': 'missing'}
+
+
+# --- approvals from iMessage -----------------------------------------------
+
+def email_details(**changes):
+    value = {'draft_id': 'd1', 'from': ['me@example.com'], 'to': ['bob@example.com'],
+             'cc': ['carol@example.com'], 'bcc': [], 'subject': 'Quarterly numbers', 'date': 'Mon',
+             'parts': [{'type': 'text/plain', 'content': 'Hello team'}], 'attachments': [], 'sha256': 'abc'}
+    value.update(changes)
+    return json.dumps(value)
+
+
+EMAIL = email_details()
+GITHUB = json.dumps({'owner': 'octo', 'repo': 'widgets', 'title': 'Crash on start', 'body': 'Steps follow'})
+DASHBOARD_TEXT = 'AgentGate approval needed from helper: open the AgentGate dashboard to review it.'
+TOO_LONG_TEXT = ('AgentGate approval needed from helper: too long to review by text '
+                 '\u2014 open the AgentGate dashboard.')
+
+
+def approval_texts(world):
+    return [text for _chat, text in world.sent if text.startswith('AgentGate approval:')]
+
+
+async def approvals_on(tmp_path, world, clock, registry, **kwargs):
+    queue = ApprovalQueue()
+    service = make_service(tmp_path, world, clock, registry=registry, approvals=queue, **kwargs)
+    await pair(service, world)
+    await service.enable_approvals()
+    await service.enable()
+    return service, queue
+
+
+async def submit(queue, credential='gmail:send', details=EMAIL, agent='helper'):
+    task = asyncio.create_task(queue.submit(agent, credential, details=details))
+    await asyncio.sleep(0)  # Let the request reach the queue.
+    return task
+
+
+async def test_pending_email_is_announced_once_with_recipients_subject_and_body_preview(tmp_path, registry):
+    world, clock = FakeWorld(), Clock()
+    service, queue = await approvals_on(tmp_path, world, clock, registry)
+    task = await submit(queue)
+    await wait_until(lambda: approval_texts(world))
+    await asyncio.sleep(0.05)
+    code = queue.get_pending().approval_code
+    assert re.fullmatch(r'[0-9a-f]{6}', code)
+    assert approval_texts(world) == [
+        'AgentGate approval: helper wants gmail:send. Cc: carol@example.com. To: bob@example.com. '
+        'Subject: "Quarterly numbers". Body: Hello team. '
+        f'Reply "approve {code}" or "deny {code}".']
+    queue.resolve(queue.get_pending(), False)
+    await task
+    await service.stop()
+
+
+async def test_email_body_preview_is_capped_and_marked_truncated(tmp_path, registry):
+    world, clock = FakeWorld(), Clock()
+    service, queue = await approvals_on(tmp_path, world, clock, registry)
+    details = email_details(parts=[{'type': 'text/plain', 'content': 'a' * 300 + 'TAILMARK'}])
+    task = await submit(queue, details=details)
+    await wait_until(lambda: approval_texts(world))
+    text = approval_texts(world)[0]
+    assert 'a' * 200 + '\u2026' in text and 'a' * 201 not in text
+    assert 'TAILMARK' not in text
+    queue.resolve(queue.get_pending(), False)
+    await task
+    await service.stop()
+
+
+async def test_bcc_is_listed_first_even_with_many_to_addresses(tmp_path, registry):
+    world, clock = FakeWorld(), Clock()
+    service, queue = await approvals_on(tmp_path, world, clock, registry)
+    to = [f'user{n}@example.com' for n in range(8)]
+    task = await submit(queue, details=email_details(to=to, bcc=['hidden@example.com'], cc=[]))
+    await wait_until(lambda: approval_texts(world))
+    text = approval_texts(world)[0]
+    assert text.index('Bcc: hidden@example.com') < text.index('To: user0@example.com')
+    assert 'user7@example.com' in text
+    queue.resolve(queue.get_pending(), False)
+    await task
+    await service.stop()
+
+
+async def test_over_bound_email_gets_dashboard_text_and_no_code(tmp_path, registry):
+    world, clock = FakeWorld(), Clock()
+    service, queue = await approvals_on(tmp_path, world, clock, registry)
+    to = [f'user{n:02}@example.com' for n in range(30)]
+    task = await submit(queue, details=email_details(to=to, bcc=['hidden@example.com']))
+    await wait_until(lambda: approval_texts(world) == [] and (SELF_CHAT, TOO_LONG_TEXT) in world.sent)
+    assert approval_texts(world) == []
+    assert 'approve' not in world.sent[-1][1] and 'hidden@example.com' not in world.sent[-1][1]
+    code = queue.get_pending().approval_code
+    world.queue.put_nowait(event(clock, 900, f'approve {code}', guid='big-1'))
+    await wait_until(lambda: (SELF_CHAT, svc.NO_MATCH_REPLY) in world.sent)
+    assert not task.done()
+    queue.resolve(queue.get_pending(), False)
+    await task
+    await service.stop()
+
+
+async def test_display_names_are_reduced_to_bare_addresses(tmp_path, registry):
+    world, clock = FakeWorld(), Clock()
+    service, queue = await approvals_on(tmp_path, world, clock, registry)
+    details = email_details(to=['Bob Builder <bob@example.com>', '"Carol, C" <carol@example.com>'], cc=[])
+    task = await submit(queue, details=details)
+    await wait_until(lambda: approval_texts(world))
+    text = approval_texts(world)[0]
+    assert 'To: bob@example.com, carol@example.com.' in text
+    assert 'Builder' not in text and 'Carol, C' not in text
+    queue.resolve(queue.get_pending(), False)
+    await task
+    await service.stop()
+
+
+async def test_format_and_control_characters_are_stripped_from_every_field(tmp_path, registry):
+    world, clock = FakeWorld(), Clock()
+    service, queue = await approvals_on(tmp_path, world, clock, registry)
+    details = email_details(subject='Quar\u200bterly\x07\x1b numbers\u202e', to=['bob@example.com'], cc=[],
+                            parts=[{'type': 'text/plain', 'content': 'Hi\u200d there\x00'}])
+    task = await submit(queue, details=details)
+    await wait_until(lambda: approval_texts(world))
+    text = approval_texts(world)[0]
+    assert 'To: bob@example.com. Subject: "Quarterly numbers". Body: Hi there. Reply' in text
+    for character in ('\u200b', '\u202e', '\u200d', '\n', '\x1b', '\x00', '\x07'):
+        assert character not in text
+    queue.resolve(queue.get_pending(), False)
+    await task
+    await service.stop()
+
+
+async def test_attachments_are_mentioned_without_listing_them(tmp_path, registry):
+    world, clock = FakeWorld(), Clock()
+    service, queue = await approvals_on(tmp_path, world, clock, registry)
+    details = email_details(attachments=[{'filename': 'secret-plan.pdf', 'type': 'application/pdf'}])
+    task = await submit(queue, details=details)
+    await wait_until(lambda: approval_texts(world))
+    text = approval_texts(world)[0]
+    assert 'With attachments' in text and 'secret-plan' not in text
+    queue.resolve(queue.get_pending(), False)
+    await task
+    await service.stop()
+
+
+@pytest.mark.parametrize('header', ['Alice <a@x.com> (c) <evil@z.com>', 'a@x.com" <evil@z.com>', 'a b@x.com', '', 'ali\u200bce@x.com', 'b\u202e@x.com'])
+async def test_unverifiable_recipient_header_gets_dashboard_text_and_no_code(tmp_path, registry, header):
+    world, clock = FakeWorld(), Clock()
+    service, queue = await approvals_on(tmp_path, world, clock, registry)
+    task = await submit(queue, details=email_details(to=[header]))
+    await wait_until(lambda: (SELF_CHAT, DASHBOARD_TEXT) in world.sent)
+    assert approval_texts(world) == []
+    assert 'approve' not in world.sent[-1][1] and 'evil' not in world.sent[-1][1]
+    code = queue.get_pending().approval_code
+    world.queue.put_nowait(event(clock, 910, f'approve {code}', guid='hdr-1'))
+    await wait_until(lambda: (SELF_CHAT, svc.NO_MATCH_REPLY) in world.sent)
+    assert not task.done()
+    queue.resolve(queue.get_pending(), False)
+    await task
+    await service.stop()
+
+
+async def test_email_with_no_recipients_gets_dashboard_text_and_no_code(tmp_path, registry):
+    world, clock = FakeWorld(), Clock()
+    service, queue = await approvals_on(tmp_path, world, clock, registry)
+    task = await submit(queue, details=email_details(to=[], cc=[], bcc=[]))
+    await wait_until(lambda: (SELF_CHAT, DASHBOARD_TEXT) in world.sent)
+    assert approval_texts(world) == []
+    queue.resolve(queue.get_pending(), False)
+    await task
+    await service.stop()
+
+
+async def test_subject_is_quoted_so_it_cannot_forge_a_recipient_label(tmp_path, registry):
+    world, clock = FakeWorld(), Clock()
+    service, queue = await approvals_on(tmp_path, world, clock, registry)
+    task = await submit(queue, details=email_details(subject='x. To: boss@corp.com"'))
+    await wait_until(lambda: approval_texts(world))
+    text = approval_texts(world)[0]
+    assert 'To: bob@example.com. Subject: "x. To: boss@corp.com". Body: Hello team.' in text
+    assert 'boss@corp.com' not in text.split('Subject:')[0]
+    queue.resolve(queue.get_pending(), False)
+    await task
+    await service.stop()
+
+
+async def test_github_title_is_quoted_and_inner_quotes_removed(tmp_path, registry):
+    world, clock = FakeWorld(), Clock()
+    service, queue = await approvals_on(tmp_path, world, clock, registry)
+    github = json.dumps({'owner': 'octo', 'repo': 'widgets', 'title': 'Crash "on" start', 'body': 'Steps follow'})
+    task = await submit(queue, 'github:write', github)
+    await wait_until(lambda: approval_texts(world))
+    assert 'Repo: octo/widgets. Title: "Crash on start". Body: Steps follow.' in approval_texts(world)[0]
+    queue.resolve(queue.get_pending(), False)
+    await task
+    await service.stop()
+
+
+@pytest.mark.parametrize('owner, repo', [('octo cat', 'widgets'), ('octo', 'widgets: To: boss@corp.com'),
+                                         ('octo', 'x' * 101), ('', 'widgets')])
+async def test_github_names_outside_the_plain_pattern_get_dashboard_text_and_no_code(tmp_path, registry, owner, repo):
+    world, clock = FakeWorld(), Clock()
+    service, queue = await approvals_on(tmp_path, world, clock, registry)
+    details = json.dumps({'owner': owner, 'repo': repo, 'title': 'Crash on start', 'body': 'Steps follow'})
+    task = await submit(queue, 'github:write', details)
+    await wait_until(lambda: (SELF_CHAT, DASHBOARD_TEXT) in world.sent)
+    assert approval_texts(world) == []
+    assert 'approve' not in world.sent[-1][1] and 'boss' not in world.sent[-1][1]
+    code = queue.get_pending().approval_code
+    world.queue.put_nowait(event(clock, 920, f'approve {code}', guid='gh-name-1'))
+    await wait_until(lambda: (SELF_CHAT, svc.NO_MATCH_REPLY) in world.sent)
+    assert not task.done()
+    queue.resolve(queue.get_pending(), False)
+    await task
+    await service.stop()
+
+
+async def test_pending_github_issue_is_announced_with_repo_title_and_body_preview(tmp_path, registry):
+    world, clock = FakeWorld(), Clock()
+    service, queue = await approvals_on(tmp_path, world, clock, registry)
+    task = await submit(queue, 'github:write', GITHUB)
+    await wait_until(lambda: approval_texts(world))
+    code = queue.get_pending().approval_code
+    assert approval_texts(world) == [
+        f'AgentGate approval: helper wants github:write. Repo: octo/widgets. Title: "Crash on start". '
+        f'Body: Steps follow. Reply "approve {code}" or "deny {code}".']
+    queue.resolve(queue.get_pending(), False)
+    await task
+    await service.stop()
+
+
+async def test_read_permission_is_announced_in_plain_words(tmp_path, registry):
+    world, clock = FakeWorld(), Clock()
+    service, queue = await approvals_on(tmp_path, world, clock, registry)
+    task = await submit(queue, 'gmail:read', None)
+    await wait_until(lambda: approval_texts(world))
+    code = queue.get_pending().approval_code
+    assert approval_texts(world) == [
+        f'AgentGate approval: helper wants to read Gmail. Reply "approve {code}" or "deny {code}".']
+    queue.resolve(queue.get_pending(), False)
+    await task
+    await service.stop()
+
+
+@pytest.mark.parametrize('credential,details', [
+    ('policy.add:widgets', json.dumps({'rules': ['TOPSECRET']})),
+    ('gmail:send', None),
+    ('mystery:thing', None),
+])
+async def test_unsummarized_requests_get_dashboard_text_and_no_code(tmp_path, registry, credential, details):
+    world, clock = FakeWorld(), Clock()
+    service, queue = await approvals_on(tmp_path, world, clock, registry)
+    task = await submit(queue, credential, details)
+    await wait_until(lambda: (SELF_CHAT, DASHBOARD_TEXT) in world.sent)
+    assert 'TOPSECRET' not in json.dumps(world.sent) and 'approve' not in world.sent[-1][1]
+    code = queue.get_pending().approval_code
+    world.queue.put_nowait(event(clock, 900, f'approve {code}', guid='dash-1'))
+    await wait_until(lambda: (SELF_CHAT, svc.NO_MATCH_REPLY) in world.sent)
+    assert not task.done()
+    queue.resolve(queue.get_pending(), False)
+    await task
+    await service.stop()
+
+
+async def test_operator_requests_are_not_announced(tmp_path, registry):
+    world, clock = FakeWorld(), Clock()
+    service, queue = await approvals_on(tmp_path, world, clock, registry)
+    task = await submit(queue, agent='operator')
+    await asyncio.sleep(0.05)
+    assert approval_texts(world) == []
+    queue.resolve(queue.get_pending(), False)
+    await task
+    await service.stop()
+
+
+@pytest.mark.parametrize('error_code,restarts', [('send_uncertain', True), ('send_blocked', True),
+                                                 ('send_failed', False)])
+async def test_announcement_send_errors_restart_only_on_restart_codes(tmp_path, registry, error_code, restarts):
+    world, clock = FakeWorld(), Clock()
+    service, queue = await approvals_on(tmp_path, world, clock, registry)
+    world.send_error = MessagesBridgeError(error_code)
+    task = await submit(queue)
+    if restarts:
+        await wait_until(lambda: len(world.subscriptions) >= 2)
+        assert service.status()['running'] is True
+    else:
+        await asyncio.sleep(0.05)
+        assert world.subscriptions == [0]
+    assert world.send_attempts >= 1 and service.status()['error'] in (None, svc.ERR_LOOP)
+    world.send_error = None
+    queue.resolve(queue.get_pending(), False)
+    await task
+    await service.stop()
+
+
+async def test_failed_announcement_does_not_crash_loop_and_is_not_approvable(tmp_path, registry):
+    world, clock = FakeWorld(), Clock()
+    service, queue = await approvals_on(tmp_path, world, clock, registry)
+    world.send_error = MessagesBridgeError('send_failed')
+    task = await submit(queue)
+    await asyncio.sleep(0.05)
+    assert service.status()['running'] is True
+    assert approval_texts(world) == []
+    world.send_error = None
+    code = queue.get_pending().approval_code
+    world.queue.put_nowait(event(clock, 900, f'approve {code}', guid='f1'))
+    await wait_until(lambda: (SELF_CHAT, svc.NO_MATCH_REPLY) in world.sent)
+    assert not task.done()
+    queue.resolve(queue.get_pending(), False)
+    await task
+    await service.stop()
+
+
+@pytest.mark.parametrize('word,expected,reply', [('approve', True, 'Approved.'), ('deny', False, 'Denied.')])
+async def test_approve_and_deny_resolve_the_notified_request(tmp_path, registry, word, expected, reply):
+    world, clock = FakeWorld(), Clock()
+    service, queue = await approvals_on(tmp_path, world, clock, registry)
+    task = await submit(queue)
+    await wait_until(lambda: approval_texts(world))
+    code = queue.get_pending().approval_code
+    world.queue.put_nowait(event(clock, 900, f'{word} {code}', guid='r1'))
+    assert await asyncio.wait_for(task, 2) is expected
+    await wait_until(lambda: (SELF_CHAT, reply) in world.sent)
+    await service.stop()
+
+
+async def test_approval_reply_ignores_case_and_surrounding_whitespace(tmp_path, registry):
+    world, clock = FakeWorld(), Clock()
+    service, queue = await approvals_on(tmp_path, world, clock, registry)
+    task = await submit(queue)
+    await wait_until(lambda: approval_texts(world))
+    code = queue.get_pending().approval_code
+    world.queue.put_nowait(event(clock, 900, f'  APPROVE {code.upper()}  ', guid='r2'))
+    assert await asyncio.wait_for(task, 2) is True
+    await service.stop()
+
+
+@pytest.mark.parametrize('text', ['approve {code} please', 'approve {code}x', 'approve', 'approve 12345',
+                                  'maybe {code}', 'approve {code}\n{code}'])
+async def test_malformed_approval_text_is_ignored(tmp_path, registry, text):
+    world, clock = FakeWorld(), Clock()
+    service, queue = await approvals_on(tmp_path, world, clock, registry)
+    task = await submit(queue)
+    await wait_until(lambda: approval_texts(world))
+    code = queue.get_pending().approval_code
+    world.queue.put_nowait(event(clock, 900, text.format(code=code), guid='m1'))
+    await asyncio.sleep(0.05)
+    assert not task.done()
+    assert [t for _chat, t in world.sent if t.startswith(('Approved', 'Denied', 'No pending'))] == []
+    assert service.status()['recent'] == []
+    queue.resolve(queue.get_pending(), False)
+    await task
+    await service.stop()
+
+
+async def test_wrong_code_is_rejected_and_request_stays_pending(tmp_path, registry):
+    world, clock = FakeWorld(), Clock()
+    service, queue = await approvals_on(tmp_path, world, clock, registry)
+    task = await submit(queue)
+    await wait_until(lambda: approval_texts(world))
+    code = queue.get_pending().approval_code
+    wrong = '000000' if code != '000000' else '111111'
+    world.queue.put_nowait(event(clock, 900, f'approve {wrong}', guid='w1'))
+    await wait_until(lambda: (SELF_CHAT, svc.NO_MATCH_REPLY) in world.sent)
+    assert not task.done()
+    queue.resolve(queue.get_pending(), False)
+    await task
+    await service.stop()
+
+
+async def test_request_that_was_never_announced_cannot_be_approved(tmp_path, registry):
+    world, clock = FakeWorld(), Clock()
+    service, queue = await approvals_on(tmp_path, world, clock, registry)
+    task = await submit(queue, agent='operator')
+    code = queue.get_pending().approval_code
+    world.queue.put_nowait(event(clock, 900, f'approve {code}', guid='u1'))
+    await wait_until(lambda: (SELF_CHAT, svc.NO_MATCH_REPLY) in world.sent)
+    assert not task.done()
+    queue.resolve(queue.get_pending(), False)
+    await task
+    await service.stop()
+
+
+async def test_duplicate_echo_resolves_and_replies_once(tmp_path, registry):
+    world, clock = FakeWorld(), Clock()
+    service, queue = await approvals_on(tmp_path, world, clock, registry)
+    task = await submit(queue)
+    await wait_until(lambda: approval_texts(world))
+    code = queue.get_pending().approval_code
+    world.queue.put_nowait(event(clock, 900, f'approve {code}', guid='e1'))
+    world.queue.put_nowait(event(clock, 900, f'approve {code}', guid='e1'))
+    assert await asyncio.wait_for(task, 2) is True
+    await asyncio.sleep(0.05)
+    assert [t for _chat, t in world.sent].count('Approved.') == 1
+    await service.stop()
+
+
+async def test_rate_limited_approval_reply_is_not_applied(tmp_path, registry):
+    world, clock = FakeWorld(), Clock()
+    service, queue = await approvals_on(tmp_path, world, clock, registry)
+    world.queue.put_nowait(event(clock, 899, '/agent first', guid='c0'))
+    await wait_until(lambda: len(world.sent) == 2)
+    task = await submit(queue)
+    await wait_until(lambda: approval_texts(world))
+    code = queue.get_pending().approval_code
+    world.queue.put_nowait(event(clock, 900, f'approve {code}', guid='rl1'))
+    await wait_until(lambda: (SELF_CHAT, svc.RATE_NOTICE) in world.sent)
+    assert not task.done()
+    clock.advance(6)
+    world.queue.put_nowait(event(clock, 901, f'approve {code}', guid='rl2'))
+    assert await asyncio.wait_for(task, 2) is True
+    await service.stop()
+
+
+async def test_disabled_approvals_send_nothing_and_ignore_replies(tmp_path, registry):
+    world, clock = FakeWorld(), Clock()
+    service, queue = await approvals_on(tmp_path, world, clock, registry)
+    await service.disable_approvals()
+    assert service.status()['running'] is True
+    task = await submit(queue)
+    await asyncio.sleep(0.05)
+    assert approval_texts(world) == []
+    code = queue.get_pending().approval_code
+    world.queue.put_nowait(event(clock, 900, f'approve {code}', guid='d1'))
+    await asyncio.sleep(0.05)
+    assert not task.done()
+    assert [t for _chat, t in world.sent] == ['AgentGate paired.']
+    assert service.status()['recent'] == []
+    queue.resolve(queue.get_pending(), False)
+    await task
+    await service.stop()
+
+
+@pytest.mark.parametrize('how', ['stop', 'disable', 'unpair'])
+async def test_stopping_the_loop_or_unpairing_stops_notifications(tmp_path, registry, how):
+    world, clock = FakeWorld(), Clock()
+    service, queue = await approvals_on(tmp_path, world, clock, registry)
+    await getattr(service, how)()
+    task = await submit(queue)
+    await asyncio.sleep(0.05)
+    assert approval_texts(world) == []
+    queue.resolve(queue.get_pending(), False)
+    await task
+    await service.stop()
+
+
+async def test_halting_stops_notifications(tmp_path, registry):
+    world, clock = FakeWorld(), Clock()
+    service, queue = await approvals_on(tmp_path, world, clock, registry)
+    world.database = 'db-2'
+    world.crash_messages = 1
+    await wait_until(lambda: service.status()['error'] == svc.ERR_STALE)
+    task = await submit(queue)
+    await asyncio.sleep(0.05)
+    assert approval_texts(world) == []
+    queue.resolve(queue.get_pending(), False)
+    await task
+    await service.stop()
+
+
+class ApprovalGmail:
+    """Gmail stand-in whose read waits on an approval, as an 'ask'-level read does."""
+
+    def __init__(self, approvals):
+        self._approvals = approvals
+
+    async def execute(self, agent, resource, operation, *, identity_guard, **args):
+        await self._approvals.submit(agent, resource)
+        return {'ok': True, 'data': {'messages': []}}
+
+
+class UnreadModel(FakeModel):
+    async def plan(self, prompt, history=''):
+        return {'action': 'gmail_unread'}
+
+
+async def test_command_awaiting_approval_does_not_block_the_approve_reply(tmp_path, registry):
+    world, clock = FakeWorld(), Clock()
+    queue = ApprovalQueue()
+    service = make_service(tmp_path, world, clock, registry=registry, approvals=queue,
+                           gmail=ApprovalGmail(queue), model=UnreadModel())
+    await pair(service, world)
+    await service.enable_approvals()
+    await service.enable()
+    world.queue.put_nowait(event(clock, 900, '/agent check my mail', guid='cmd-1'))
+    await wait_until(lambda: approval_texts(world))
+    assert [t for _chat, t in world.sent if not t.startswith('AgentGate approval')] == ['AgentGate paired.']
+    clock.advance(6)  # The command was accepted a moment ago; clear the reply's rate-limit spacing.
+    code = queue.get_pending().approval_code
+    world.queue.put_nowait(event(clock, 901, f'approve {code}', guid='ap-1'))
+    await wait_until(lambda: (SELF_CHAT, 'Approved.') in world.sent and (SELF_CHAT, 'Summary') in world.sent)
+    assert world.sent.index((SELF_CHAT, 'Approved.')) < world.sent.index((SELF_CHAT, 'Summary'))
+    await service.stop()
+
+
+async def test_approvals_setting_defaults_off_and_persists(tmp_path, registry):
+    world, clock = FakeWorld(), Clock()
+    service = make_service(tmp_path, world, clock, registry=registry, approvals=ApprovalQueue())
+    assert service.status()['approvals'] is False
+    await pair(service, world)
+    assert json.loads(settings_path(tmp_path).read_text())['approvals'] is False
+    assert (await service.enable_approvals())['approvals'] is True
+    assert json.loads(settings_path(tmp_path).read_text()) == {
+        'enabled': False, 'paired': {'chat_id': SELF_CHAT, 'agent_id': 'helper'}, 'halted': None,
+        'approvals': True}
+    restarted = make_service(tmp_path, world, clock, registry=registry, approvals=ApprovalQueue())
+    assert restarted.status()['approvals'] is True
+    await restarted.enable()
+    assert json.loads(settings_path(tmp_path).read_text())['approvals'] is True
+    await restarted.disable()
+    assert json.loads(settings_path(tmp_path).read_text())['approvals'] is True
+    assert (await restarted.disable_approvals())['approvals'] is False
+    assert json.loads(settings_path(tmp_path).read_text())['approvals'] is False
+    await service.stop()
+    await restarted.stop()
+
+
+async def test_enable_approvals_requires_pairing(tmp_path, registry):
+    service = make_service(tmp_path, FakeWorld(), Clock(), registry=registry, approvals=ApprovalQueue())
+    status = await service.enable_approvals()
+    assert status['approvals'] is False and status['error'] == svc.ERR_NOT_PAIRED
+    assert not settings_path(tmp_path).exists()
+
+
+async def test_unpair_and_new_pairing_reset_approvals(tmp_path, registry):
+    world, clock = FakeWorld(), Clock()
+    service = make_service(tmp_path, world, clock, registry=registry, approvals=ApprovalQueue())
+    await pair(service, world)
+    await service.enable_approvals()
+    code = (await service.start_pairing('helper'))['pairing']['code']
+    world.history[SELF_CHAT] = [history_row(502, f'/agent pair {code}')]
+    await wait_until(lambda: service.status()['paired'] and service.status()['pairing'] is None)
+    assert json.loads(settings_path(tmp_path).read_text())['approvals'] is False
+    await service.enable_approvals()
+    assert (await service.unpair())['approvals'] is False
+    assert json.loads(settings_path(tmp_path).read_text())['approvals'] is False
+
+
+async def test_settings_without_approvals_key_load_as_off(tmp_path, registry):
+    write_settings(tmp_path, {'enabled': False, 'paired': {'chat_id': SELF_CHAT, 'agent_id': 'helper'},
+                              'halted': None})
+    status = make_service(tmp_path, FakeWorld(), Clock(), registry=registry, approvals=ApprovalQueue()).status()
+    assert status['paired'] is True and status['error'] is None and status['approvals'] is False
+
+
+@pytest.mark.parametrize('value', ['yes', 1, None, [True], {'on': True}, 'true'])
+async def test_invalid_approvals_value_is_off_and_keeps_file_readable(tmp_path, registry, value):
+    write_settings(tmp_path, {'enabled': False, 'paired': {'chat_id': SELF_CHAT, 'agent_id': 'helper'},
+                              'halted': None, 'approvals': value})
+    status = make_service(tmp_path, FakeWorld(), Clock(), registry=registry, approvals=ApprovalQueue()).status()
+    assert status['paired'] is True and status['error'] is None and status['approvals'] is False
+
+
+async def test_approval_decisions_are_audited_as_operator_actions(tmp_path, registry):
+    world, clock = FakeWorld(), Clock()
+    service, queue = await approvals_on(tmp_path, world, clock, registry)
+    audited = []
+
+    class RecordingAudit:
+        def log(self, **entry):
+            audited.append(entry)
+
+    service._audit = RecordingAudit()
+    task = await submit(queue)
+    await wait_until(lambda: approval_texts(world))
+    code = queue.get_pending().approval_code
+    world.queue.put_nowait(event(clock, 900, f'deny {code}', guid='a1'))
+    assert await asyncio.wait_for(task, 2) is False
+    await wait_until(lambda: audited)
+    assert audited[0]['agent'] == 'operator'
+    assert audited[0]['credential_requested'] == 'gmail:send'
+    assert audited[0]['policy_matched'] == 'imessage-approval'
+    assert audited[0]['decision'] == 'denied'
+    await service.stop()
+
+
+async def test_approval_reply_halts_when_the_agent_was_revoked(tmp_path, registry):
+    world, clock = FakeWorld(), Clock()
+    service, queue = await approvals_on(tmp_path, world, clock, registry)
+    task = await submit(queue)
+    await wait_until(lambda: approval_texts(world))
+    code = queue.get_pending().approval_code
+    registry.revoke('helper')
+    world.queue.put_nowait(event(clock, 900, f'approve {code}', guid='rv-1'))
+    await wait_until(lambda: service.status()['error'] == svc.ERR_REVOKED)
+    assert not task.done() and service.status()['running'] is False
+    assert (SELF_CHAT, 'Approved.') not in world.sent
+    queue.resolve(queue.get_pending(), False)
+    await task
+    await service.stop()
+
+
+async def test_unpair_forgets_announced_requests(tmp_path, registry):
+    world, clock = FakeWorld(), Clock()
+    service, queue = await approvals_on(tmp_path, world, clock, registry)
+    task = await submit(queue)
+    await wait_until(lambda: approval_texts(world))
+    request_id = queue.get_pending().request_id
+    assert request_id in service._delivered_requests
+    await service.unpair()
+    assert request_id not in service._delivered_requests and request_id not in service._attempted_requests
+    queue.resolve(queue.get_pending(), False)
+    await task
+    await service.stop()
+
+
+async def test_pairing_completion_forgets_announced_requests(tmp_path, registry):
+    world, clock = FakeWorld(), Clock()
+    service, queue = await approvals_on(tmp_path, world, clock, registry)
+    task = await submit(queue)
+    await wait_until(lambda: approval_texts(world))
+    request_id = queue.get_pending().request_id
+    service._delivered_requests.add('stale')
+    service._complete_pairing(SELF_CHAT, 'helper', 'identity-2')
+    assert request_id not in service._delivered_requests and 'stale' not in service._delivered_requests
+    queue.resolve(queue.get_pending(), False)
+    await task
+    await service.stop()
+
+
+async def test_approval_setting_changes_are_audited(tmp_path, registry):
+    world, clock = FakeWorld(), Clock()
+    service = make_service(tmp_path, world, clock, registry=registry, approvals=ApprovalQueue())
+    audited = []
+
+    class RecordingAudit:
+        def log(self, **entry):
+            audited.append(entry)
+
+    service._audit = RecordingAudit()
+    await pair(service, world)
+    await service.enable_approvals()
+    await service.disable_approvals()
+    assert [(e['agent'], e['credential_requested'], e['decision']) for e in audited] == [
+        ('operator', 'imessage:approvals-enable', 'completed'),
+        ('operator', 'imessage:approvals-disable', 'completed')]
+    await service.stop()
+
+
+async def test_non_list_recipient_fields_do_not_crash_the_announcement(tmp_path, registry):
+    world, clock = FakeWorld(), Clock()
+    service, queue = await approvals_on(tmp_path, world, clock, registry)
+    task = await submit(queue, details=email_details(to='bob@example.com', cc={'x': 1}, bcc=None))
+    await wait_until(lambda: (SELF_CHAT, DASHBOARD_TEXT) in world.sent)
+    assert approval_texts(world) == []
+    queue.resolve(queue.get_pending(), False)
+    await task
+    await service.stop()

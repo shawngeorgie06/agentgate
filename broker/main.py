@@ -57,7 +57,8 @@ def build_imessage_service(config: Config, registry: AgentRegistry, broker: Brok
     model_helper_path = environ.get('AGENTGATE_MODEL_HELPER') or os.path.join(config_dir, 'bin', 'agentgate-model')
     try:
         return IMessageService(config_dir, registry, gmail_tools, github_tools, imsg_path=imsg_path,
-                               model_helper_path=model_helper_path, audit=broker.audit)
+                               model_helper_path=model_helper_path, audit=broker.audit,
+                               approvals=getattr(broker, 'approvals', None))
     except MessageLedgerError:
         # An unreadable ledger disables only the iMessage agent; the rest of the broker still starts.
         return UnavailableIMessageService(ERR_LEDGER)

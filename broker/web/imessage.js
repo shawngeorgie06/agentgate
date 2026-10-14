@@ -274,8 +274,14 @@ export async function renderIMessage(container, api) {
       confirm.hidden = false;
       unpairOpen.hidden = true;
     });
-    actions.append(toggle, unpairOpen);
+    const approvalToggle = button('Approve from iMessage', status.approvals ? 'primary' : '', () => run([approvalToggle], async () => {
+      await post(status.approvals ? 'imessage-approvals-disable' : 'imessage-approvals-enable');
+      await load();
+    }, status.approvals ? 'iMessage approvals off.' : 'iMessage approvals on.'));
+    approvalToggle.setAttribute('aria-pressed', String(status.approvals === true));
+    actions.append(toggle, approvalToggle, unpairOpen);
     card.append(actions);
+    card.append(element('p', 'When on, texts show recipients, the subject and the start of the body. Reply "approve CODE" or "deny CODE". Anything else must be approved in the dashboard.', 'hint'));
 
     // In-page confirmation before unpairing; the trigger hides while it is open.
     const confirm = element('div', undefined, 'imessage-confirm');

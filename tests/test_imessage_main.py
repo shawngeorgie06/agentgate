@@ -156,3 +156,17 @@ def test_credentials_path_tilde_expands_before_locating_helpers(tmp_path, monkey
     config = SimpleNamespace(credentials_path='~/agentgate/creds.json')
     service = main_mod.build_imessage_service(config, registry, SimpleNamespace(audit=None), None, None, environ={})
     assert service.status()['available'] is True
+
+
+def test_build_passes_broker_approval_queue_to_service(tmp_path, monkeypatch):
+    _helper(tmp_path / 'bin' / 'imsg')
+    _helper(tmp_path / 'bin' / 'agentgate-model')
+    home = tmp_path / 'home'
+    (home / 'agentgate').mkdir(parents=True)
+    monkeypatch.setenv('HOME', str(home))
+    registry = AgentRegistry(tmp_path / 'agents.sqlite3')
+    config = SimpleNamespace(credentials_path='~/agentgate/creds.json')
+    queue = object()
+    service = main_mod.build_imessage_service(config, registry, SimpleNamespace(audit=None, approvals=queue),
+                                              None, None, environ={})
+    assert service._approvals is queue

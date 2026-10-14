@@ -27,6 +27,8 @@ _OWNER = re.compile(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})')
 _REPO = re.compile(r'[A-Za-z0-9._-]{1,100}')
 _MESSAGE_ID = re.compile(r'[A-Za-z0-9_-]{1,64}')
 _CONTROL = re.compile(r'[\x00-\x1f\x7f]')
+# 'approve <code>' or 'deny <code>' typed in the paired self-chat. Shared with the approval reply handler.
+APPROVAL_REPLY = re.compile(r'\s*(approve|deny)\s+([0-9a-fA-F]{6})\s*', re.IGNORECASE)
 
 READ_ONLY_MESSAGE = ('I can only do read-only requests, such as checking unread email, '
                      'searching email, or reading GitHub repos, issues, and files.')
@@ -153,7 +155,8 @@ def _message_block(data) -> str:
 
 def _clean_reply(answer) -> str:
     text = answer.strip() if isinstance(answer, str) else ''
-    if not text or text.lower().startswith('/agent'):
+    # A reply sent from the self-chat would read back as an approval decision, so never send one.
+    if not text or text.lower().startswith('/agent') or APPROVAL_REPLY.fullmatch(text):
         return FALLBACK_MESSAGE
     return text[:REPLY_LIMIT]
 

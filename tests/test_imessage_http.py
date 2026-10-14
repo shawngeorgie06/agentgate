@@ -7,7 +7,7 @@ from tests.test_dashboard import dashboard
 
 STATUS = {
     'available': True, 'enabled': False, 'paired': False, 'running': False,
-    'agent': None,
+    'approvals': False, 'agent': None,
     'model': {'available': True, 'reason': ''},
     'pairing': {'code': 'ABC-123', 'expires_at': '2026-10-12T12:05:00+00:00'},
     'recent': [{'status': 'completed', 'claimed_at': '2026-10-12T12:00:00+00:00',
@@ -54,9 +54,15 @@ class FakeIMessage:
     async def reset_style(self):
         return self._record('reset_style')
 
+    async def enable_approvals(self):
+        return self._record('enable_approvals')
+
+    async def disable_approvals(self):
+        return self._record('disable_approvals')
+
 
 MUTATIONS = ['imessage-pair-cancel', 'imessage-enable', 'imessage-disable', 'imessage-unpair',
-             'imessage-style-reset']
+             'imessage-style-reset', 'imessage-approvals-enable', 'imessage-approvals-disable']
 
 
 @pytest.mark.asyncio
@@ -89,7 +95,7 @@ async def test_missing_or_none_service_reports_unavailable_defaults(tmp_path):
     async with dashboard(tmp_path) as (client, broker, service, tools, mcp, agent_token):
         expected = {
             'available': False, 'enabled': False, 'paired': False, 'running': False,
-            'agent': None,
+            'approvals': False, 'agent': None,
             'model': {'available': False, 'reason': 'iMessage is not available on this broker.'},
             'pairing': None, 'recent': [], 'style': {'messages': 0, 'learning': True, 'needed': 5},
             'error': None,
@@ -169,6 +175,8 @@ async def test_pair_maps_value_error_to_safe_400(tmp_path):
     ('imessage-disable', 'disable'),
     ('imessage-unpair', 'unpair'),
     ('imessage-style-reset', 'reset_style'),
+    ('imessage-approvals-enable', 'enable_approvals'),
+    ('imessage-approvals-disable', 'disable_approvals'),
 ])
 async def test_mutation_actions_call_matching_service_method(tmp_path, action, method):
     async with dashboard(tmp_path) as (client, broker, service, tools, mcp, agent_token):

@@ -9,21 +9,30 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import functools
+import hmac
 import json
 import os
+import re
 import secrets
 import stat
 import tempfile
+import unicodedata
 from collections import deque
+from email.utils import getaddresses
 from pathlib import Path
 
 from broker.apple_model import AppleModel
-from broker.imessage_agent import ReadOnlyMessageAgent
+from broker.imessage_agent import APPROVAL_REPLY, ReadOnlyMessageAgent
 from broker.imessage_bridge import MessagesBridge, MessagesBridgeError, is_self_chat, verify_helper
 from broker.imessage_state import MessageLedger, MessageLedgerError
 from broker.imessage_style import MIN_MESSAGES, TextingStyle
 
 PAIRING_POLL_SECONDS = 2.0
+APPROVAL_POLL_SECONDS = 2.0
+_PLAIN_GITHUB_NAME = re.compile(r'[A-Za-z0-9_.-]{1,100}')
+APPROVAL_TRACK_LIMIT = 256
+SUMMARY_LIMIT = 300
+BODY_PREVIEW_LIMIT = 200
 PAIRING_TTL = dt.timedelta(minutes=10)
 PAIRING_HISTORY_LIMIT = 10
 CHAT_LIST_LIMIT = 25
@@ -45,6 +54,12 @@ PAIRED_CONFIRMATION = 'AgentGate paired.'
 RATE_NOTICE = 'AgentGate is handling recent requests. Please wait a moment before sending another.'
 CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
 COMMAND_PREFIX = '/agent '
+NO_MATCH_REPLY = 'No pending approval matches that code.'
+APPROVED_REPLY = 'Approved.'
+DENIED_REPLY = 'Denied.'
+EMAIL_SEND = 'gmail:send'
+GITHUB_WRITE = 'github:write'
+READ_PERMISSIONS = {'gmail:read': 'Gmail', 'github:read': 'GitHub'}
 
 ERR_UNAVAILABLE = 'unavailable'
 ERR_NOT_PAIRED = 'not_paired'
@@ -103,7 +118,8 @@ class UnavailableIMessageService:
         self._error = error
 
     def status(self):
-        return {'available': False, 'enabled': False, 'paired': False, 'running': False, 'agent': None,
+        return {'available': False, 'enabled': False, 'paired': False, 'running': False, 'approvals': False,
+                'agent': None,
                 'model': {'available': False, 'reason': 'iMessage is not available on this broker.'},
                 'pairing': None, 'recent': [], 'style': {'messages': 0, 'learning': True, 'needed': MIN_MESSAGES},
                 'error': self._error}
@@ -133,6 +149,12 @@ class UnavailableIMessageService:
         return self.status()
 
     async def reset_style(self):
+        return self.status()
+
+    async def enable_approvals(self):
+        return self.status()
+
+    async def disable_approvals(self):
         return self.status()
 
 
@@ -186,7 +208,7 @@ class _CommandLimiter:
 
 
 def _valid_settings(value) -> bool:
-    if not isinstance(value, dict) or not {'enabled', 'paired'} <= set(value) <= {'enabled', 'paired', 'halted'}:
+    if not isinstance(value, dict) or not {'enabled', 'paired'} <= set(value) <= {'enabled', 'paired', 'halted', 'approvals'}:
         return False
     if type(value['enabled']) is not bool:
         return False
@@ -200,7 +222,7 @@ def _valid_settings(value) -> bool:
 
 def _read_settings(path: Path):
     """Return (settings, error). A missing file means unpaired; anything unsafe fails closed."""
-    empty = {'enabled': False, 'paired': None, 'halted': None}
+    empty = {'enabled': False, 'paired': None, 'halted': None, 'approvals': False}
     try:
         fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
     except FileNotFoundError:
@@ -226,6 +248,7 @@ def _read_settings(path: Path):
         return empty, ERR_UNREADABLE
     halted = value.get('halted')
     value['halted'] = halted if isinstance(halted, str) and halted in HALT_CODES else None
+    value['approvals'] = value.get('approvals') is True
     return value, None
 
 
@@ -254,8 +277,8 @@ def _helper_ready(path: Path) -> bool:
     return True
 
 
-def _parse_command(event, chat_id):
-    """(message_id, rowid, date, request) for a paired-chat '/agent <request>' from me, else None."""
+def _self_chat_text(event, chat_id):
+    """(message_id, rowid, date, text) for plain text I sent in the paired self-chat, else None."""
     if not isinstance(event, dict):
         return None
     if event.get('chat_id') != chat_id or event.get('is_group') is not False or event.get('is_from_me') is not True:
@@ -264,12 +287,194 @@ def _parse_command(event, chat_id):
     message_id = event.get('guid')
     if not isinstance(text, str) or not isinstance(message_id, str) or not message_id:
         return None
+    return message_id, event.get('rowid'), event.get('date'), text
+
+
+def _parse_command(event, chat_id):
+    """(message_id, rowid, date, request) for a paired-chat '/agent <request>' from me, else None."""
+    parsed = _self_chat_text(event, chat_id)
+    if parsed is None:
+        return None
+    message_id, rowid, date, text = parsed
     if not text.startswith(COMMAND_PREFIX):
         return None
     request = text[len(COMMAND_PREFIX):].strip()
     if not request:
         return None
-    return message_id, event.get('rowid'), event.get('date'), request
+    return message_id, rowid, date, request
+
+
+def _parse_approval(event, chat_id):
+    """(message_id, rowid, date, verb, code) for a paired-chat 'approve|deny <code>' from me, else None."""
+    parsed = _self_chat_text(event, chat_id)
+    if parsed is None:
+        return None
+    message_id, rowid, date, text = parsed
+    match = APPROVAL_REPLY.fullmatch(text)
+    if match is None:
+        return None
+    return message_id, rowid, date, match.group(1).lower(), match.group(2).lower()
+
+
+def _clean(text: str) -> str:
+    """Visible text only: control characters become spaces, invisible format characters are dropped."""
+    pieces = []
+    for character in text:
+        category = unicodedata.category(character)
+        if category == 'Cf':
+            continue
+        pieces.append(' ' if category == 'Cc' else character)
+    return ' '.join(''.join(pieces).split())
+
+
+def _details(pending):
+    try:
+        value = json.loads(pending.details) if pending.details else None
+    except ValueError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _field(details, key) -> str:
+    """Visible text of a string field. Double quotes are dropped so quoting can delimit it."""
+    value = details.get(key)
+    return _clean(value.replace('"', '')) if isinstance(value, str) else ''
+
+
+def _quoted(text: str) -> str:
+    return f'"{text}"' if text else ''
+
+
+def _addresses(details, key):
+    """Bare addresses from header values, so display names never reach the phone.
+
+    None when any entry cannot be shown as one plain address; the caller must not offer a code then.
+    """
+    values = details.get(key)
+    if values is None:
+        return []
+    if not isinstance(values, list):
+        return None
+    addresses = []
+    for value in values:
+        if not isinstance(value, str):
+            return None
+        parsed = getaddresses([value])
+        if not parsed:
+            return None
+        for _name, raw in parsed:
+            address = _clean(raw)
+            if address != raw or '@' not in address or any(character.isspace() or character == '"' for character in address):
+                return None
+            addresses.append(address)
+    return addresses
+
+
+def _recipient_heads(details):
+    """'Bcc:', 'Cc:', 'To:' lines in that order, or None when recipients cannot be shown exactly."""
+    head = []
+    for label, key in (('Bcc', 'bcc'), ('Cc', 'cc'), ('To', 'to')):
+        addresses = _addresses(details, key)
+        if addresses is None:
+            return None
+        if addresses:
+            head.append(f'{label}: {", ".join(addresses)}')
+    return head or None
+
+
+def _body_preview(details) -> str:
+    parts = details.get('parts')
+    if not isinstance(parts, list):
+        return ''
+    texts = [part for part in parts if isinstance(part, dict) and isinstance(part.get('content'), str)]
+    plain = [part['content'] for part in texts if part.get('type') == 'text/plain']
+    chosen = plain or [part['content'] for part in texts]
+    text = _clean(chosen[0]) if chosen else ''
+    return text if len(text) <= BODY_PREVIEW_LIMIT else text[:BODY_PREVIEW_LIMIT] + '\u2026'
+
+
+def _bounded(head, body):
+    """Recipients and subject must fit SUMMARY_LIMIT; the body preview follows them. None means too long."""
+    headline = '. '.join(head)
+    if len(headline) > SUMMARY_LIMIT:
+        return None
+    return '. '.join(head + ([f'Body: {body}'] if body else []))
+
+
+def _email_summary(details, recipients):
+    head = list(recipients)
+    subject = _field(details, 'subject')
+    if subject:
+        head.append(f'Subject: {_quoted(subject)}')
+    attachments = details.get('attachments')
+    if isinstance(attachments, list) and attachments:
+        head.append('With attachments')
+    return _bounded(head, _body_preview(details))
+
+
+def _github_names_plain(details) -> bool:
+    """Owner and repo are agent-supplied and only loosely validated upstream, so show only plain names."""
+    return all(isinstance(details.get(key), str) and _PLAIN_GITHUB_NAME.fullmatch(details[key])
+               for key in ('owner', 'repo'))
+
+
+def _issue_summary(details):
+    head = [f'Repo: {_field(details, "owner")}/{_field(details, "repo")}', f'Title: {_quoted(_field(details, "title"))}']
+    body = _clean(details['body']) if isinstance(details.get('body'), str) else ''
+    body = body if len(body) <= BODY_PREVIEW_LIMIT else body[:BODY_PREVIEW_LIMIT] + '\u2026'
+    return _bounded(head, body)
+
+
+def _dashboard_text(agent) -> str:
+    return f'AgentGate approval needed from {agent}: open the AgentGate dashboard to review it.'
+
+
+def _coded_text(agent, what, summary, code) -> str:
+    summary_part = f'{summary}. ' if summary else ''
+    return f'AgentGate approval: {agent} wants {what}. {summary_part}Reply "approve {code}" or "deny {code}".'
+
+
+def _announcement(pending) -> tuple[str, bool]:
+    """(text, approvable). Only requests a person can judge from the text get an approval code."""
+    agent = _clean(pending.agent)
+    code = pending.approval_code
+    if pending.credential in READ_PERMISSIONS:
+        return _coded_text(agent, f'to read {READ_PERMISSIONS[pending.credential]}', '', code), True
+    details = _details(pending)
+    if details is None:
+        return _dashboard_text(agent), False
+    if pending.credential == EMAIL_SEND:
+        recipients = _recipient_heads(details)
+        if recipients is None:
+            return _dashboard_text(agent), False
+        summary = _email_summary(details, recipients)
+    elif pending.credential == GITHUB_WRITE and _github_names_plain(details) and _field(details, 'title'):
+        summary = _issue_summary(details)
+    else:
+        return _dashboard_text(agent), False
+    if summary is None:
+        return f'AgentGate approval needed from {agent}: too long to review by text \u2014 open the AgentGate dashboard.', False
+    return _coded_text(agent, pending.credential, summary, code), True
+
+
+class _RecentIds:
+    """Bounded set of request ids, oldest evicted first."""
+
+    def __init__(self, limit):
+        self._order = deque()
+        self._ids = set()
+        self._limit = limit
+
+    def add(self, value):
+        if value in self._ids:
+            return
+        if len(self._order) >= self._limit:
+            self._ids.discard(self._order.popleft())
+        self._order.append(value)
+        self._ids.add(value)
+
+    def __contains__(self, value):
+        return value in self._ids
 
 
 class _Conversation:
@@ -312,7 +517,7 @@ class _Halt(Exception):
 
 class IMessageService:
     def __init__(self, config_dir, registry, gmail_tools, github_tools, *, imsg_path, model_helper_path,
-                 audit=None, bridge_factory=None, model=None, clock=None):
+                 audit=None, bridge_factory=None, model=None, clock=None, approvals=None):
         self._config_dir = Path(config_dir).expanduser().absolute()
         self._settings_path = self._config_dir / SETTINGS_FILE
         self._registry = registry
@@ -324,6 +529,10 @@ class IMessageService:
             model = AsyncAppleModel(AppleModel(self._model_helper_path))
         self._model = model
         self._agent = ReadOnlyMessageAgent(audit, gmail_tools, github_tools, model)
+        self._audit = audit
+        self._approvals = approvals
+        self._forget_requests()
+        self._cursor = 0
         self._clock = clock or _utcnow
         self._limiter = _CommandLimiter()
         self._conversation = _Conversation()
@@ -353,6 +562,7 @@ class IMessageService:
             'enabled': self._settings['enabled'] and not self._unreadable,
             'paired': paired is not None,
             'running': self._loop_running(),
+            'approvals': self._approvals_on(),
             'agent': {'id': paired['agent_id'], 'name': paired['agent_id']} if paired else None,
             'model': self._model_availability(),
             'pairing': self._pairing_view(),
@@ -364,6 +574,19 @@ class IMessageService:
 
     def _paired(self):
         return None if self._unreadable else self._settings['paired']
+
+    def _forget_requests(self):
+        """Requests announced before a pairing change are no longer approvable over iMessage."""
+        self._attempted_requests = _RecentIds(APPROVAL_TRACK_LIMIT)
+        self._delivered_requests = _RecentIds(APPROVAL_TRACK_LIMIT)
+
+    def _audit_operator(self, resource, policy, decision):
+        if self._audit is not None:
+            self._audit.log(agent='operator', credential_requested=resource, policy_matched=policy,
+                            decision=decision, mode='imessage', token_expiry=None)
+
+    def _approvals_on(self):
+        return self._approvals is not None and not self._unreadable and self._settings['approvals'] is True
 
     def _loop_running(self):
         return self._loop_task is not None and not self._loop_task.done()
@@ -424,6 +647,12 @@ class IMessageService:
     def _database_identity(self):
         return self._bridge_factory(None).database_identity()
 
+    def _settings_with(self, **changes):
+        settings = {'enabled': self._settings['enabled'], 'paired': self._settings['paired'],
+                    'halted': self._settings['halted'], 'approvals': self._settings['approvals']}
+        settings.update(changes)
+        return settings
+
     def _save(self, settings) -> bool:
         try:
             _write_settings(self._config_dir, self._settings_path, settings)
@@ -443,7 +672,7 @@ class IMessageService:
         await self._stop_loop()
         await self._cancel_pairing()
         if not self._unreadable and self._settings['enabled']:
-            self._save({'enabled': False, 'paired': self._settings['paired'], 'halted': self._settings['halted']})
+            self._save(self._settings_with(enabled=False))
         self._error = None
         if not self._helpers_ready():
             self._error = ERR_UNAVAILABLE
@@ -521,8 +750,11 @@ class IMessageService:
         except MessageLedgerError:
             self._error = ERR_UNAVAILABLE
             return False
-        if not self._save({'enabled': False, 'paired': {'chat_id': chat_id, 'agent_id': agent_id}, 'halted': None}):
+        # A new pairing starts with approvals off, so nothing is announced until the owner turns it on again.
+        if not self._save({'enabled': False, 'paired': {'chat_id': chat_id, 'agent_id': agent_id}, 'halted': None,
+                           'approvals': False}):
             return False
+        self._forget_requests()
         self._error = None
         return True
 
@@ -550,8 +782,28 @@ class IMessageService:
     async def unpair(self):
         await self._stop_loop()
         await self._cancel_pairing()
-        if self._save({'enabled': False, 'paired': None, 'halted': None}):
+        self._forget_requests()
+        if self._save({'enabled': False, 'paired': None, 'halted': None, 'approvals': False}):
             self._error = None
+        return self.status()
+
+    # --- approvals -------------------------------------------------------------
+
+    @_serialized
+    async def enable_approvals(self):
+        """Announce pending approvals in the paired chat; replies 'approve <code>' or 'deny <code>' decide them."""
+        if self._paired() is None:
+            self._error = ERR_NOT_PAIRED
+            return self.status()
+        saved = self._save(self._settings_with(approvals=True))
+        self._audit_operator('imessage:approvals-enable', 'operator-settings', 'completed' if saved else 'failed')
+        return self.status()
+
+    @_serialized
+    async def disable_approvals(self):
+        if not self._unreadable and self._settings['approvals']:
+            saved = self._save(self._settings_with(approvals=False))
+            self._audit_operator('imessage:approvals-disable', 'operator-settings', 'completed' if saved else 'failed')
         return self.status()
 
     # --- enablement ------------------------------------------------------------
@@ -588,7 +840,7 @@ class IMessageService:
         except MessageLedgerError:
             self._error = ERR_UNAVAILABLE
             return self.status()
-        if not self._save({'enabled': True, 'paired': paired, 'halted': None}):
+        if not self._save(self._settings_with(enabled=True, halted=None)):
             return self.status()
         self._error = None
         await self._stop_loop()
@@ -600,7 +852,7 @@ class IMessageService:
         await self._stop_loop()
         await self._cancel_pairing()
         if not self._unreadable and self._settings['enabled']:
-            self._save({'enabled': False, 'paired': self._settings['paired'], 'halted': self._settings['halted']})
+            self._save(self._settings_with(enabled=False))
         return self.status()
 
     @_serialized
@@ -632,14 +884,14 @@ class IMessageService:
     def _halt(self, code):
         self._conversation.clear()
         if not self._unreadable:
-            self._save({'enabled': False, 'paired': self._settings['paired'], 'halted': code})
+            self._save(self._settings_with(enabled=False, halted=code))
         self._error = code
 
     # --- command loop ----------------------------------------------------------
 
     async def _run_loop(self, chat_id, agent_id):
         failures = 0
-        cursor = 0
+        self._cursor = 0
         while True:
             bridge = None
             connected_at = None
@@ -649,12 +901,10 @@ class IMessageService:
                 identity = bridge.database_identity()
                 if not self._ledger.is_database_current(str(chat_id), identity):
                     raise _Halt(ERR_STALE)
-                await bridge.subscribe(since_rowid=cursor)
+                await bridge.subscribe(since_rowid=self._cursor)
                 self._error = None
                 connected_at = self._clock()
-                async for event in bridge.messages():
-                    cursor = max(cursor, event['rowid'])
-                    await self._handle(bridge, chat_id, agent_id, identity, event)
+                await self._serve(bridge, chat_id, agent_id, identity)
                 # The stream ended without being cancelled: treat it as a failure and restart.
                 self._error = ERR_LOOP
             except _Halt as halt:
@@ -671,15 +921,53 @@ class IMessageService:
             delay = min(RETRY_BASE_SECONDS * 2 ** min(failures - 1, 8), RETRY_CAP_SECONDS)
             await asyncio.sleep(delay)
 
-    async def _handle(self, bridge, chat_id, agent_id, identity, event):
-        command = _parse_command(event, chat_id)
-        if command is None:
-            return
-        if not self._agent_active(agent_id):
-            raise _Halt(ERR_REVOKED)
-        message_id, rowid, date, request = command
-        if not self._ledger.claim(str(chat_id), message_id, date, rowid, database_id=identity):
-            return
+    async def _serve(self, bridge, chat_id, agent_id, identity):
+        """Run the reader, the sequential command worker, and the approval announcer until one ends the connection.
+
+        Commands queue behind the worker so a command waiting on an approval cannot block the reader, which must
+        keep reading so an 'approve' reply can arrive.
+        """
+        jobs = asyncio.Queue()
+        tasks = {
+            asyncio.create_task(self._read(bridge, chat_id, agent_id, identity, jobs)),
+            asyncio.create_task(self._work(bridge, agent_id, jobs)),
+            asyncio.create_task(self._announce(bridge)),
+        }
+        try:
+            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                task.result()
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            # Commands claimed but never started are skipped, not replayed, so a torn-down loop cannot answer late.
+            while not jobs.empty():
+                self._ledger.mark_result(jobs.get_nowait(), 'skipped')
+
+    async def _read(self, bridge, chat_id, agent_id, identity, jobs):
+        async for event in bridge.messages():
+            self._cursor = max(self._cursor, event['rowid'])
+            command = _parse_command(event, chat_id)
+            if command is not None:
+                if not self._agent_active(agent_id):
+                    raise _Halt(ERR_REVOKED)
+                message_id, rowid, date, request = command
+                if self._ledger.claim(str(chat_id), message_id, date, rowid, database_id=identity):
+                    jobs.put_nowait((message_id, request))
+                continue
+            approval = _parse_approval(event, chat_id)
+            if approval is not None and self._approvals_on():
+                if not self._agent_active(agent_id):
+                    raise _Halt(ERR_REVOKED)
+                await self._approval_reply(bridge, chat_id, identity, approval)
+
+    async def _work(self, bridge, agent_id, jobs):
+        while True:
+            message_id, request = await jobs.get()
+            await self._command(bridge, agent_id, message_id, request)
+
+    async def _command(self, bridge, agent_id, message_id, request):
         verdict = self._limiter.admit(self._clock())
         if verdict != 'accept':
             if verdict == 'notify':
@@ -702,6 +990,59 @@ class IMessageService:
             return
         self._ledger.mark_result(message_id, 'sent')
         self._conversation.add(request, reply, self._clock())
+
+    async def _announce(self, bridge):
+        while True:
+            if self._approvals_on():
+                await self._announce_pending(bridge)
+            await asyncio.sleep(APPROVAL_POLL_SECONDS)
+
+    async def _announce_pending(self, bridge):
+        """Send one text for the head pending request. Each request is attempted once and never retried."""
+        pending = self._approvals.get_pending()
+        if pending is None or pending.agent == 'operator' or pending.request_id in self._attempted_requests:
+            return
+        self._attempted_requests.add(pending.request_id)
+        text, approvable = _announcement(pending)
+        try:
+            await bridge.send_text(text)
+        except MessagesBridgeError as error:
+            # Like the reply paths: a blocked or uncertain send restarts the helper. Never resend the announcement.
+            if error.code in RESTART_CODES:
+                raise _Restart()
+            return
+        if approvable:
+            self._delivered_requests.add(pending.request_id)
+
+    async def _approval_reply(self, bridge, chat_id, identity, approval):
+        message_id, rowid, date, verb, code = approval
+        if not self._ledger.claim(str(chat_id), message_id, date, rowid, database_id=identity):
+            return
+        verdict = self._limiter.admit(self._clock())
+        if verdict != 'accept':
+            if verdict == 'notify':
+                await self._notify(bridge, RATE_NOTICE)
+            self._ledger.mark_result(message_id, 'skipped')
+            return
+        self._ledger.mark_attempted(message_id)
+        pending = self._approvals.get_pending()
+        matched = (pending is not None and pending.request_id in self._delivered_requests
+                   and hmac.compare_digest(pending.approval_code.lower(), code))
+        if not matched:
+            reply = NO_MATCH_REPLY
+        else:
+            approved = verb == 'approve'
+            self._approvals.resolve(pending, approved)
+            self._audit_operator(pending.credential, 'imessage-approval', 'approved' if approved else 'denied')
+            reply = APPROVED_REPLY if approved else DENIED_REPLY
+        try:
+            await bridge.send_text(reply)
+        except MessagesBridgeError as error:
+            self._ledger.mark_result(message_id, 'failed')
+            if error.code in RESTART_CODES:
+                raise _Restart()
+            return
+        self._ledger.mark_result(message_id, 'sent')
 
     async def _notify(self, bridge, text):
         try:

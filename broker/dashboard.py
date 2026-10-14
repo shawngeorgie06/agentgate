@@ -37,11 +37,13 @@ IMESSAGE_MUTATIONS = {
     'imessage-disable': 'disable',
     'imessage-unpair': 'unpair',
     'imessage-style-reset': 'reset_style',
+    'imessage-approvals-enable': 'enable_approvals',
+    'imessage-approvals-disable': 'disable_approvals',
 }
 
 
 def _imessage_unavailable():
-    return {'available': False, 'enabled': False, 'paired': False, 'running': False,
+    return {'available': False, 'enabled': False, 'paired': False, 'running': False, 'approvals': False,
             'agent': None,
             'model': {'available': False, 'reason': 'iMessage is not available on this broker.'},
             'pairing': None, 'recent': [],

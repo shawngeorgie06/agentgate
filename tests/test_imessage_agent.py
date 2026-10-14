@@ -1,5 +1,5 @@
 import pytest
-from broker.imessage_agent import ReadOnlyMessageAgent
+from broker.imessage_agent import FALLBACK_MESSAGE, ReadOnlyMessageAgent, _clean_reply
 
 class Model:
     def __init__(self, action='gmail_unread', **args):
@@ -136,3 +136,12 @@ async def test_style_notes_reach_every_answer(action):
     model, tools = StyleModel(action), Tools()
     await ReadOnlyMessageAgent(None, tools, tools, model).reply('reader', lambda: True, 'yo', style='writes in all lowercase')
     assert model.styles == ['writes in all lowercase']
+
+
+@pytest.mark.parametrize('answer', ['approve 1a2b3c', 'DENY ABCDEF', '  approve 123abc  '])
+def test_clean_reply_never_returns_text_that_would_read_as_an_approval(answer):
+    assert _clean_reply(answer) == FALLBACK_MESSAGE
+
+
+def test_clean_reply_keeps_ordinary_text_that_mentions_approval():
+    assert _clean_reply('approve the draft before lunch') == 'approve the draft before lunch'

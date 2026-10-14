@@ -6,3 +6,7 @@
 select{font:inherit;padding:11px 13px;border:1px solid #d8e0d7;border-radius:8px;background:#fff;color:inherit;width:100%;margin-top:7px}select:focus{outline:3px solid #dcece0}#permissions-form{max-width:600px}#permissions-dialog pre{white-space:pre-wrap}
 
 #permission-window-ack{width:auto;display:inline-block;margin-right:8px}#permission-windows{white-space:pre-wrap;color:#805e37}
+.pair-code{font:600 34px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:4px;color:var(--green);background:#f6f8f4;border:1px solid var(--line);border-radius:12px;padding:22px;text-align:center;margin:16px 0}
+.imessage-message{color:#466544;font-size:13px;margin:12px 0}.imessage-message.error{color:#8e4f43}
+.imessage-confirm{margin-top:14px;padding:16px;border:1px solid var(--line);border-radius:10px;background:#fbfbf8}.imessage-confirm p{margin-top:0}
+.imessage-style{margin-top:18px;padding-top:14px;border-top:1px solid var(--line)}.imessage-style h4{margin:0 0 6px}

@@ -22,12 +22,32 @@ from broker.credential_store import CredentialDecryptionError
 from broker.gmail_tools import GmailTools
 from broker.integrations.gmail import GmailError, TOKEN_NAME
 from broker.integrations.github import GitHub, GitHubError
+from broker.imessage_style import MIN_MESSAGES
 from broker.grants_dashboard import create_grant, get_grants, revoke_grant
 from broker.grants import GrantError
 from broker.permissions import Permissions, PermissionConflict
 from broker.policy_engine import PolicyError
 
 ASSETS = Path(__file__).with_name('web')
+# POST action -> broker.imessage_service method. 'imessage-pair' takes an agent_id instead.
+IMESSAGE_MUTATIONS = {
+    'imessage-pair': 'start_pairing',
+    'imessage-pair-cancel': 'cancel_pairing',
+    'imessage-enable': 'enable',
+    'imessage-disable': 'disable',
+    'imessage-unpair': 'unpair',
+    'imessage-style-reset': 'reset_style',
+    'imessage-approvals-enable': 'enable_approvals',
+    'imessage-approvals-disable': 'disable_approvals',
+}
+
+
+def _imessage_unavailable():
+    return {'available': False, 'enabled': False, 'paired': False, 'running': False, 'approvals': False,
+            'agent': None,
+            'model': {'available': False, 'reason': 'iMessage is not available on this broker.'},
+            'pairing': None, 'recent': [],
+            'style': {'messages': 0, 'learning': True, 'needed': MIN_MESSAGES}, 'error': None}
 
 
 async def _settled_to_thread(function, *args):
@@ -63,7 +83,7 @@ def create_dashboard(mcp_app, broker, tools: GmailTools, operator_token: str, *,
 
     async def asset(request):
         names = {'app': 'index.html', 'app.js': 'app.js', 'app.css': 'app.css',
-                 'connections.js': 'connections.js', 'grants.js': 'grants.js'}
+                 'connections.js': 'connections.js', 'grants.js': 'grants.js', 'imessage.js': 'imessage.js'}
         name = names.get(request.path_params.get('asset', 'app'))
         if not name:
             return JSONResponse({'ok': False}, status_code=404)
@@ -127,6 +147,9 @@ def create_dashboard(mcp_app, broker, tools: GmailTools, operator_token: str, *,
                 data = gmail_connection.reconnect_status()
             elif request.method == 'GET' and action == 'grants':
                 data = get_grants(broker)
+            elif request.method == 'GET' and action == 'imessage':
+                service = getattr(broker, 'imessage_service', None)
+                data = await service.snapshot() if service is not None else _imessage_unavailable()
             elif request.method == 'GET' and action == 'permissions':
                 data = permissions.view(request.query_params.get('agent_id', ''),
                                         service=request.query_params.get('service', 'gmail'))
@@ -334,6 +357,21 @@ def create_dashboard(mcp_app, broker, tools: GmailTools, operator_token: str, *,
                     if not found:
                         return JSONResponse({'ok': False, 'reason': 'Identity not found.'}, status_code=404, headers=headers)
                     data = {'revoked': True}
+                elif action in IMESSAGE_MUTATIONS:
+                    if action == 'imessage-pair':
+                        agent_id = payload.get('agent_id')
+                        if not isinstance(agent_id, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,63}', agent_id):
+                            raise ValueError()
+                    service = getattr(broker, 'imessage_service', None)
+                    if service is None:
+                        return JSONResponse({'ok': False, 'reason': 'iMessage is unavailable on this broker.'}, status_code=503, headers=headers)
+                    if action == 'imessage-pair':
+                        try:
+                            data = await service.start_pairing(agent_id)
+                        except ValueError:
+                            return JSONResponse({'ok': False, 'reason': 'Choose an active enrolled agent to pair with iMessage.'}, status_code=400, headers=headers)
+                    else:
+                        data = await getattr(service, IMESSAGE_MUTATIONS[action])()
                 elif action == 'mode':
                     data = {'mode': state.toggle_mode(broker.config.state_path)}
                     broker.invalidate_agent_requests()

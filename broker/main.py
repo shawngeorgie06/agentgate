@@ -19,6 +19,8 @@ from broker.credential_store import CredentialStore, CredentialDecryptionError
 from broker.mcp_server import Broker, build_mcp
 from broker.http_auth import RegistryTokenVerifier, read_token_file
 from broker.agent_registry import AgentRegistry
+from broker.imessage_service import ERR_LEDGER, IMessageService, UnavailableIMessageService
+from broker.imessage_state import MessageLedgerError
 
 
 def resolve_master_password(config: Config) -> str:
@@ -44,6 +46,22 @@ def build_broker(config: Config, master_password: str) -> Broker:
         audit=AuditLogger(config.logs_path),
         approvals=ApprovalQueue(),
     )
+
+
+def build_imessage_service(config: Config, registry: AgentRegistry, broker: Broker, gmail_tools, github_tools,
+                           environ=None) -> IMessageService:
+    """Construct the iMessage agent service beside the credentials file, honoring helper path overrides."""
+    environ = os.environ if environ is None else environ
+    config_dir = os.path.dirname(os.path.expanduser(config.credentials_path))
+    imsg_path = environ.get('AGENTGATE_IMSG_PATH') or os.path.join(config_dir, 'bin', 'imsg')
+    model_helper_path = environ.get('AGENTGATE_MODEL_HELPER') or os.path.join(config_dir, 'bin', 'agentgate-model')
+    try:
+        return IMessageService(config_dir, registry, gmail_tools, github_tools, imsg_path=imsg_path,
+                               model_helper_path=model_helper_path, audit=broker.audit,
+                               approvals=getattr(broker, 'approvals', None))
+    except MessageLedgerError:
+        # An unreadable ledger disables only the iMessage agent; the rest of the broker still starts.
+        return UnavailableIMessageService(ERR_LEDGER)
 
 
 def format_status_line(broker: Broker) -> str:
@@ -84,6 +102,7 @@ async def _run_locked(
     http_server = None
     server_task = None
     launch_task = None
+    imessage_service = None
     try:
         if terminal is None:
             if not config.master_password and not keychain_helper:
@@ -121,6 +140,9 @@ async def _run_locked(
             )
             if operator_token:
                 from broker.dashboard import create_dashboard
+                imessage_service = build_imessage_service(config, registry, broker, gmail_tools, github_tools)
+                broker.imessage_service = imessage_service
+                await imessage_service.start()
                 app = create_dashboard(app, broker, gmail_tools, operator_token, github=github_tools.github)
             http_server = uvicorn.Server(uvicorn.Config(
                 app, host='127.0.0.1', port=port, lifespan='on',
@@ -145,6 +167,9 @@ async def _run_locked(
         for task in done:
             task.result()
     finally:
+        # Stop the iMessage loop first so no reply is sent while the app shuts down.
+        if imessage_service is not None:
+            await imessage_service.stop()
         # Let Uvicorn close its ASGI lifespan before cancelling tasks. Direct
         # cancellation can leave the HTTP session manager hanging on shutdown.
         if http_server is not None and server_task is not None:

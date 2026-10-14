@@ -1,5 +1,6 @@
 import {renderConnections} from './connections.js';
 import {renderGrants} from './grants.js';
+import {renderIMessage} from './imessage.js';
 'use strict';
 const $ = id => document.getElementById(id);
 const supplied = new URLSearchParams(location.hash.slice(1)).get('key');
@@ -25,9 +26,10 @@ function showView(view) {
   document.querySelectorAll('.view').forEach(n => n.hidden = n.id !== view + '-view');
   document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === view));
   $('compose-button').hidden = !['inbox','drafts'].includes(view);
-  $('view-title').textContent = {inbox:'Inbox', drafts:'Drafts', approvals:'Approvals', activity:'Activity', agents:'Agents', permissions:'Permissions', connections:'Connections', grants:'Temporary access'}[view];
-  $('view-subtitle').textContent = {inbox:'A quieter place to work through your email.', drafts:'Thoughtful messages, ready when you are.', approvals:'Stay in control of every outgoing email.', activity:'See what your agents have been working on.', agents:'Manage the identities that connect to your permission gateway.', permissions:'Decide what each agent can do with your connections.', connections:'See which accounts your agents use.', grants:'Give an agent access for a limited time.'}[view];
+  $('view-title').textContent = {inbox:'Inbox', drafts:'Drafts', approvals:'Approvals', activity:'Activity', agents:'Agents', permissions:'Permissions', connections:'Connections', grants:'Temporary access', imessage:'iMessage'}[view];
+  $('view-subtitle').textContent = {inbox:'A quieter place to work through your email.', drafts:'Thoughtful messages, ready when you are.', approvals:'Stay in control of every outgoing email.', activity:'See what your agents have been working on.', agents:'Manage the identities that connect to your permission gateway.', permissions:'Decide what each agent can do with your connections.', connections:'See which accounts your agents use.', grants:'Give an agent access for a limited time.', imessage:'Message yourself to ask an enrolled agent for read-only help.'}[view];
   if (view === 'connections') renderConnections($('connections-view'), api).then(controller => { if (generation === viewGeneration) viewController = controller; else controller?.destroy?.(); }).catch(e => notice(e.message,true));
+  if (view === 'imessage') renderIMessage($('imessage-view'), api).then(controller => { if (generation === viewGeneration) viewController = controller; else controller?.destroy?.(); }).catch(e => notice(e.message,true));
   if (view === 'grants') renderGrants($('grants-view'), api).catch(e => notice(e.message,true));
   if (view === 'drafts') loadDrafts().catch(e => notice(e.message, true));
   if (view === 'activity') loadActivity().catch(e => notice(e.message, true));

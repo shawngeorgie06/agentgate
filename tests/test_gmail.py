@@ -431,3 +431,42 @@ def test_send_renews_token_before_dispatch_without_retry(tmp_path, monkeypatch):
     with pytest.raises(GmailError, match='HTTP 401'):
         gmail.call('send', snapshot={'raw': raw_message()})
     assert events == ['refresh', 'send']
+
+
+def test_describe_message_exposes_reply_to():
+    from email.message import EmailMessage
+    import base64
+    message = EmailMessage()
+    message['To'] = 'bob@example.com'
+    message['Reply-To'] = 'other@example.com'
+    message.set_content('Hi')
+    raw = base64.urlsafe_b64encode(message.as_bytes()).decode('ascii')
+    assert describe_message(raw)['reply_to'] == ['other@example.com']
+
+
+def test_describe_message_exposes_top_level_type_and_header_names():
+    from email.message import EmailMessage
+    import base64
+    message = EmailMessage()
+    message['To'] = 'bob@example.com'
+    message['Mail-Followup-To'] = 'other@example.com'
+    message.set_content('Hi')
+    message.add_attachment(b'data', maintype='application', subtype='pdf', disposition='inline')
+    raw = base64.urlsafe_b64encode(message.as_bytes()).decode('ascii')
+    described = describe_message(raw)
+    assert described['content_type'] == 'multipart/mixed'
+    assert ['mail-followup-to', 'other@example.com'] in described['headers']
+    assert {'to', 'content-type'} <= {name for name, _value in described['headers']}
+
+
+def test_describe_message_reports_raw_unfolded_header_values():
+    from email.message import EmailMessage
+    import base64
+    message = EmailMessage()
+    message['To'] = 'bob@example.com (hidden)'
+    message['Subject'] = 'word ' * 20 + 'end'
+    message.set_content('Hi')
+    raw = base64.urlsafe_b64encode(message.as_bytes()).decode('ascii')
+    headers = describe_message(raw)['headers']
+    assert ['to', 'bob@example.com (hidden)'] in headers
+    assert ['subject', 'word ' * 20 + 'end'] in headers

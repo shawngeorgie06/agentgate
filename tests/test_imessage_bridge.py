@@ -158,7 +158,7 @@ for line in sys.stdin:
         elif MODE == 'send_32004':
             reply(request_id, error={'code': -32004, 'message': 'mutation lane blocked'})
         elif MODE == 'slow_send':
-            time.sleep(0.5)
+            time.sleep(1.5)
             reply(request_id, {'ok': True})
         elif MODE == 'send_error':
             reply(request_id, error={'code': -32000, 'message': 'nope'})
@@ -613,7 +613,7 @@ async def test_send_timeout_is_uncertain_and_not_retried(tmp_path):
 
 async def test_send_uses_longer_timeout_than_other_requests(tmp_path):
     helper = make_helper(tmp_path, mode='slow_send')
-    async with bridge_for(helper, request_timeout=0.2) as bridge:
+    async with bridge_for(helper, request_timeout=1.0) as bridge:
         assert await bridge.send_text(TEXT) is True
     assert methods(tmp_path).count('send') == 1
 

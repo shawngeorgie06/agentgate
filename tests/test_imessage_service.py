@@ -1009,17 +1009,23 @@ async def test_async_apple_model_raises_on_failure_envelopes():
 
 # --- approvals from iMessage -----------------------------------------------
 
-EMAIL_HEADERS = [['to', 'bob@example.com'], ['cc', 'carol@example.com'], ['subject', 'Quarterly numbers'],
-                 ['mime-version', '1.0'], ['content-type', 'text/plain; charset="utf-8"'],
-                 ['content-transfer-encoding', '7bit']]
+MIME_HEADERS = [['mime-version', '1.0'], ['content-type', 'text/plain; charset="utf-8"'],
+                ['content-transfer-encoding', '7bit']]
 
 
-def email_details(*, extra_headers=(), **changes):
+def email_details(*, extra_headers=(), mime_headers=MIME_HEADERS, **changes):
+    """A Gmail preview whose raw headers match its fields, as describe_message reports it."""
     value = {'draft_id': 'd1', 'from': [], 'to': ['bob@example.com'],
              'cc': ['carol@example.com'], 'bcc': [], 'subject': 'Quarterly numbers', 'date': '',
-             'reply_to': [], 'content_type': 'text/plain', 'headers': EMAIL_HEADERS + [list(h) for h in extra_headers],
+             'reply_to': [], 'content_type': 'text/plain',
              'parts': [{'type': 'text/plain', 'content': 'Hello team'}], 'attachments': [], 'sha256': 'abc'}
     value.update(changes)
+    if 'headers' not in changes:
+        headers = [[key, address] for key in ('from', 'to', 'cc', 'bcc')
+                   if isinstance(value[key], list) for address in value[key]]
+        if value['subject']:
+            headers.append(['subject', value['subject']])
+        value['headers'] = headers + [list(h) for h in mime_headers] + [list(h) for h in extra_headers]
     return json.dumps(value)
 
 
@@ -1074,7 +1080,7 @@ HIDDEN_EMAIL_CONTENT = {
     'second plain part': {'parts': [{'type': 'text/plain', 'content': 'Hello team'},
                                     {'type': 'text/plain', 'content': 'TAILMARK'}]},
     'attachment': {'attachments': [{'filename': 'TAILMARK.pdf', 'type': 'application/pdf'}]},
-    'reply-to': {'reply_to': ['TAILMARK@evil.example']},
+    'reply-to': {'reply_to': ['TAILMARK@evil.example'], 'extra_headers': [('reply-to', 'TAILMARK@evil.example')]},
     'reply-to unknown': {'reply_to': None},
     'multipart message': {'content_type': 'multipart/mixed'},
     'structure unknown': {'content_type': None},
@@ -1087,12 +1093,19 @@ HIDDEN_EMAIL_CONTENT = {
                           'extra_headers': [('from', '"TAILMARK" <me@example.com>')]},
     'date payload': {'extra_headers': [('date', 'TAILMARK')]},
     'custom message id': {'extra_headers': [('message-id', '<TAILMARK@evil.example>')]},
-    'mime version comment': {'headers': [h for h in EMAIL_HEADERS if h[0] != 'mime-version']
-                             + [['mime-version', '1.0 (TAILMARK)']]},
-    'content type parameter': {'headers': [h for h in EMAIL_HEADERS if h[0] != 'content-type']
-                               + [['content-type', 'text/plain; x-leak=TAILMARK']]},
-    'odd transfer encoding': {'headers': [h for h in EMAIL_HEADERS if h[0] != 'content-transfer-encoding']
-                              + [['content-transfer-encoding', 'x-TAILMARK']]},
+    'mime version comment': {'mime_headers': [['mime-version', '1.0 (TAILMARK)']] + MIME_HEADERS[1:]},
+    'content type parameter': {'mime_headers': [MIME_HEADERS[0], ['content-type', 'text/plain; x-leak=TAILMARK'],
+                                                MIME_HEADERS[2]]},
+    'latin-1 charset': {'mime_headers': [MIME_HEADERS[0], ['content-type', 'text/plain; charset="iso-8859-1"'],
+                                         MIME_HEADERS[2]], 'subject': 'Hi TAILMARK'},
+    'odd transfer encoding': {'mime_headers': MIME_HEADERS[:2] + [['content-transfer-encoding', 'x-TAILMARK']]},
+    'comment in raw to': {'headers': [['to', 'bob@example.com (TAILMARK)'], ['subject', 'Hi']] + MIME_HEADERS},
+    'comment in raw date': {'extra_headers': [('date', 'Tue, 14 Oct 2026 10:00:00 -0700 (TAILMARK)')]},
+    'encoded subject': {'headers': [['to', 'bob@example.com'], ['subject', '=?utf-8?q?TAILMARK?=']]
+                        + MIME_HEADERS},
+    'non-ascii address': {'to': ['b\u043eb@example.com'], 'subject': 'Hi TAILMARK'},
+    'replacement characters': {'parts': [{'type': 'text/plain', 'content': 'Hi \ufffd\ufffd TAILMARK'}]},
+    'right-to-left text': {'parts': [{'type': 'text/plain', 'content': 'Pay \u05d0 100.5 TAILMARK'}]},
     'display name': {'to': ['TAILMARK Builder <bob@example.com>']},
     'invisible in body': {'parts': [{'type': 'text/plain', 'content': 'Hi\u200bTAILMARK'}]},
     'grapheme joiner in body': {'parts': [{'type': 'text/plain', 'content': 'Hi\u034fTAILMARK'}]},
@@ -1738,8 +1751,7 @@ async def test_draft_built_like_the_draft_tool_gets_a_code(tmp_path, registry):
 async def test_bare_from_address_is_shown(tmp_path, registry):
     world, clock = FakeWorld(), Clock()
     service, queue = await approvals_on(tmp_path, world, clock, registry)
-    task = await submit(queue, details=email_details(**{'from': ['alias@example.com']},
-                                                     extra_headers=[('from', 'alias@example.com')]))
+    task = await submit(queue, details=email_details(**{'from': ['alias@example.com']}))
     await wait_until(lambda: approval_texts(world))
     assert 'wants gmail:send.\nFrom: alias@example.com\nCc:' in approval_texts(world)[0]
     queue.resolve(queue.get_pending(), False)

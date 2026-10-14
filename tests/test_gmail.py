@@ -457,3 +457,16 @@ def test_describe_message_exposes_top_level_type_and_header_names():
     assert described['content_type'] == 'multipart/mixed'
     assert ['mail-followup-to', 'other@example.com'] in described['headers']
     assert {'to', 'content-type'} <= {name for name, _value in described['headers']}
+
+
+def test_describe_message_reports_raw_unfolded_header_values():
+    from email.message import EmailMessage
+    import base64
+    message = EmailMessage()
+    message['To'] = 'bob@example.com (hidden)'
+    message['Subject'] = 'word ' * 20 + 'end'
+    message.set_content('Hi')
+    raw = base64.urlsafe_b64encode(message.as_bytes()).decode('ascii')
+    headers = describe_message(raw)['headers']
+    assert ['to', 'bob@example.com (hidden)'] in headers
+    assert ['subject', 'word ' * 20 + 'end'] in headers

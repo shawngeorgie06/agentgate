@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import re
 import threading
 import httplib2
 import requests
@@ -86,7 +87,8 @@ def describe_message(raw: str) -> dict:
         'bcc': message.get_all('Bcc', []),
         'reply_to': message.get_all('Reply-To', []),
         'content_type': message.get_content_type(),
-        'headers': [[name.lower(), str(value)] for name, value in message.items()],
+        # Raw, unfolded values: decoding drops comments that would still be sent.
+        'headers': [[name.lower(), re.sub(r'\r?\n(?=[ \t])', '', value)] for name, value in message.raw_items()],
         'subject': message.get('Subject', ''),
         'date': message.get('Date', ''),
         'parts': parts,

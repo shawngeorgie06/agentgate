@@ -21,7 +21,7 @@ BODY_LIMIT = 200
 
 _PLAIN_GITHUB_NAME = re.compile(r'[A-Za-z0-9_.-]{1,100}')
 _GMAIL_MESSAGE_ID = re.compile(r'<[A-Za-z0-9+_=.-]{1,200}@mail\.gmail\.com>')
-_TEXT_PLAIN = re.compile(r'text/plain(?:;\s*charset="?(?:utf-8|us-ascii|iso-8859-1)"?)?', re.IGNORECASE)
+_TEXT_PLAIN = re.compile(r'text/plain(?:;\s*charset="?(?:utf-8|us-ascii)"?)?', re.IGNORECASE)
 _TRANSFER_ENCODINGS = frozenset({'7bit', '8bit', 'quoted-printable', 'base64'})
 _REPEATABLE_HEADERS = frozenset({'to', 'cc', 'bcc'})
 # Default-ignorable code points outside the C* categories, plus blanks that render as nothing.
@@ -29,10 +29,12 @@ _INVISIBLE = frozenset('͏ᅟᅠ឴឵᠋᠌᠍᠏ㅤﾠ⠀')
 
 
 def _shown_as_written(character: str) -> bool:
+    """False for characters the phone hides, replaces, or reorders around (right-to-left letters)."""
     if character == ' ':
         return True
     code = ord(character)
-    return not (unicodedata.category(character)[0] in 'CZ' or character in _INVISIBLE
+    return not (unicodedata.category(character)[0] in 'CZ' or character in _INVISIBLE or character == '\ufffd'
+                or unicodedata.bidirectional(character) in ('R', 'AL', 'AN')
                 or 0xFE00 <= code <= 0xFE0F or 0xE0000 <= code <= 0xE0FFF)
 
 
@@ -77,33 +79,27 @@ def _quoted(text: str) -> str:
     return f'"{text}"' if text else ''
 
 
-def _addresses(details, key):
-    """Bare addresses from header values, or None when any entry is more than one plain address."""
-    values = details.get(key)
-    if values is None:
-        return []
-    if not isinstance(values, list):
-        return None
+def _addresses(values):
+    """Bare addresses from raw header values, or None when any entry is more than one plain address."""
     addresses = []
     for value in values:
-        if not isinstance(value, str):
-            return None
         parsed = getaddresses([value])
         # Display names, groups and comments would be sent unseen.
         if not parsed or [raw for _name, raw in parsed] != [entry.strip() for entry in value.split(',')]:
             return None
         for _name, raw in parsed:
-            if not _one_line(raw) or '@' not in raw or any(character in ' "<>()' for character in raw):
+            if (not raw.isascii() or not _one_line(raw) or '@' not in raw
+                    or any(character in ' "<>()' for character in raw)):
                 return None
             addresses.append(raw)
     return addresses
 
 
-def _recipient_lines(details):
+def _recipient_lines(headers):
     """'From:', 'Bcc:', 'Cc:', 'To:' lines in that order, or None when they cannot be shown exactly."""
     lines = []
     for label, key in (('From', 'from'), ('Bcc', 'bcc'), ('Cc', 'cc'), ('To', 'to')):
-        addresses = _addresses(details, key)
+        addresses = _addresses(headers.get(key, []))
         if addresses is None:
             return None
         if addresses:
@@ -126,28 +122,37 @@ def _header_value_ok(name: str, value: str) -> bool:
         return _TEXT_PLAIN.fullmatch(value) is not None
     if name == 'content-transfer-encoding':
         return value.lower() in _TRANSFER_ENCODINGS
-    # Shown fields; their decoded values are checked where they are displayed.
+    # Shown fields; their raw values are checked where they are displayed.
     return name in ('from', 'to', 'cc', 'bcc', 'subject')
 
 
-def _plain_headers(details) -> bool:
+def _raw_headers(details):
+    """{name: [raw values]} when every header is allowed and unshown ones are standard, else None."""
     headers = details.get('headers')
     if not isinstance(headers, list):
-        return False
-    seen = set()
+        return None
+    values = {}
     for pair in headers:
         if not (isinstance(pair, list) and len(pair) == 2 and all(isinstance(item, str) for item in pair)):
-            return False
+            return None
         name, value = pair
-        if (name in seen and name not in _REPEATABLE_HEADERS) or not _header_value_ok(name, value):
-            return False
-        seen.add(name)
-    return True
+        if (name in values and name not in _REPEATABLE_HEADERS) or not _header_value_ok(name, value):
+            return None
+        values.setdefault(name, []).append(value)
+    return values
+
+
+def _raw_subject(headers):
+    """The subject exactly as sent, quotes dropped; None when encoded or not plainly shown."""
+    subject = headers.get('subject', [''])[0]
+    if subject and ('=?' in subject or not _one_line(subject)):
+        return None
+    return subject.replace('"', '')
 
 
 def _email_body(details):
     """The email's only text as lines, when the approval text can show all of it, else None."""
-    if (details.get('content_type') != 'text/plain' or not _plain_headers(details)
+    if (details.get('content_type') != 'text/plain'
             or details.get('attachments') != [] or details.get('reply_to') != []):
         return None
     parts = details.get('parts')
@@ -194,7 +199,10 @@ def announcement(pending, agent: str) -> tuple[str, bool]:
     if details is None:
         return _dashboard_text(agent), False
     if pending.credential == EMAIL_SEND:
-        recipients, subject, body = _recipient_lines(details), _field(details, 'subject'), _email_body(details)
+        headers = _raw_headers(details)
+        if headers is None:
+            return _dashboard_text(agent), False
+        recipients, subject, body = _recipient_lines(headers), _raw_subject(headers), _email_body(details)
         if recipients is None or subject is None or body is None:
             return _dashboard_text(agent), False
         head = recipients + ([f'Subject: {_quoted(subject)}'] if subject else [])

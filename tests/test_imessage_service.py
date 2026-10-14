@@ -1012,8 +1012,8 @@ async def test_async_apple_model_raises_on_failure_envelopes():
 def email_details(**changes):
     value = {'draft_id': 'd1', 'from': ['me@example.com'], 'to': ['bob@example.com'],
              'cc': ['carol@example.com'], 'bcc': [], 'subject': 'Quarterly numbers', 'date': 'Mon',
-             'reply_to': [], 'parts': [{'type': 'text/plain', 'content': 'Hello team'}], 'attachments': [],
-             'sha256': 'abc'}
+             'reply_to': [], 'content_type': 'text/plain', 'headers': ['to', 'cc', 'subject', 'from', 'date'],
+             'parts': [{'type': 'text/plain', 'content': 'Hello team'}], 'attachments': [], 'sha256': 'abc'}
     value.update(changes)
     return json.dumps(value)
 
@@ -1071,6 +1071,14 @@ HIDDEN_EMAIL_CONTENT = {
     'attachment': {'attachments': [{'filename': 'TAILMARK.pdf', 'type': 'application/pdf'}]},
     'reply-to': {'reply_to': ['TAILMARK@evil.example']},
     'reply-to unknown': {'reply_to': None},
+    'multipart message': {'content_type': 'multipart/mixed'},
+    'structure unknown': {'content_type': None},
+    'unlisted header': {'headers': ['to', 'subject', 'mail-followup-to']},
+    'headers unknown': {'headers': None},
+    'display name': {'to': ['TAILMARK Builder <bob@example.com>']},
+    'invisible in body': {'parts': [{'type': 'text/plain', 'content': 'Hi\u200bTAILMARK'}]},
+    'control in body': {'parts': [{'type': 'text/plain', 'content': 'Hi\x1bTAILMARK'}]},
+    'invisible in subject': {'subject': 'Hi\u2066TAILMARK'},
 }
 
 
@@ -1080,8 +1088,9 @@ async def test_email_with_content_the_text_cannot_show_gets_no_code(tmp_path, re
     service, queue = await approvals_on(tmp_path, world, clock, registry)
     changes = dict(HIDDEN_EMAIL_CONTENT[case])
     details = json.loads(email_details(**changes))
-    if changes.get('reply_to', []) is None:
-        del details['reply_to']
+    for key in ('reply_to', 'content_type', 'headers'):
+        if key in changes and changes[key] is None:
+            del details[key]
     task = await submit(queue, details=json.dumps(details))
     expected = TOO_LONG_TEXT if case == 'long body' else DASHBOARD_TEXT
     await wait_until(lambda: (SELF_CHAT, expected) in world.sent)
@@ -1140,31 +1149,27 @@ async def test_over_bound_email_gets_dashboard_text_and_no_code(tmp_path, regist
     await service.stop()
 
 
-async def test_display_names_are_reduced_to_bare_addresses(tmp_path, registry):
+async def test_email_body_is_shown_as_written_with_its_line_breaks(tmp_path, registry):
     world, clock = FakeWorld(), Clock()
     service, queue = await approvals_on(tmp_path, world, clock, registry)
-    details = email_details(to=['Bob Builder <bob@example.com>', '"Carol, C" <carol@example.com>'], cc=[])
+    details = email_details(parts=[{'type': 'text/plain', 'content': 'Hi\n\n  team\tthanks\n'}])
     task = await submit(queue, details=details)
     await wait_until(lambda: approval_texts(world))
-    text = approval_texts(world)[0]
-    assert 'To: bob@example.com, carol@example.com.' in text
-    assert 'Builder' not in text and 'Carol, C' not in text
+    assert 'Body: Hi\n\n  team\tthanks. Reply' in approval_texts(world)[0]
     queue.resolve(queue.get_pending(), False)
     await task
     await service.stop()
 
 
-async def test_format_and_control_characters_are_stripped_from_every_field(tmp_path, registry):
+@pytest.mark.parametrize('field', ['title', 'body'])
+async def test_issue_with_invisible_characters_gets_dashboard_text(tmp_path, registry, field):
     world, clock = FakeWorld(), Clock()
     service, queue = await approvals_on(tmp_path, world, clock, registry)
-    details = email_details(subject='Quar\u200bterly\x07\x1b numbers\u202e', to=['bob@example.com'], cc=[],
-                            parts=[{'type': 'text/plain', 'content': 'Hi\u200d there\x00'}])
-    task = await submit(queue, details=details)
-    await wait_until(lambda: approval_texts(world))
-    text = approval_texts(world)[0]
-    assert 'To: bob@example.com. Subject: "Quarterly numbers". Body: Hi there. Reply' in text
-    for character in ('\u200b', '\u202e', '\u200d', '\n', '\x1b', '\x00', '\x07'):
-        assert character not in text
+    issue = {'owner': 'octo', 'repo': 'widgets', 'title': 'Crash', 'body': 'Steps'}
+    issue[field] += '\u200bTAILMARK'
+    task = await submit(queue, 'github:write', json.dumps(issue))
+    await wait_until(lambda: (SELF_CHAT, DASHBOARD_TEXT) in world.sent)
+    assert approval_texts(world) == []
     queue.resolve(queue.get_pending(), False)
     await task
     await service.stop()
@@ -1670,6 +1675,27 @@ async def test_non_list_recipient_fields_do_not_crash_the_announcement(tmp_path,
     task = await submit(queue, details=email_details(to='bob@example.com', cc={'x': 1}, bcc=None))
     await wait_until(lambda: (SELF_CHAT, DASHBOARD_TEXT) in world.sent)
     assert approval_texts(world) == []
+    queue.resolve(queue.get_pending(), False)
+    await task
+    await service.stop()
+
+
+async def test_draft_built_like_the_draft_tool_gets_a_code(tmp_path, registry):
+    import base64
+    from email.message import EmailMessage
+    from broker.integrations.gmail import describe_message
+    message = EmailMessage()
+    message['To'] = 'bob@example.com'
+    message['Subject'] = 'Quarterly numbers'
+    message['Cc'] = 'carol@example.com'
+    message.set_content('Hello team\nSee you Monday')
+    raw = base64.urlsafe_b64encode(message.as_bytes()).decode('ascii')
+    world, clock = FakeWorld(), Clock()
+    service, queue = await approvals_on(tmp_path, world, clock, registry)
+    task = await submit(queue, details=json.dumps({'draft_id': 'd1', **describe_message(raw)}))
+    await wait_until(lambda: approval_texts(world))
+    assert ('Cc: carol@example.com. To: bob@example.com. Subject: "Quarterly numbers". '
+            'Body: Hello team\nSee you Monday. Reply') in approval_texts(world)[0]
     queue.resolve(queue.get_pending(), False)
     await task
     await service.stop()

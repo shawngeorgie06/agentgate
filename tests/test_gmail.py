@@ -442,3 +442,17 @@ def test_describe_message_exposes_reply_to():
     message.set_content('Hi')
     raw = base64.urlsafe_b64encode(message.as_bytes()).decode('ascii')
     assert describe_message(raw)['reply_to'] == ['other@example.com']
+
+
+def test_describe_message_exposes_top_level_type_and_header_names():
+    from email.message import EmailMessage
+    import base64
+    message = EmailMessage()
+    message['To'] = 'bob@example.com'
+    message['Mail-Followup-To'] = 'other@example.com'
+    message.set_content('Hi')
+    message.add_attachment(b'data', maintype='application', subtype='pdf', disposition='inline')
+    raw = base64.urlsafe_b64encode(message.as_bytes()).decode('ascii')
+    described = describe_message(raw)
+    assert described['content_type'] == 'multipart/mixed'
+    assert {'to', 'mail-followup-to', 'content-type'} <= set(described['headers'])

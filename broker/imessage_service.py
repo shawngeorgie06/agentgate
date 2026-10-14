@@ -32,6 +32,12 @@ APPROVAL_POLL_SECONDS = 2.0
 _PLAIN_GITHUB_NAME = re.compile(r'[A-Za-z0-9_.-]{1,100}')
 APPROVAL_TRACK_LIMIT = 256
 SUMMARY_LIMIT = 300
+# Headers a text-approvable email may carry; any other header could reach the recipient unseen.
+TEXT_EMAIL_HEADERS = frozenset({'from', 'to', 'cc', 'bcc', 'subject', 'date', 'message-id', 'mime-version',
+                                'content-type', 'content-transfer-encoding'})
+_LAYOUT = frozenset('\n\t')
+# Characters that render as nothing but are not in the Cf/Cc categories.
+_BLANK = frozenset('\u115f\u1160\u3164\uffa0\u2800')
 BODY_LIMIT = 200
 PAIRING_TTL = dt.timedelta(minutes=10)
 PAIRING_HISTORY_LIMIT = 10
@@ -335,10 +341,32 @@ def _details(pending):
     return value if isinstance(value, dict) else None
 
 
-def _field(details, key) -> str:
-    """Visible text of a string field. Double quotes are dropped so quoting can delimit it."""
+def _visible(text: str):
+    """text unchanged when every character shows on the phone, else None.
+
+    Hidden characters would be sent as written while the approver sees nothing, so they block a code.
+    """
+    for character in text:
+        category = unicodedata.category(character)
+        if character in _LAYOUT:
+            continue
+        if (category[0] == 'C' or character in _BLANK or 0xFE00 <= ord(character) <= 0xFE0F
+                or 0xE0100 <= ord(character) <= 0xE01EF):
+            return None
+    return text
+
+
+def _field(details, key):
+    """A string field as written, double quotes dropped so quoting can delimit it.
+
+    '' when absent; None when it is not text or holds characters the phone would not show.
+    """
     value = details.get(key)
-    return _clean(value.replace('"', '')) if isinstance(value, str) else ''
+    if value is None:
+        return ''
+    if not isinstance(value, str) or _visible(value) is None:
+        return None
+    return value.replace('"', '')
 
 
 def _quoted(text: str) -> str:
@@ -360,13 +388,14 @@ def _addresses(details, key):
         if not isinstance(value, str):
             return None
         parsed = getaddresses([value])
-        if not parsed:
+        # Each entry must be exactly a bare address: display names, groups and comments would be sent unseen.
+        if not parsed or [raw for _name, raw in parsed] != [entry.strip() for entry in value.split(',')]:
             return None
         for _name, raw in parsed:
-            address = _clean(raw)
-            if address != raw or '@' not in address or any(character.isspace() or character == '"' for character in address):
+            if (_visible(raw) is None or '@' not in raw
+                    or any(character.isspace() or character in '"<>()' for character in raw)):
                 return None
-            addresses.append(address)
+            addresses.append(raw)
     return addresses
 
 
@@ -383,11 +412,14 @@ def _recipient_heads(details):
 
 
 def _whole_body(details):
-    """The email's only text when the approval text can show all of it, else None.
+    """The email's only text, as written, when the approval text can show all of it, else None.
 
-    HTML alternatives, extra parts, attachments and Reply-To would reach the recipient unseen.
+    Multipart structure, attachments and unlisted headers would reach the recipient unseen.
     """
-    if details.get('attachments') != [] or details.get('reply_to') != []:
+    headers = details.get('headers')
+    if (details.get('content_type') != 'text/plain' or not isinstance(headers, list)
+            or not all(isinstance(name, str) and name in TEXT_EMAIL_HEADERS for name in headers)
+            or details.get('attachments') != [] or details.get('reply_to') != []):
         return None
     parts = details.get('parts')
     if parts == []:
@@ -397,7 +429,7 @@ def _whole_body(details):
     part = parts[0]
     if not isinstance(part, dict) or part.get('type') != 'text/plain' or not isinstance(part.get('content'), str):
         return None
-    return _clean(part['content'])
+    return _visible(part['content'].rstrip('\n'))
 
 
 def _bounded(head, body):
@@ -408,11 +440,8 @@ def _bounded(head, body):
     return '. '.join(head + ([f'Body: {body}'] if body else []))
 
 
-def _email_summary(details, recipients, body):
-    head = list(recipients)
-    subject = _field(details, 'subject')
-    if subject:
-        head.append(f'Subject: {_quoted(subject)}')
+def _email_summary(recipients, subject, body):
+    head = list(recipients) + ([f'Subject: {_quoted(subject)}'] if subject else [])
     return _bounded(head, body)
 
 
@@ -422,10 +451,8 @@ def _github_names_plain(details) -> bool:
                for key in ('owner', 'repo'))
 
 
-def _issue_summary(details):
-    head = [f'Repo: {_field(details, "owner")}/{_field(details, "repo")}', f'Title: {_quoted(_field(details, "title"))}']
-    body = _clean(details['body']) if isinstance(details.get('body'), str) else ''
-    return _bounded(head, body)
+def _issue_summary(details, title, body):
+    return _bounded([f'Repo: {details["owner"]}/{details["repo"]}', f'Title: {_quoted(title)}'], body)
 
 
 def _dashboard_text(agent) -> str:
@@ -447,13 +474,15 @@ def _announcement(pending) -> tuple[str, bool]:
     if details is None:
         return _dashboard_text(agent), False
     if pending.credential == EMAIL_SEND:
-        recipients = _recipient_heads(details)
-        body = _whole_body(details)
-        if recipients is None or body is None:
+        recipients, subject, body = _recipient_heads(details), _field(details, 'subject'), _whole_body(details)
+        if recipients is None or subject is None or body is None:
             return _dashboard_text(agent), False
-        summary = _email_summary(details, recipients, body)
-    elif pending.credential == GITHUB_WRITE and _github_names_plain(details) and _field(details, 'title'):
-        summary = _issue_summary(details)
+        summary = _email_summary(recipients, subject, body)
+    elif pending.credential == GITHUB_WRITE and _github_names_plain(details):
+        title, body = _field(details, 'title'), _field(details, 'body')
+        if not title or body is None or not isinstance(details.get('body'), str):
+            return _dashboard_text(agent), False
+        summary = _issue_summary(details, title, details['body'])
     else:
         return _dashboard_text(agent), False
     if summary is None:

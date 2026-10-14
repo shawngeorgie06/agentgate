@@ -41,7 +41,7 @@ const ERROR_TEXT = {
   settings_not_saved: 'The iMessage settings could not be saved.',
   loop_failed: 'iMessage lost its connection and is retrying.',
   agent_revoked: 'The paired agent was revoked. Pair an active agent to continue.',
-  messages_database_changed: 'The Messages database changed. Re-pair to continue.',
+  messages_database_changed: 'The Messages database looked different. Pair again to continue.',
   ledger_unavailable: 'The iMessage record could not be opened.',
   style_not_reset: 'The texting style could not be cleared. Try Reset style again.',
   send_uncertain: 'A reply may or may not have been sent. It will not be retried automatically.',

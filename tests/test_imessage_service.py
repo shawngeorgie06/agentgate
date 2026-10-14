@@ -301,7 +301,7 @@ async def test_pairing_accepts_exact_code_in_one_to_one_self_chat(tmp_path, regi
     assert status['paired'] is True and status['enabled'] is False and status['pairing'] is None
     assert status['agent'] == {'id': 'helper', 'name': 'helper'}
     assert json.loads(settings_path(tmp_path).read_text()) == {
-        'enabled': False, 'paired': {'chat_id': SELF_CHAT, 'agent_id': 'helper'}}
+        'enabled': False, 'paired': {'chat_id': SELF_CHAT, 'agent_id': 'helper'}, 'halted': None}
     assert stat.S_IMODE(os.stat(settings_path(tmp_path)).st_mode) == 0o600
     assert world.sent == [(SELF_CHAT, 'AgentGate paired.')]
     await service.stop()
@@ -449,7 +449,7 @@ async def test_enable_disable_unpair_persist_and_restart_respects_enabled_flag(t
 
     unpaired = await service.unpair()
     assert unpaired['paired'] is False and unpaired['enabled'] is False and unpaired['agent'] is None
-    assert json.loads(settings_path(tmp_path).read_text()) == {'enabled': False, 'paired': None}
+    assert json.loads(settings_path(tmp_path).read_text()) == {'enabled': False, 'paired': None, 'halted': None}
     await service.stop()
 
 
@@ -492,6 +492,78 @@ async def test_corrupt_settings_fail_closed(tmp_path, registry):
     service = make_service(tmp_path, FakeWorld(), Clock(), registry=registry)
     assert service.status()['paired'] is False
     assert service.status()['error'] == svc.ERR_UNREADABLE
+
+
+def write_settings(tmp_path, value):
+    (tmp_path / 'config').mkdir(exist_ok=True)
+    settings_path(tmp_path).write_text(json.dumps(value))
+    settings_path(tmp_path).chmod(0o600)
+
+
+async def halt_by_stale_database(tmp_path, world, clock, registry):
+    service = make_service(tmp_path, world, clock, registry=registry)
+    await pair(service, world)
+    await service.enable()
+    world.database = 'db-2'
+    world.crash_messages = 1
+    await wait_until(lambda: service.status()['error'] == svc.ERR_STALE and service.status()['running'] is False)
+    await service.stop()
+
+
+async def test_halt_reason_survives_restart(tmp_path, registry):
+    world, clock = FakeWorld(), Clock()
+    await halt_by_stale_database(tmp_path, world, clock, registry)
+    restarted = make_service(tmp_path, world, clock, registry=registry)
+    await restarted.start()
+    status = restarted.status()
+    assert status['enabled'] is False and status['running'] is False
+    assert status['error'] == svc.ERR_STALE
+    assert json.loads(settings_path(tmp_path).read_text())['halted'] == svc.ERR_STALE
+
+
+async def test_enable_clears_halt_reason(tmp_path, registry):
+    world, clock = FakeWorld(), Clock()
+    await halt_by_stale_database(tmp_path, world, clock, registry)
+    world.database = 'db-1'
+    restarted = make_service(tmp_path, world, clock, registry=registry)
+    status = await restarted.enable()
+    assert status['enabled'] is True and status['error'] is None
+    assert json.loads(settings_path(tmp_path).read_text())['halted'] is None
+    await restarted.stop()
+
+
+async def test_unpair_clears_halt_reason(tmp_path, registry):
+    world, clock = FakeWorld(), Clock()
+    await halt_by_stale_database(tmp_path, world, clock, registry)
+    restarted = make_service(tmp_path, world, clock, registry=registry)
+    status = await restarted.unpair()
+    assert status['paired'] is False and status['error'] is None
+    assert json.loads(settings_path(tmp_path).read_text())['halted'] is None
+
+
+async def test_completing_a_new_pairing_clears_halt_reason(tmp_path, registry):
+    world, clock = FakeWorld(), Clock()
+    await halt_by_stale_database(tmp_path, world, clock, registry)
+    restarted = make_service(tmp_path, world, clock, registry=registry)
+    code = (await restarted.start_pairing('helper'))['pairing']['code']
+    world.history[SELF_CHAT] = [history_row(501, f'/agent pair {code}')]
+    await wait_until(lambda: restarted.status()['pairing'] is None)
+    assert restarted.status()['error'] is None
+    assert json.loads(settings_path(tmp_path).read_text())['halted'] is None
+
+
+async def test_settings_without_halted_key_load_as_not_halted(tmp_path, registry):
+    write_settings(tmp_path, {'enabled': False, 'paired': {'chat_id': SELF_CHAT, 'agent_id': 'helper'}})
+    status = make_service(tmp_path, FakeWorld(), Clock(), registry=registry).status()
+    assert status['paired'] is True and status['error'] is None
+
+
+@pytest.mark.parametrize('halted', ['bogus', '', 7, ['messages_database_changed'], {'code': 'agent_revoked'}])
+async def test_invalid_halted_value_is_ignored(tmp_path, registry, halted):
+    write_settings(tmp_path, {'enabled': False, 'paired': {'chat_id': SELF_CHAT, 'agent_id': 'helper'},
+                              'halted': halted})
+    status = make_service(tmp_path, FakeWorld(), Clock(), registry=registry).status()
+    assert status['paired'] is True and status['error'] is None
 
 
 # --- command loop ----------------------------------------------------------

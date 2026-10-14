@@ -58,6 +58,7 @@ ERR_STALE = 'messages_database_changed'
 ERR_LEDGER = 'ledger_unavailable'
 ERR_STYLE_RESET = 'style_not_reset'
 RESTART_CODES = frozenset({'send_uncertain', 'send_blocked'})
+HALT_CODES = frozenset({ERR_STALE, ERR_REVOKED})
 
 
 class ModelError(Exception):
@@ -185,7 +186,9 @@ class _CommandLimiter:
 
 
 def _valid_settings(value) -> bool:
-    if not isinstance(value, dict) or set(value) != {'enabled', 'paired'} or type(value['enabled']) is not bool:
+    if not isinstance(value, dict) or not {'enabled', 'paired'} <= set(value) <= {'enabled', 'paired', 'halted'}:
+        return False
+    if type(value['enabled']) is not bool:
         return False
     paired = value['paired']
     if paired is None:
@@ -197,7 +200,7 @@ def _valid_settings(value) -> bool:
 
 def _read_settings(path: Path):
     """Return (settings, error). A missing file means unpaired; anything unsafe fails closed."""
-    empty = {'enabled': False, 'paired': None}
+    empty = {'enabled': False, 'paired': None, 'halted': None}
     try:
         fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
     except FileNotFoundError:
@@ -221,6 +224,8 @@ def _read_settings(path: Path):
         return empty, ERR_UNREADABLE
     if not _valid_settings(value):
         return empty, ERR_UNREADABLE
+    halted = value.get('halted')
+    value['halted'] = halted if isinstance(halted, str) and halted in HALT_CODES else None
     return value, None
 
 
@@ -325,6 +330,8 @@ class IMessageService:
         self._style = TextingStyle(self._config_dir / STYLE_FILE)
         self._settings, self._error = _read_settings(self._settings_path)
         self._unreadable = self._error == ERR_UNREADABLE
+        if self._settings['halted'] and self._settings['paired'] and not self._settings['enabled']:
+            self._error = self._settings['halted']
         self._loop_task = None
         self._pairing = None
         self._pairing_task = None
@@ -436,7 +443,7 @@ class IMessageService:
         await self._stop_loop()
         await self._cancel_pairing()
         if not self._unreadable and self._settings['enabled']:
-            self._save({'enabled': False, 'paired': self._settings['paired']})
+            self._save({'enabled': False, 'paired': self._settings['paired'], 'halted': self._settings['halted']})
         self._error = None
         if not self._helpers_ready():
             self._error = ERR_UNAVAILABLE
@@ -514,7 +521,7 @@ class IMessageService:
         except MessageLedgerError:
             self._error = ERR_UNAVAILABLE
             return False
-        if not self._save({'enabled': False, 'paired': {'chat_id': chat_id, 'agent_id': agent_id}}):
+        if not self._save({'enabled': False, 'paired': {'chat_id': chat_id, 'agent_id': agent_id}, 'halted': None}):
             return False
         self._error = None
         return True
@@ -543,7 +550,7 @@ class IMessageService:
     async def unpair(self):
         await self._stop_loop()
         await self._cancel_pairing()
-        if self._save({'enabled': False, 'paired': None}):
+        if self._save({'enabled': False, 'paired': None, 'halted': None}):
             self._error = None
         return self.status()
 
@@ -581,7 +588,7 @@ class IMessageService:
         except MessageLedgerError:
             self._error = ERR_UNAVAILABLE
             return self.status()
-        if not self._save({'enabled': True, 'paired': paired}):
+        if not self._save({'enabled': True, 'paired': paired, 'halted': None}):
             return self.status()
         self._error = None
         await self._stop_loop()
@@ -593,7 +600,7 @@ class IMessageService:
         await self._stop_loop()
         await self._cancel_pairing()
         if not self._unreadable and self._settings['enabled']:
-            self._save({'enabled': False, 'paired': self._settings['paired']})
+            self._save({'enabled': False, 'paired': self._settings['paired'], 'halted': self._settings['halted']})
         return self.status()
 
     @_serialized
@@ -625,7 +632,7 @@ class IMessageService:
     def _halt(self, code):
         self._conversation.clear()
         if not self._unreadable:
-            self._save({'enabled': False, 'paired': self._settings['paired']})
+            self._save({'enabled': False, 'paired': self._settings['paired'], 'halted': code})
         self._error = code
 
     # --- command loop ----------------------------------------------------------

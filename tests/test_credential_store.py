@@ -60,3 +60,25 @@ def test_store_uses_fresh_nonce_each_call(tmp_path):
     store.store("k", "v")
     nonce2 = json.loads(path.read_text())["credentials"]["k"]["nonce"]
     assert nonce1 != nonce2
+
+
+def test_concurrent_in_process_writes_preserve_credentials(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    store = CredentialStore(str(tmp_path / 'credentials.json'), 'pw')
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        list(executor.map(lambda i: store.store(f'key-{i}', f'value-{i}'), range(12)))
+    reopened = CredentialStore(str(tmp_path / 'credentials.json'), 'pw')
+    for i in range(12):
+        assert reopened.retrieve(f'key-{i}') == f'value-{i}'
+
+def test_credential_rewrites_keep_private_file_permissions(tmp_path):
+    import os,stat
+    path=tmp_path/'creds.json'
+    old=os.umask(0o022)
+    try:
+        store=CredentialStore(str(path),'pw')
+        store.store('sample','value')
+        assert stat.S_IMODE(path.stat().st_mode)==0o600
+        store.store('sample','updated')
+        assert stat.S_IMODE(path.stat().st_mode)==0o600
+    finally: os.umask(old)

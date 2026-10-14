@@ -1,15 +1,26 @@
 from __future__ import annotations
 
 import asyncio
+import argparse
 import getpass
+import os
 import sys
+import secrets
+import webbrowser
+from pathlib import Path
+import uvicorn
+from argon2.exceptions import Argon2Error
 
 from broker.approval import ApprovalQueue
 from broker.audit import AuditLogger
 from broker.config import Config, ConfigError
 from broker.console import console_loop, open_terminal
-from broker.credential_store import CredentialStore
+from broker.credential_store import CredentialStore, CredentialDecryptionError
 from broker.mcp_server import Broker, build_mcp
+from broker.http_auth import RegistryTokenVerifier, read_token_file
+from broker.agent_registry import AgentRegistry
+from broker.imessage_service import ERR_LEDGER, IMessageService, UnavailableIMessageService
+from broker.imessage_state import MessageLedgerError
 
 
 def resolve_master_password(config: Config) -> str:
@@ -19,7 +30,14 @@ def resolve_master_password(config: Config) -> str:
 
 
 def build_broker(config: Config, master_password: str) -> Broker:
-    store = CredentialStore(config.credentials_path, master_password)
+    # Opening the file derives a key but does not verify it. Validate before
+    # serving an apparently connected app or accepting credential changes.
+    try:
+        store = CredentialStore(config.credentials_path, master_password)
+        for name in store.list_names():
+            store.retrieve(name)
+    except (CredentialDecryptionError, Argon2Error, KeyError, ValueError, TypeError, AttributeError):
+        raise ConfigError('Could not unlock saved credentials. Enter the original AgentGate master password; if it is correct, the credential file may be damaged.') from None
     from broker.policy_engine import PolicyEngine
     return Broker(
         config=config,
@@ -28,6 +46,22 @@ def build_broker(config: Config, master_password: str) -> Broker:
         audit=AuditLogger(config.logs_path),
         approvals=ApprovalQueue(),
     )
+
+
+def build_imessage_service(config: Config, registry: AgentRegistry, broker: Broker, gmail_tools, github_tools,
+                           environ=None) -> IMessageService:
+    """Construct the iMessage agent service beside the credentials file, honoring helper path overrides."""
+    environ = os.environ if environ is None else environ
+    config_dir = os.path.dirname(os.path.expanduser(config.credentials_path))
+    imsg_path = environ.get('AGENTGATE_IMSG_PATH') or os.path.join(config_dir, 'bin', 'imsg')
+    model_helper_path = environ.get('AGENTGATE_MODEL_HELPER') or os.path.join(config_dir, 'bin', 'agentgate-model')
+    try:
+        return IMessageService(config_dir, registry, gmail_tools, github_tools, imsg_path=imsg_path,
+                               model_helper_path=model_helper_path, audit=broker.audit,
+                               approvals=getattr(broker, 'approvals', None))
+    except MessageLedgerError:
+        # An unreadable ledger disables only the iMessage agent; the rest of the broker still starts.
+        return UnavailableIMessageService(ERR_LEDGER)
 
 
 def format_status_line(broker: Broker) -> str:
@@ -39,27 +73,113 @@ def format_status_line(broker: Broker) -> str:
     )
 
 
-async def run(config: Config | None = None) -> None:
+async def _run_locked(
+    config: Config | None = None, *, http: bool = False,
+    port: int = 8765, token_file: str | None = None,
+    operator_token_file: str | None = None, open_app: bool = True,
+    bootstrap_agent: str = 'agentgate-local', stdio_agent: str = 'agentgate-local',
+    keychain_helper: str | None = None,
+) -> None:
     config = config or Config.from_env()
-    terminal = open_terminal()
+    if http and not token_file:
+        raise ConfigError('HTTP mode requires --token-file for bearer authentication.')
+    if not 1 <= port <= 65535:
+        raise ConfigError('HTTP port must be between 1 and 65535.')
+    if operator_token_file and not http:
+        raise ConfigError('The app requires HTTP mode.')
+    operator_token = read_token_file(operator_token_file) if operator_token_file else None
+    if operator_token and token_file and secrets.compare_digest(operator_token, read_token_file(token_file)):
+        raise ConfigError('Operator and agent token files must contain different credentials.')
+    registry = None
+    auth = None
+    if http:
+        agents_path = config.agents_path or os.path.join(os.path.dirname(config.credentials_path), 'agents.sqlite3')
+        registry = AgentRegistry(agents_path)
+        registry.import_token(bootstrap_agent, read_token_file(token_file))
+        auth = RegistryTokenVerifier(registry)
+    terminal = None if keychain_helper else open_terminal()
     tasks = []
+    http_server = None
+    server_task = None
+    launch_task = None
+    imessage_service = None
     try:
         if terminal is None:
-            if not config.master_password:
+            if not config.master_password and not keychain_helper:
                 raise ConfigError("headless MCP requires AGENTGATE_MASTER_PASSWORD")
             if not config.escalation_timeout_seconds:
                 raise ConfigError("headless MCP requires ESCALATION_TIMEOUT_SECONDS > 0")
-        master_password = resolve_master_password(config)
+        if keychain_helper:
+            from broker.mac_keychain import read_password, KeychainError
+            try:
+                master_password = await asyncio.to_thread(read_password, keychain_helper, config.credentials_path)
+            except KeychainError:
+                raise ConfigError('Could not unlock AgentGate with macOS Keychain. Open AgentGate to set up or unlock access.') from None
+        else:
+            master_password = resolve_master_password(config)
         broker = build_broker(config, master_password)
-        mcp = build_mcp(broker)
+        broker.agent_registry = registry
+        if registry is not None:
+            from broker.grants import TemporaryGrants
+            broker.temporary_grants = TemporaryGrants(registry)
+        gmail_tools = None
+        if operator_token:
+            from broker.gmail_tools import GmailTools
+            from broker.integrations.gmail import Gmail
+            gmail_tools = GmailTools(broker, Gmail(broker.store))
+        from broker.github_tools import GitHubTools
+        from broker.integrations.github import GitHub
+        github_tools = GitHubTools(broker, GitHub(broker.store))
+        mcp = build_mcp(broker, auth=auth, gmail_tools=gmail_tools, github_tools=github_tools, trusted_agent=stdio_agent) if gmail_tools else build_mcp(broker, auth=auth, github_tools=github_tools, trusted_agent=stdio_agent)
         print(format_status_line(broker), file=sys.stderr)
-        tasks.append(asyncio.create_task(mcp.run_async()))
-        if terminal is not None:
+        if http:
+            print(f'[AgentGate] authenticated MCP endpoint: http://127.0.0.1:{port}/mcp', file=sys.stderr)
+            app = mcp.http_app(
+                path='/mcp', transport='http', host_origin_protection=True,
+                allowed_hosts=['127.0.0.1', 'localhost'], allowed_origins=[],
+            )
+            if operator_token:
+                from broker.dashboard import create_dashboard
+                imessage_service = build_imessage_service(config, registry, broker, gmail_tools, github_tools)
+                broker.imessage_service = imessage_service
+                await imessage_service.start()
+                app = create_dashboard(app, broker, gmail_tools, operator_token, github=github_tools.github)
+            http_server = uvicorn.Server(uvicorn.Config(
+                app, host='127.0.0.1', port=port, lifespan='on',
+                access_log=not bool(keychain_helper),
+                timeout_graceful_shutdown=2,
+            ))
+            server_task = asyncio.create_task(http_server.serve())
+            tasks.append(server_task)
+            if operator_token and open_app:
+                async def launch_app():
+                    while not http_server.started and not server_task.done():
+                        await asyncio.sleep(0.05)
+                    if http_server.started:
+                        # Fragments are never transmitted in HTTP requests/logs.
+                        await asyncio.to_thread(webbrowser.open, f'http://127.0.0.1:{port}/app#key={operator_token}')
+                launch_task = asyncio.create_task(launch_app())
+        else:
+            tasks.append(asyncio.create_task(mcp.run_async()))
+        if terminal is not None and not operator_token:
             tasks.append(asyncio.create_task(console_loop(broker, terminal)))
         done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for task in done:
             task.result()
     finally:
+        # Stop the iMessage loop first so no reply is sent while the app shuts down.
+        if imessage_service is not None:
+            await imessage_service.stop()
+        # Let Uvicorn close its ASGI lifespan before cancelling tasks. Direct
+        # cancellation can leave the HTTP session manager hanging on shutdown.
+        if http_server is not None and server_task is not None:
+            http_server.should_exit = True
+            try:
+                await asyncio.wait_for(asyncio.shield(server_task), timeout=5)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                server_task.cancel()
+        if launch_task is not None:
+            tasks.append(launch_task)
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -67,9 +187,44 @@ async def run(config: Config | None = None) -> None:
             terminal.close()
 
 
+async def run(
+    config: Config | None = None, *, http: bool = False,
+    port: int = 8765, token_file: str | None = None,
+    operator_token_file: str | None = None, open_app: bool = True,
+    bootstrap_agent: str = 'agentgate-local', stdio_agent: str = 'agentgate-local',
+    keychain_helper: str | None = None,
+) -> None:
+    from broker.process_lock import CredentialProcessLock
+    config = config or Config.from_env()
+    lock_path = str(Path(config.credentials_path).expanduser().resolve()) + '.broker.lock'
+    with CredentialProcessLock(lock_path):
+        await _run_locked(config, http=http, port=port, token_file=token_file,
+                          operator_token_file=operator_token_file, open_app=open_app,
+                          bootstrap_agent=bootstrap_agent, stdio_agent=stdio_agent,
+                          keychain_helper=keychain_helper)
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser(description='AgentGate MCP broker')
+    parser.add_argument('--http', action='store_true', help='serve authenticated MCP on localhost')
+    parser.add_argument('--port', type=int, default=8765, help='localhost HTTP port (default: 8765)')
+    parser.add_argument('--token-file', help='private bearer token file required for HTTP')
+    parser.add_argument('--bootstrap-agent', default='agentgate-local', help='identity assigned to --token-file on first launch')
+    parser.add_argument('--stdio-agent', default='agentgate-local', help='trusted identity for STDIO clients')
+    parser.add_argument('--app', action='store_true', help='enable the local operator app and open its window')
+    parser.add_argument('--operator-token-file', help='separate private app credential, required with --app')
+    parser.add_argument('--keychain-helper', help='private macOS Keychain helper for background startup')
+    parser.add_argument('--no-open', action='store_true', help='do not automatically open the app browser')
+    args = parser.parse_args()
+    if args.app and not args.operator_token_file:
+        parser.error('--app requires --operator-token-file')
+    if args.operator_token_file and not args.app:
+        parser.error('--operator-token-file requires --app')
     try:
-        asyncio.run(run())
+        asyncio.run(run(http=args.http or args.app, port=args.port, token_file=args.token_file,
+                        operator_token_file=args.operator_token_file, open_app=not args.no_open,
+                        bootstrap_agent=args.bootstrap_agent, stdio_agent=args.stdio_agent,
+                        keychain_helper=args.keychain_helper))
     except ConfigError as exc:
         print(f"[AgentGate] configuration error: {exc}", file=sys.stderr)
         raise SystemExit(2)

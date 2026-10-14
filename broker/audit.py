@@ -4,7 +4,7 @@ import datetime
 import json
 import os
 
-_VALID_DECISIONS = {"approved", "denied", "escalated", "expired"}
+_VALID_DECISIONS = {"approved", "denied", "escalated", "expired", "completed", "failed"}
 
 
 class AuditLogger:

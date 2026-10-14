@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+from broker import imessage_bridge as bridge_module
 
 from broker.imessage_bridge import MessagesBridge, MessagesBridgeError, PairingBridge, is_self_chat
 
@@ -363,8 +364,54 @@ def test_database_identity_uses_stat_not_contents(tmp_path):
     db.write_bytes(b'SECRET MESSAGE BODY')
     identity = bridge_for(tmp_path / 'imsg', db).database_identity()
     info = os.stat(db)
-    assert identity == f'{info.st_dev}:{info.st_ino}'
+    assert identity == f'{info.st_ino}:{info.st_birthtime!r}'
     assert 'SECRET' not in identity
+
+
+def test_database_identity_survives_reboot_device_renumbering(tmp_path, monkeypatch):
+    # macOS can hand the same volume a different st_dev after a reboot; the file itself is unchanged.
+    db = tmp_path / 'chat.db'
+    db.write_bytes(b'x')
+    bridge = bridge_for(tmp_path / 'imsg', db)
+    before = bridge.database_identity()
+    real = os.stat(db)
+
+    class Renumbered:
+        def __getattr__(self, name):
+            return real.st_dev + 5 if name == 'st_dev' else getattr(real, name)
+
+    real_stat = os.stat
+    monkeypatch.setattr(bridge_module.os, 'stat',
+                        lambda path, **kw: Renumbered() if str(path) == str(db) else real_stat(path, **kw))
+    assert bridge.database_identity() == before
+
+
+def test_database_identity_changes_when_the_file_is_replaced(tmp_path):
+    db = tmp_path / 'chat.db'
+    db.write_bytes(b'x')
+    bridge = bridge_for(tmp_path / 'imsg', db)
+    before = bridge.database_identity()
+    keep = tmp_path / 'old.db'
+    db.rename(keep)  # hold the old inode so the replacement cannot reuse it
+    db.write_bytes(b'x')
+    assert bridge.database_identity() != before
+
+
+def test_database_identity_changes_when_a_new_file_reuses_the_inode(tmp_path, monkeypatch):
+    db = tmp_path / 'chat.db'
+    db.write_bytes(b'x')
+    bridge = bridge_for(tmp_path / 'imsg', db)
+    before = bridge.database_identity()
+    real = os.stat(db)
+
+    class Recreated:
+        def __getattr__(self, name):
+            return real.st_birthtime + 1 if name == 'st_birthtime' else getattr(real, name)
+
+    real_stat = os.stat
+    monkeypatch.setattr(bridge_module.os, 'stat',
+                        lambda path, **kw: Recreated() if str(path) == str(db) else real_stat(path, **kw))
+    assert bridge.database_identity() != before
 
 
 def test_database_identity_missing_is_unavailable(tmp_path):

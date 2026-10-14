@@ -345,14 +345,17 @@ class MessagesBridge:
         self._chat_guid = None
 
     def database_identity(self):
-        """Stable file identity (device:inode) of the Messages database. Contents are never read."""
+        """Stable file identity (inode:creation time) of the Messages database. Contents are never read.
+
+        st_dev is left out on purpose: macOS can renumber the same volume after a reboot.
+        """
         try:
             info = os.stat(self.db_path)
         except OSError:
             raise MessagesBridgeError('database_unavailable')
         if not stat.S_ISREG(info.st_mode):
             raise MessagesBridgeError('database_unavailable')
-        return f'{info.st_dev}:{info.st_ino}'
+        return f'{info.st_ino}:{info.st_birthtime!r}'
 
     async def get_chat(self, chat_id):
         self._require_paired(chat_id)

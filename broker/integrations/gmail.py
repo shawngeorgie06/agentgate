@@ -86,7 +86,7 @@ def describe_message(raw: str) -> dict:
         'bcc': message.get_all('Bcc', []),
         'reply_to': message.get_all('Reply-To', []),
         'content_type': message.get_content_type(),
-        'headers': [name.lower() for name in message.keys()],
+        'headers': [[name.lower(), str(value)] for name, value in message.items()],
         'subject': message.get('Subject', ''),
         'date': message.get('Date', ''),
         'parts': parts,

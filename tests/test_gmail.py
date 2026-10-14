@@ -455,4 +455,5 @@ def test_describe_message_exposes_top_level_type_and_header_names():
     raw = base64.urlsafe_b64encode(message.as_bytes()).decode('ascii')
     described = describe_message(raw)
     assert described['content_type'] == 'multipart/mixed'
-    assert {'to', 'mail-followup-to', 'content-type'} <= set(described['headers'])
+    assert ['mail-followup-to', 'other@example.com'] in described['headers']
+    assert {'to', 'content-type'} <= {name for name, _value in described['headers']}

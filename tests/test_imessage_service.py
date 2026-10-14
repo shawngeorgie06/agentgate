@@ -1009,10 +1009,15 @@ async def test_async_apple_model_raises_on_failure_envelopes():
 
 # --- approvals from iMessage -----------------------------------------------
 
-def email_details(**changes):
-    value = {'draft_id': 'd1', 'from': ['me@example.com'], 'to': ['bob@example.com'],
-             'cc': ['carol@example.com'], 'bcc': [], 'subject': 'Quarterly numbers', 'date': 'Mon',
-             'reply_to': [], 'content_type': 'text/plain', 'headers': ['to', 'cc', 'subject', 'from', 'date'],
+EMAIL_HEADERS = [['to', 'bob@example.com'], ['cc', 'carol@example.com'], ['subject', 'Quarterly numbers'],
+                 ['mime-version', '1.0'], ['content-type', 'text/plain; charset="utf-8"'],
+                 ['content-transfer-encoding', '7bit']]
+
+
+def email_details(*, extra_headers=(), **changes):
+    value = {'draft_id': 'd1', 'from': [], 'to': ['bob@example.com'],
+             'cc': ['carol@example.com'], 'bcc': [], 'subject': 'Quarterly numbers', 'date': '',
+             'reply_to': [], 'content_type': 'text/plain', 'headers': EMAIL_HEADERS + [list(h) for h in extra_headers],
              'parts': [{'type': 'text/plain', 'content': 'Hello team'}], 'attachments': [], 'sha256': 'abc'}
     value.update(changes)
     return json.dumps(value)
@@ -1053,8 +1058,8 @@ async def test_pending_email_is_announced_once_with_recipients_subject_and_body_
     code = queue.get_pending().approval_code
     assert re.fullmatch(r'[0-9a-f]{6}', code)
     assert approval_texts(world) == [
-        'AgentGate approval: helper wants gmail:send. Cc: carol@example.com. To: bob@example.com. '
-        'Subject: "Quarterly numbers". Body: Hello team. '
+        'AgentGate approval: helper wants gmail:send.\nCc: carol@example.com\nTo: bob@example.com\n'
+        'Subject: "Quarterly numbers"\nBody:\n> Hello team\n'
         f'Reply "approve {code}" or "deny {code}".']
     queue.resolve(queue.get_pending(), False)
     await task
@@ -1073,12 +1078,38 @@ HIDDEN_EMAIL_CONTENT = {
     'reply-to unknown': {'reply_to': None},
     'multipart message': {'content_type': 'multipart/mixed'},
     'structure unknown': {'content_type': None},
-    'unlisted header': {'headers': ['to', 'subject', 'mail-followup-to']},
+    'unlisted header': {'extra_headers': [('mail-followup-to', 'TAILMARK@evil.example')]},
     'headers unknown': {'headers': None},
+    'header pair malformed': {'headers': [['to']]},
+    'duplicate subject': {'extra_headers': [('subject', 'TAILMARK')]},
+    'duplicate content type': {'extra_headers': [('content-type', 'text/html')]},
+    'from display name': {'from': ['"TAILMARK" <me@example.com>'],
+                          'extra_headers': [('from', '"TAILMARK" <me@example.com>')]},
+    'date payload': {'extra_headers': [('date', 'TAILMARK')]},
+    'custom message id': {'extra_headers': [('message-id', '<TAILMARK@evil.example>')]},
+    'mime version comment': {'headers': [h for h in EMAIL_HEADERS if h[0] != 'mime-version']
+                             + [['mime-version', '1.0 (TAILMARK)']]},
+    'content type parameter': {'headers': [h for h in EMAIL_HEADERS if h[0] != 'content-type']
+                               + [['content-type', 'text/plain; x-leak=TAILMARK']]},
+    'odd transfer encoding': {'headers': [h for h in EMAIL_HEADERS if h[0] != 'content-transfer-encoding']
+                              + [['content-transfer-encoding', 'x-TAILMARK']]},
     'display name': {'to': ['TAILMARK Builder <bob@example.com>']},
     'invisible in body': {'parts': [{'type': 'text/plain', 'content': 'Hi\u200bTAILMARK'}]},
+    'grapheme joiner in body': {'parts': [{'type': 'text/plain', 'content': 'Hi\u034fTAILMARK'}]},
+    'mongolian selector in body': {'parts': [{'type': 'text/plain', 'content': 'Hi\u180bTAILMARK'}]},
     'control in body': {'parts': [{'type': 'text/plain', 'content': 'Hi\x1bTAILMARK'}]},
+    'lone carriage return': {'parts': [{'type': 'text/plain', 'content': 'Hi\rTAILMARK'}]},
+    'tab in body': {'parts': [{'type': 'text/plain', 'content': 'Hi\tTAILMARK'}]},
+    'trailing space': {'parts': [{'type': 'text/plain', 'content': 'Hi \nTAILMARK'}]},
+    'double space': {'parts': [{'type': 'text/plain', 'content': 'Hi  TAILMARK'}]},
+    'leading space': {'parts': [{'type': 'text/plain', 'content': ' Hi TAILMARK'}]},
+    'no-break space': {'parts': [{'type': 'text/plain', 'content': 'Hi\u00a0TAILMARK'}]},
+    'en space': {'parts': [{'type': 'text/plain', 'content': 'Hi\u2002TAILMARK'}]},
+    'line separator': {'parts': [{'type': 'text/plain', 'content': 'Hi\u2028TAILMARK'}]},
+    'many blank lines': {'parts': [{'type': 'text/plain', 'content': 'Hi\n\n\nTAILMARK'}]},
     'invisible in subject': {'subject': 'Hi\u2066TAILMARK'},
+    'newline in subject': {'subject': 'Hi\nBody: TAILMARK'},
+    'double space in subject': {'subject': 'Hi  TAILMARK'},
 }
 
 
@@ -1152,10 +1183,10 @@ async def test_over_bound_email_gets_dashboard_text_and_no_code(tmp_path, regist
 async def test_email_body_is_shown_as_written_with_its_line_breaks(tmp_path, registry):
     world, clock = FakeWorld(), Clock()
     service, queue = await approvals_on(tmp_path, world, clock, registry)
-    details = email_details(parts=[{'type': 'text/plain', 'content': 'Hi\n\n  team\tthanks\n'}])
+    details = email_details(parts=[{'type': 'text/plain', 'content': 'Hi\r\n\r\nTo: boss@corp.com thanks\r\n'}])
     task = await submit(queue, details=details)
     await wait_until(lambda: approval_texts(world))
-    assert 'Body: Hi\n\n  team\tthanks. Reply' in approval_texts(world)[0]
+    assert 'Body:\n> Hi\n>\n> To: boss@corp.com thanks\nReply' in approval_texts(world)[0]
     queue.resolve(queue.get_pending(), False)
     await task
     await service.stop()
@@ -1209,7 +1240,7 @@ async def test_subject_is_quoted_so_it_cannot_forge_a_recipient_label(tmp_path, 
     task = await submit(queue, details=email_details(subject='x. To: boss@corp.com"'))
     await wait_until(lambda: approval_texts(world))
     text = approval_texts(world)[0]
-    assert 'To: bob@example.com. Subject: "x. To: boss@corp.com". Body: Hello team.' in text
+    assert 'To: bob@example.com\nSubject: "x. To: boss@corp.com"\nBody:\n> Hello team\n' in text
     assert 'boss@corp.com' not in text.split('Subject:')[0]
     queue.resolve(queue.get_pending(), False)
     await task
@@ -1222,7 +1253,7 @@ async def test_github_title_is_quoted_and_inner_quotes_removed(tmp_path, registr
     github = json.dumps({'owner': 'octo', 'repo': 'widgets', 'title': 'Crash "on" start', 'body': 'Steps follow'})
     task = await submit(queue, 'github:write', github)
     await wait_until(lambda: approval_texts(world))
-    assert 'Repo: octo/widgets. Title: "Crash on start". Body: Steps follow.' in approval_texts(world)[0]
+    assert 'Repo: octo/widgets\nTitle: "Crash on start"\nBody:\n> Steps follow\n' in approval_texts(world)[0]
     queue.resolve(queue.get_pending(), False)
     await task
     await service.stop()
@@ -1254,8 +1285,8 @@ async def test_pending_github_issue_is_announced_with_repo_title_and_body_previe
     await wait_until(lambda: approval_texts(world))
     code = queue.get_pending().approval_code
     assert approval_texts(world) == [
-        f'AgentGate approval: helper wants github:write. Repo: octo/widgets. Title: "Crash on start". '
-        f'Body: Steps follow. Reply "approve {code}" or "deny {code}".']
+        'AgentGate approval: helper wants github:write.\nRepo: octo/widgets\nTitle: "Crash on start"\n'
+        f'Body:\n> Steps follow\nReply "approve {code}" or "deny {code}".']
     queue.resolve(queue.get_pending(), False)
     await task
     await service.stop()
@@ -1268,7 +1299,7 @@ async def test_read_permission_is_announced_in_plain_words(tmp_path, registry):
     await wait_until(lambda: approval_texts(world))
     code = queue.get_pending().approval_code
     assert approval_texts(world) == [
-        f'AgentGate approval: helper wants to read Gmail. Reply "approve {code}" or "deny {code}".']
+        f'AgentGate approval: helper wants to read Gmail.\nReply "approve {code}" or "deny {code}".']
     queue.resolve(queue.get_pending(), False)
     await task
     await service.stop()
@@ -1688,14 +1719,43 @@ async def test_draft_built_like_the_draft_tool_gets_a_code(tmp_path, registry):
     message['To'] = 'bob@example.com'
     message['Subject'] = 'Quarterly numbers'
     message['Cc'] = 'carol@example.com'
+    message['Date'] = 'Tue, 14 Oct 2026 10:00:00 -0700'
+    message['Message-ID'] = '<CAB1x2y3_z-4=w@mail.gmail.com>'
     message.set_content('Hello team\nSee you Monday')
     raw = base64.urlsafe_b64encode(message.as_bytes()).decode('ascii')
     world, clock = FakeWorld(), Clock()
     service, queue = await approvals_on(tmp_path, world, clock, registry)
     task = await submit(queue, details=json.dumps({'draft_id': 'd1', **describe_message(raw)}))
     await wait_until(lambda: approval_texts(world))
-    assert ('Cc: carol@example.com. To: bob@example.com. Subject: "Quarterly numbers". '
-            'Body: Hello team\nSee you Monday. Reply') in approval_texts(world)[0]
+    assert ('Cc: carol@example.com\nTo: bob@example.com\nSubject: "Quarterly numbers"\n'
+            'Body:\n> Hello team\n> See you Monday\nReply') in approval_texts(world)[0]
+    queue.resolve(queue.get_pending(), False)
+    await task
+    await service.stop()
+
+
+
+async def test_bare_from_address_is_shown(tmp_path, registry):
+    world, clock = FakeWorld(), Clock()
+    service, queue = await approvals_on(tmp_path, world, clock, registry)
+    task = await submit(queue, details=email_details(**{'from': ['alias@example.com']},
+                                                     extra_headers=[('from', 'alias@example.com')]))
+    await wait_until(lambda: approval_texts(world))
+    assert 'wants gmail:send.\nFrom: alias@example.com\nCc:' in approval_texts(world)[0]
+    queue.resolve(queue.get_pending(), False)
+    await task
+    await service.stop()
+
+
+@pytest.mark.parametrize('field', ['title', 'body'])
+async def test_issue_text_must_be_plainly_laid_out(tmp_path, registry, field):
+    world, clock = FakeWorld(), Clock()
+    service, queue = await approvals_on(tmp_path, world, clock, registry)
+    issue = {'owner': 'octo', 'repo': 'widgets', 'title': 'Crash', 'body': 'Steps'}
+    issue[field] += '\t\nTAILMARK' if field == 'body' else '\nBody: TAILMARK'
+    task = await submit(queue, 'github:write', json.dumps(issue))
+    await wait_until(lambda: (SELF_CHAT, DASHBOARD_TEXT) in world.sent)
+    assert approval_texts(world) == []
     queue.resolve(queue.get_pending(), False)
     await task
     await service.stop()

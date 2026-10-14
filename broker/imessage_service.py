@@ -12,33 +12,23 @@ import functools
 import hmac
 import json
 import os
-import re
 import secrets
 import stat
 import tempfile
 import unicodedata
 from collections import deque
-from email.utils import getaddresses
 from pathlib import Path
 
 from broker.apple_model import AppleModel
 from broker.imessage_agent import APPROVAL_REPLY, ReadOnlyMessageAgent
+from broker.imessage_approval_text import announcement
 from broker.imessage_bridge import MessagesBridge, MessagesBridgeError, is_self_chat, verify_helper
 from broker.imessage_state import MessageLedger, MessageLedgerError
 from broker.imessage_style import MIN_MESSAGES, TextingStyle
 
 PAIRING_POLL_SECONDS = 2.0
 APPROVAL_POLL_SECONDS = 2.0
-_PLAIN_GITHUB_NAME = re.compile(r'[A-Za-z0-9_.-]{1,100}')
 APPROVAL_TRACK_LIMIT = 256
-SUMMARY_LIMIT = 300
-# Headers a text-approvable email may carry; any other header could reach the recipient unseen.
-TEXT_EMAIL_HEADERS = frozenset({'from', 'to', 'cc', 'bcc', 'subject', 'date', 'message-id', 'mime-version',
-                                'content-type', 'content-transfer-encoding'})
-_LAYOUT = frozenset('\n\t')
-# Characters that render as nothing but are not in the Cf/Cc categories.
-_BLANK = frozenset('\u115f\u1160\u3164\uffa0\u2800')
-BODY_LIMIT = 200
 PAIRING_TTL = dt.timedelta(minutes=10)
 PAIRING_HISTORY_LIMIT = 10
 CHAT_LIST_LIMIT = 25
@@ -63,9 +53,6 @@ COMMAND_PREFIX = '/agent '
 NO_MATCH_REPLY = 'No pending approval matches that code.'
 APPROVED_REPLY = 'Approved.'
 DENIED_REPLY = 'Denied.'
-EMAIL_SEND = 'gmail:send'
-GITHUB_WRITE = 'github:write'
-READ_PERMISSIONS = {'gmail:read': 'Gmail', 'github:read': 'GitHub'}
 
 ERR_UNAVAILABLE = 'unavailable'
 ERR_NOT_PAIRED = 'not_paired'
@@ -331,163 +318,6 @@ def _clean(text: str) -> str:
             continue
         pieces.append(' ' if category == 'Cc' else character)
     return ' '.join(''.join(pieces).split())
-
-
-def _details(pending):
-    try:
-        value = json.loads(pending.details) if pending.details else None
-    except ValueError:
-        return None
-    return value if isinstance(value, dict) else None
-
-
-def _visible(text: str):
-    """text unchanged when every character shows on the phone, else None.
-
-    Hidden characters would be sent as written while the approver sees nothing, so they block a code.
-    """
-    for character in text:
-        category = unicodedata.category(character)
-        if character in _LAYOUT:
-            continue
-        if (category[0] == 'C' or character in _BLANK or 0xFE00 <= ord(character) <= 0xFE0F
-                or 0xE0100 <= ord(character) <= 0xE01EF):
-            return None
-    return text
-
-
-def _field(details, key):
-    """A string field as written, double quotes dropped so quoting can delimit it.
-
-    '' when absent; None when it is not text or holds characters the phone would not show.
-    """
-    value = details.get(key)
-    if value is None:
-        return ''
-    if not isinstance(value, str) or _visible(value) is None:
-        return None
-    return value.replace('"', '')
-
-
-def _quoted(text: str) -> str:
-    return f'"{text}"' if text else ''
-
-
-def _addresses(details, key):
-    """Bare addresses from header values, so display names never reach the phone.
-
-    None when any entry cannot be shown as one plain address; the caller must not offer a code then.
-    """
-    values = details.get(key)
-    if values is None:
-        return []
-    if not isinstance(values, list):
-        return None
-    addresses = []
-    for value in values:
-        if not isinstance(value, str):
-            return None
-        parsed = getaddresses([value])
-        # Each entry must be exactly a bare address: display names, groups and comments would be sent unseen.
-        if not parsed or [raw for _name, raw in parsed] != [entry.strip() for entry in value.split(',')]:
-            return None
-        for _name, raw in parsed:
-            if (_visible(raw) is None or '@' not in raw
-                    or any(character.isspace() or character in '"<>()' for character in raw)):
-                return None
-            addresses.append(raw)
-    return addresses
-
-
-def _recipient_heads(details):
-    """'Bcc:', 'Cc:', 'To:' lines in that order, or None when recipients cannot be shown exactly."""
-    head = []
-    for label, key in (('Bcc', 'bcc'), ('Cc', 'cc'), ('To', 'to')):
-        addresses = _addresses(details, key)
-        if addresses is None:
-            return None
-        if addresses:
-            head.append(f'{label}: {", ".join(addresses)}')
-    return head or None
-
-
-def _whole_body(details):
-    """The email's only text, as written, when the approval text can show all of it, else None.
-
-    Multipart structure, attachments and unlisted headers would reach the recipient unseen.
-    """
-    headers = details.get('headers')
-    if (details.get('content_type') != 'text/plain' or not isinstance(headers, list)
-            or not all(isinstance(name, str) and name in TEXT_EMAIL_HEADERS for name in headers)
-            or details.get('attachments') != [] or details.get('reply_to') != []):
-        return None
-    parts = details.get('parts')
-    if parts == []:
-        return ''
-    if not isinstance(parts, list) or len(parts) != 1:
-        return None
-    part = parts[0]
-    if not isinstance(part, dict) or part.get('type') != 'text/plain' or not isinstance(part.get('content'), str):
-        return None
-    return _visible(part['content'].rstrip('\n'))
-
-
-def _bounded(head, body):
-    """Recipients and subject must fit SUMMARY_LIMIT and the body BODY_LIMIT. None means too long."""
-    headline = '. '.join(head)
-    if len(headline) > SUMMARY_LIMIT or len(body) > BODY_LIMIT:
-        return None
-    return '. '.join(head + ([f'Body: {body}'] if body else []))
-
-
-def _email_summary(recipients, subject, body):
-    head = list(recipients) + ([f'Subject: {_quoted(subject)}'] if subject else [])
-    return _bounded(head, body)
-
-
-def _github_names_plain(details) -> bool:
-    """Owner and repo are agent-supplied and only loosely validated upstream, so show only plain names."""
-    return all(isinstance(details.get(key), str) and _PLAIN_GITHUB_NAME.fullmatch(details[key])
-               for key in ('owner', 'repo'))
-
-
-def _issue_summary(details, title, body):
-    return _bounded([f'Repo: {details["owner"]}/{details["repo"]}', f'Title: {_quoted(title)}'], body)
-
-
-def _dashboard_text(agent) -> str:
-    return f'AgentGate approval needed from {agent}: open the AgentGate dashboard to review it.'
-
-
-def _coded_text(agent, what, summary, code) -> str:
-    summary_part = f'{summary}. ' if summary else ''
-    return f'AgentGate approval: {agent} wants {what}. {summary_part}Reply "approve {code}" or "deny {code}".'
-
-
-def _announcement(pending) -> tuple[str, bool]:
-    """(text, approvable). Only requests a person can judge from the text get an approval code."""
-    agent = _clean(pending.agent)
-    code = pending.approval_code
-    if pending.credential in READ_PERMISSIONS:
-        return _coded_text(agent, f'to read {READ_PERMISSIONS[pending.credential]}', '', code), True
-    details = _details(pending)
-    if details is None:
-        return _dashboard_text(agent), False
-    if pending.credential == EMAIL_SEND:
-        recipients, subject, body = _recipient_heads(details), _field(details, 'subject'), _whole_body(details)
-        if recipients is None or subject is None or body is None:
-            return _dashboard_text(agent), False
-        summary = _email_summary(recipients, subject, body)
-    elif pending.credential == GITHUB_WRITE and _github_names_plain(details):
-        title, body = _field(details, 'title'), _field(details, 'body')
-        if not title or body is None or not isinstance(details.get('body'), str):
-            return _dashboard_text(agent), False
-        summary = _issue_summary(details, title, details['body'])
-    else:
-        return _dashboard_text(agent), False
-    if summary is None:
-        return f'AgentGate approval needed from {agent}: too long to review by text \u2014 open the AgentGate dashboard.', False
-    return _coded_text(agent, pending.credential, summary, code), True
 
 
 class _RecentIds:
@@ -1036,7 +866,7 @@ class IMessageService:
         if pending is None or pending.agent == 'operator' or pending.request_id in self._attempted_requests:
             return
         self._attempted_requests.add(pending.request_id)
-        text, approvable = _announcement(pending)
+        text, approvable = announcement(pending, _clean(pending.agent))
         try:
             await bridge.send_text(text)
         except MessagesBridgeError as error:

@@ -1,5 +1,6 @@
 import os
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch
 import pytest
@@ -48,7 +49,7 @@ def test_timeout_sanitized(tmp_path):
 
 def test_cli_invalid_password_silent(tmp_path):
     path = tmp_path / 'credentials.json'; CredentialStore(str(path), 'correct').store('test', 'value'); path.chmod(0o600)
-    result = subprocess.run([str(Path('.venv/bin/python').absolute()), '-m', 'broker.mac_keychain', 'validate', '--credentials-path', str(path)], input=b'wrong', capture_output=True)
+    result = subprocess.run([sys.executable, '-m', 'broker.mac_keychain', 'validate', '--credentials-path', str(path)], input=b'wrong', capture_output=True)
     assert result.returncode == 1
     assert result.stdout == result.stderr == b''
 

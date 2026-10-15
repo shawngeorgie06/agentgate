@@ -170,7 +170,7 @@ def _raw_subject(headers):
 
 def _email_body(details):
     """The email's only text as lines, when the approval text can show all of it, else None."""
-    if (details.get('content_type') != 'text/plain'
+    if (details.get('content_type') != 'text/plain' or details.get('strict_encoding') is not True
             or details.get('attachments') != [] or details.get('reply_to') != []):
         return None
     parts = details.get('parts')

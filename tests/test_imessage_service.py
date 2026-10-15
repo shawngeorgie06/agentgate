@@ -1401,6 +1401,20 @@ async def test_approve_and_deny_resolve_the_notified_request(tmp_path, registry,
     await service.stop()
 
 
+@pytest.mark.parametrize('word,expected,reply', [('approve', True, 'Approved.'), ('deny', False, 'Denied.')])
+async def test_agent_prefixed_approval_reply_decides_and_is_not_chat(tmp_path, registry, word, expected, reply):
+    world, clock, model = FakeWorld(), Clock(), FakeModel()
+    service, queue = await approvals_on(tmp_path, world, clock, registry, model=model)
+    task = await submit(queue)
+    await wait_until(lambda: approval_texts(world))
+    code = queue.get_pending().approval_code
+    world.queue.put_nowait(event(clock, 900, f'/agent {word} {code}', guid='p1'))
+    assert await asyncio.wait_for(task, 2) is expected
+    await wait_until(lambda: (SELF_CHAT, reply) in world.sent)
+    assert model.prompts == []
+    await service.stop()
+
+
 async def test_approval_reply_ignores_case_and_surrounding_whitespace(tmp_path, registry):
     world, clock = FakeWorld(), Clock()
     service, queue = await approvals_on(tmp_path, world, clock, registry)

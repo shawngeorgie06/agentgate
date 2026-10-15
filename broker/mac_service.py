@@ -25,7 +25,7 @@ def generate_plist(project_dir, config_dir, helper_path, port=8765):
         'LOGS_PATH': 'audit.log', 'CREDENTIALS_PATH': 'credentials.json',
         'AGENTS_PATH': 'agents.sqlite3', 'GMAIL_CLIENT_PATH': 'oauth-client.json',
     }.items()}
-    env['ESCALATION_TIMEOUT_SECONDS'] = '60'
+    env['ESCALATION_TIMEOUT_SECONDS'] = '300'
     return {
         'Label': LABEL,
         'ProgramArguments': [str(project / '.venv/bin/python'), '-m', 'broker.main', '--app', '--no-open',

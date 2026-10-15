@@ -46,7 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--token-file', default='~/.config/agentgate/mcp-token')
     parser.add_argument('--port', type=int, default=8765)
     parser.add_argument('--agent', help='optional identity assertion; must match the authenticated credential')
-    parser.add_argument('--timeout', type=positive_number, default=90, help='request timeout in seconds; allow time for terminal approval')
+    parser.add_argument('--timeout', type=positive_number, default=330, help='request timeout in seconds; allow time for terminal approval')
     commands = parser.add_subparsers(dest='command', required=True)
     commands.add_parser('status', help='check the running broker')
     search = commands.add_parser('search', help='search Gmail using Gmail query syntax')

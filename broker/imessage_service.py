@@ -292,7 +292,7 @@ def _parse_command(event, chat_id):
     if not text.startswith(COMMAND_PREFIX):
         return None
     request = text[len(COMMAND_PREFIX):].strip()
-    if not request:
+    if not request or APPROVAL_REPLY.fullmatch(request):
         return None
     return message_id, rowid, date, request
 
@@ -303,6 +303,9 @@ def _parse_approval(event, chat_id):
     if parsed is None:
         return None
     message_id, rowid, date, text = parsed
+    # '/agent approve <code>' is a natural slip after pairing with '/agent pair'; it means the same thing.
+    if text.startswith(COMMAND_PREFIX):
+        text = text[len(COMMAND_PREFIX):]
     match = APPROVAL_REPLY.fullmatch(text)
     if match is None:
         return None

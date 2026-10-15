@@ -1009,6 +1009,7 @@ async def test_async_apple_model_raises_on_failure_envelopes():
 
 # --- approvals from iMessage -----------------------------------------------
 
+GMAIL_RECEIVED = 'from 747284055721\tnamed unknown\tby gmailapi.google.com\twith HTTPREST;\tWed, 14 Oct 2026 10:00:01 -0700'
 MIME_HEADERS = [['mime-version', '1.0'], ['content-type', 'text/plain; charset="utf-8"'],
                 ['content-transfer-encoding', '7bit']]
 
@@ -1092,7 +1093,23 @@ HIDDEN_EMAIL_CONTENT = {
     'from display name': {'from': ['"TAILMARK" <me@example.com>'],
                           'extra_headers': [('from', '"TAILMARK" <me@example.com>')]},
     'date payload': {'extra_headers': [('date', 'TAILMARK')]},
+    'address-like from name': {'from': ['bob@bank.example <TAILMARK@evil.example>']},
+    'from name with comma': {'from': ['Doe, TAILMARK <me@example.com>']},
+    'from name with comment': {'from': ['Me (TAILMARK) <me@example.com>']},
+    'from name double space': {'from': ['Me  TAILMARK <me@example.com>']},
+    'non-ascii from name': {'from': ['M\u0435 TAILMARK <me@example.com>']},
+    'two from addresses': {'from': ['Me <me@example.com>, TAILMARK <x@evil.example>']},
+    'two addresses in one from bracket': {'from': ['Me <me@example.com,TAILMARK@evil.example>']},
+    'tab inside from bracket': {'from': ['Me <me@example.com\t>'], 'subject': 'Hi TAILMARK'},
     'custom message id': {'extra_headers': [('message-id', '<TAILMARK@evil.example>')]},
+    'received from elsewhere': {'extra_headers': [('received', 'from TAILMARK.evil.example\tby mx.example.com;'
+                                                               '\tWed, 14 Oct 2026 10:00:01 -0700')]},
+    'received with a comment': {'extra_headers': [('received', 'from 747284055721 (TAILMARK)\tnamed unknown'
+                                                               '\tby gmailapi.google.com\twith HTTPREST;'
+                                                               '\tWed, 14 Oct 2026 10:00:01 -0700')]},
+    'received date payload': {'extra_headers': [('received', 'from 747284055721\tnamed unknown'
+                                                             '\tby gmailapi.google.com\twith HTTPREST;\tTAILMARK')]},
+    'second received': {'extra_headers': [('received', GMAIL_RECEIVED), ('received', GMAIL_RECEIVED)]},
     'mime version comment': {'mime_headers': [['mime-version', '1.0 (TAILMARK)']] + MIME_HEADERS[1:]},
     'content type parameter': {'mime_headers': [MIME_HEADERS[0], ['content-type', 'text/plain; x-leak=TAILMARK'],
                                                 MIME_HEADERS[2]]},
@@ -1398,6 +1415,20 @@ async def test_approve_and_deny_resolve_the_notified_request(tmp_path, registry,
     world.queue.put_nowait(event(clock, 900, f'{word} {code}', guid='r1'))
     assert await asyncio.wait_for(task, 2) is expected
     await wait_until(lambda: (SELF_CHAT, reply) in world.sent)
+    await service.stop()
+
+
+@pytest.mark.parametrize('word,expected,reply', [('approve', True, 'Approved.'), ('deny', False, 'Denied.')])
+async def test_agent_prefixed_approval_reply_decides_and_is_not_chat(tmp_path, registry, word, expected, reply):
+    world, clock, model = FakeWorld(), Clock(), FakeModel()
+    service, queue = await approvals_on(tmp_path, world, clock, registry, model=model)
+    task = await submit(queue)
+    await wait_until(lambda: approval_texts(world))
+    code = queue.get_pending().approval_code
+    world.queue.put_nowait(event(clock, 900, f'/agent {word} {code}', guid='p1'))
+    assert await asyncio.wait_for(task, 2) is expected
+    await wait_until(lambda: (SELF_CHAT, reply) in world.sent)
+    assert model.prompts == []
     await service.stop()
 
 
@@ -1747,6 +1778,41 @@ async def test_draft_built_like_the_draft_tool_gets_a_code(tmp_path, registry):
     await task
     await service.stop()
 
+
+async def test_draft_as_gmail_stores_it_gets_a_code(tmp_path, registry):
+    # Gmail adds its own folded Received trace header to every draft created through the API.
+    import base64
+    from email.message import EmailMessage
+    from broker.integrations.gmail import describe_message
+    message = EmailMessage()
+    message['To'] = 'bob@example.com'
+    message['Subject'] = 'Quarterly numbers'
+    message['Date'] = 'Tue, 14 Oct 2026 10:00:00 -0700'
+    message['Message-ID'] = '<CAB1x2y3_z-4=w@mail.gmail.com>'
+    message.set_content('Hello team')
+    stored = (b'Received: from 747284055721\r\n\tnamed unknown\r\n\tby gmailapi.google.com\r\n'
+              b'\twith HTTPREST;\r\n\tWed, 14 Oct 2026 10:00:01 -0700\r\n' + message.as_bytes())
+    raw = base64.urlsafe_b64encode(stored).decode('ascii')
+    world, clock = FakeWorld(), Clock()
+    service, queue = await approvals_on(tmp_path, world, clock, registry)
+    task = await submit(queue, details=json.dumps({'draft_id': 'd1', **describe_message(raw)}))
+    await wait_until(lambda: approval_texts(world))
+    assert 'To: bob@example.com\nSubject: "Quarterly numbers"\nBody:\n> Hello team\nReply' in approval_texts(world)[0]
+    queue.resolve(queue.get_pending(), False)
+    await task
+    await service.stop()
+
+
+async def test_plain_from_display_name_is_shown_as_written(tmp_path, registry):
+    # Gmail writes the account's display name into From on every draft.
+    world, clock = FakeWorld(), Clock()
+    service, queue = await approvals_on(tmp_path, world, clock, registry)
+    task = await submit(queue, details=email_details(**{'from': ["Jo O'Neil-Smith Jr. <me@example.com>"]}))
+    await wait_until(lambda: approval_texts(world))
+    assert "wants gmail:send.\nFrom: Jo O'Neil-Smith Jr. <me@example.com>\nCc:" in approval_texts(world)[0]
+    queue.resolve(queue.get_pending(), False)
+    await task
+    await service.stop()
 
 
 async def test_bare_from_address_is_shown(tmp_path, registry):

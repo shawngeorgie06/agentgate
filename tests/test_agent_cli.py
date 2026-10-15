@@ -20,7 +20,7 @@ async def test_commands_use_gmail_tools_without_exporting_credentials(tmp_path, 
     addresses = []
     def client(url, **kwargs):
         addresses.append(url)
-        assert kwargs['timeout'] == 90
+        assert kwargs['timeout'] == 330
         return Client(mcp)
     monkeypatch.setattr(agent, 'Client', client)
     prefix = ['--token-file', str(path), '--agent', 'local-agent']
@@ -105,3 +105,10 @@ def test_connection_errors_distinguish_startup_from_uncertain_dispatch(tmp_path,
     assert 'Cannot connect to the broker' in result['reason']
     assert ('notice' in result) is during_dispatch
     assert 'secret-token' not in output
+
+
+def test_default_timeout_outlasts_the_background_service_approval_wait(tmp_path):
+    # A client that gives up first reports failure for a send that may still be approved.
+    from broker.mac_service import generate_plist
+    service_wait = int(generate_plist(tmp_path, tmp_path, tmp_path)['EnvironmentVariables']['ESCALATION_TIMEOUT_SECONDS'])
+    assert agent.build_parser().parse_args(['status']).timeout > service_wait

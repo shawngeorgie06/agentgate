@@ -24,6 +24,12 @@ def test_plist_is_absolute_supervised_and_contains_no_inherited_secret(tmp_path,
     assert 'AGENTGATE_MASTER_PASSWORD' not in result['EnvironmentVariables']
 
 
+def test_plist_gives_approvals_long_enough_to_answer_by_text(tmp_path):
+    # Approving from iMessage means noticing a text and replying; a minute is often too short.
+    result = generate_plist(tmp_path / 'project', tmp_path / 'config', tmp_path / 'helper')
+    assert result['EnvironmentVariables']['ESCALATION_TIMEOUT_SECONDS'] == '300'
+
+
 def test_install_writes_private_files_but_does_not_activate(tmp_path):
     launch_agents = tmp_path / 'LaunchAgents'
     path = install(tmp_path / 'project', tmp_path / 'config', tmp_path / 'helper', launch_agents_dir=launch_agents)

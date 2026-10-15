@@ -476,12 +476,17 @@ def raw_bytes_as_gmail_stores(message_bytes):
     return base64.urlsafe_b64encode(message_bytes).decode('ascii')
 
 
-@pytest.mark.parametrize('kwargs', [{}, {'cte': 'base64'}, {'cte': 'quoted-printable'}])
-def test_describe_message_strict_encoding_true_for_python_encoded_drafts(kwargs):
+@pytest.mark.parametrize('body, kwargs, encoding', [
+    ('Héllo', {}, '8bit'),
+    ('Héllo ' * 40, {'cte': 'base64'}, 'base64'),
+    ('Héllo ' * 40, {'cte': 'quoted-printable'}, 'quoted-printable'),
+])
+def test_describe_message_strict_encoding_true_for_python_encoded_drafts(body, kwargs, encoding):
     message = EmailMessage()
     message['To'] = 'bob@example.com'
     message['Subject'] = 'Hi'
-    message.set_content('Héllo ' * 40 if kwargs else 'Héllo', **kwargs)
+    message.set_content(body, **kwargs)
+    assert message['Content-Transfer-Encoding'] == encoding
     assert describe_message(raw_bytes_as_gmail_stores(message.as_bytes()))['strict_encoding'] is True
 
 
@@ -490,8 +495,26 @@ def test_describe_message_strict_encoding_true_for_ascii_draft():
     message['To'] = 'bob@example.com'
     message['Subject'] = 'Hi'
     message.set_content('Hello team')
+    assert message['Content-Transfer-Encoding'] == '7bit'
     described = describe_message(raw_bytes_as_gmail_stores(message.as_bytes()))
     assert described['strict_encoding'] is True
+
+
+@pytest.mark.parametrize('encoding, body', [('Base64', 'SGVsbG8=\r\n'), ('QUOTED-PRINTABLE', 'a=3D b\r\n')])
+def test_describe_message_strict_encoding_true_for_any_case_of_known_encoding(encoding, body):
+    headers = ('To: bob@example.com\r\nSubject: Hi\r\nMIME-Version: 1.0\r\n'
+               'Content-Type: text/plain; charset="utf-8"\r\n'
+               f'Content-Transfer-Encoding: {encoding}\r\n\r\n')
+    described = describe_message(raw_bytes_as_gmail_stores((headers + body).encode('ascii')))
+    assert described['strict_encoding'] is True
+
+
+def test_describe_message_strict_encoding_false_for_duplicate_transfer_encoding_headers():
+    headers = ('To: bob@example.com\r\nSubject: Hi\r\nMIME-Version: 1.0\r\n'
+               'Content-Type: text/plain; charset="utf-8"\r\n'
+               'Content-Transfer-Encoding: 7bit\r\nContent-Transfer-Encoding: base64\r\n\r\n')
+    described = describe_message(raw_bytes_as_gmail_stores((headers + 'SGVsbG8=\r\n').encode('ascii')))
+    assert described['strict_encoding'] is False
 
 
 @pytest.mark.parametrize('encoding, body', [

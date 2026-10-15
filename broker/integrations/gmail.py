@@ -64,14 +64,18 @@ def decode_raw(raw: str) -> bytes:
         raise GmailError('Gmail returned an invalid message.') from exc
 
 
+# Printable ASCII except '=', plus space and tab; '=' only as an uppercase escape or a final soft break.
 _QP_LINE = re.compile(r'(?:[!-<>-~ \t]|=[0-9A-F]{2})*=?')
 
 
 def _canonical_transfer_encoding(part) -> bool:
-    """True when the raw payload is exactly what the encoder would produce, so decoding cannot hide bytes."""
-    encoding = part.get('Content-Transfer-Encoding')
+    """True when the raw payload decodes unambiguously, with no bytes a decoder would drop or reinterpret."""
+    values = part.get_all('Content-Transfer-Encoding', [])
+    if len(values) > 1:
+        return False
+    encoding = str(values[0]).strip().lower() if values else '7bit'
     payload = part.get_payload(decode=False)
-    if encoding in (None, '7bit', '8bit'):
+    if encoding in ('7bit', '8bit'):
         return True
     if encoding == 'base64':
         stripped = re.sub(r'[ \t\r\n]', '', payload)

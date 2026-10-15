@@ -21,6 +21,10 @@ BODY_LIMIT = 200
 
 _PLAIN_GITHUB_NAME = re.compile(r'[A-Za-z0-9_.-]{1,100}')
 _GMAIL_MESSAGE_ID = re.compile(r'<[A-Za-z0-9+_=.-]{1,200}@mail\.gmail\.com>')
+# Gmail writes the account's display name into From; only plain names are shown as written.
+_PLAIN_FROM = re.compile(r"([A-Za-z0-9][A-Za-z0-9 .'-]{0,62}[A-Za-z0-9.]) <([^<>]+)>")
+# The trace header Gmail adds to every draft created through its API, unfolded.
+_GMAIL_RECEIVED = re.compile(r'from \d{1,30}\tnamed unknown\tby gmailapi\.google\.com\twith HTTPREST;\t(.+)')
 _TEXT_PLAIN = re.compile(r'text/plain(?:;\s*charset="?(?:utf-8|us-ascii)"?)?', re.IGNORECASE)
 _TRANSFER_ENCODINGS = frozenset({'7bit', '8bit', 'quoted-printable', 'base64'})
 _REPEATABLE_HEADERS = frozenset({'to', 'cc', 'bcc'})
@@ -95,11 +99,22 @@ def _addresses(values):
     return addresses
 
 
+def _from_line(values):
+    """One 'Plain Name <address>' From value exactly as written, or None."""
+    if len(values) != 1:
+        return None
+    match = _PLAIN_FROM.fullmatch(values[0])
+    if match is None or '  ' in match.group(1) or _addresses([match.group(2)]) != [match.group(2)]:
+        return None
+    return [values[0]]
+
+
 def _recipient_lines(headers):
     """'From:', 'Bcc:', 'Cc:', 'To:' lines in that order, or None when they cannot be shown exactly."""
     lines = []
     for label, key in (('From', 'from'), ('Bcc', 'bcc'), ('Cc', 'cc'), ('To', 'to')):
-        addresses = _addresses(headers.get(key, []))
+        values = headers.get(key, [])
+        addresses = (key == 'from' and _from_line(values)) or _addresses(values)
         if addresses is None:
             return None
         if addresses:
@@ -116,6 +131,9 @@ def _header_value_ok(name: str, value: str) -> bool:
             return False
     if name == 'message-id':
         return _GMAIL_MESSAGE_ID.fullmatch(value) is not None
+    if name == 'received':
+        match = _GMAIL_RECEIVED.fullmatch(value)
+        return match is not None and _header_value_ok('date', match.group(1))
     if name == 'mime-version':
         return value == '1.0'
     if name == 'content-type':

@@ -223,6 +223,9 @@ async def test_imessage_actions_are_post_only_and_frontend_is_served(tmp_path):
         frontend = await client.get('/app/imessage.js')
         assert frontend.status_code == 200
         assert 'export async function renderIMessage' in frontend.text
+        # Bodies are shown whole or not at all; the hint must not promise a preview.
+        assert 'start of the body' not in frontend.text
+        assert 'shown in full' in frontend.text
         assert "default-src 'self'" in frontend.headers['content-security-policy']
         page = await client.get('/app')
         assert 'data-view="imessage"' in page.text

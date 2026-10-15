@@ -281,7 +281,7 @@ export async function renderIMessage(container, api) {
     approvalToggle.setAttribute('aria-pressed', String(status.approvals === true));
     actions.append(toggle, approvalToggle, unpairOpen);
     card.append(actions);
-    card.append(element('p', 'When on, texts show recipients, the subject and the start of the body. Reply "approve CODE" or "deny CODE". Anything else must be approved in the dashboard.', 'hint'));
+    card.append(element('p', 'When on, a text gets a code only if the request is shown in full. Reply "approve CODE" or "deny CODE". Anything else must be approved in the dashboard.', 'hint'));
 
     // In-page confirmation before unpairing; the trigger hides while it is open.
     const confirm = element('div', undefined, 'imessage-confirm');

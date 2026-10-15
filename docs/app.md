@@ -1,6 +1,6 @@
 # AgentGate local app
 
-The first app runs locally in your browser. It opens on **Agents**, where you can register identities, inspect expiry, and revoke access. Connections shows your Gmail account and GitHub login; Temporary access provides expiring per-agent grants. It also gives you a Gmail inbox, message reading, unsent draft creation and previews, approval buttons, access-mode control, and recent activity. Agents keep using the existing MCP endpoint or JSON commands. The app does not generate AI summaries yet or send iMessage notifications.
+The first app runs locally in your browser. It opens on **Agents**, where you can register identities, inspect expiry, and revoke access. Connections shows your Gmail account and GitHub login; Temporary access provides expiring per-agent grants. It also gives you a Gmail inbox, message reading, unsent draft creation and previews, approval buttons, access-mode control, and recent activity. Agents keep using the existing MCP endpoint or JSON commands. The app does not generate AI summaries yet. For questions and approvals by text, see [iMessage](imessage.md).
 
 ## Setup
 

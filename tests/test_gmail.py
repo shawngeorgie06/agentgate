@@ -470,3 +470,41 @@ def test_describe_message_reports_raw_unfolded_header_values():
     headers = describe_message(raw)['headers']
     assert ['to', 'bob@example.com (hidden)'] in headers
     assert ['subject', 'word ' * 20 + 'end'] in headers
+
+
+def raw_bytes_as_gmail_stores(message_bytes):
+    return base64.urlsafe_b64encode(message_bytes).decode('ascii')
+
+
+@pytest.mark.parametrize('kwargs', [{}, {'cte': 'base64'}, {'cte': 'quoted-printable'}])
+def test_describe_message_strict_encoding_true_for_python_encoded_drafts(kwargs):
+    message = EmailMessage()
+    message['To'] = 'bob@example.com'
+    message['Subject'] = 'Hi'
+    message.set_content('Héllo ' * 40 if kwargs else 'Héllo', **kwargs)
+    assert describe_message(raw_bytes_as_gmail_stores(message.as_bytes()))['strict_encoding'] is True
+
+
+def test_describe_message_strict_encoding_true_for_ascii_draft():
+    message = EmailMessage()
+    message['To'] = 'bob@example.com'
+    message['Subject'] = 'Hi'
+    message.set_content('Hello team')
+    described = describe_message(raw_bytes_as_gmail_stores(message.as_bytes()))
+    assert described['strict_encoding'] is True
+
+
+@pytest.mark.parametrize('encoding, body', [
+    ('base64', 'SGVs*bG8=\r\n'),
+    ('base64', 'SGk=SGVsbG8=\r\n'),
+    ('quoted-printable', 'a =3d b\r\n'),
+    ('quoted-printable', 'a = b\r\n'),
+    ('quoted-printable', 'a \r\n'),
+    ('x-uuencode', 'hello\r\n'),
+])
+def test_describe_message_strict_encoding_false_for_loose_bodies(encoding, body):
+    headers = ('To: bob@example.com\r\nSubject: Hi\r\nMIME-Version: 1.0\r\n'
+               'Content-Type: text/plain; charset="utf-8"\r\n'
+               f'Content-Transfer-Encoding: {encoding}\r\n\r\n')
+    described = describe_message(raw_bytes_as_gmail_stores((headers + body).encode('ascii')))
+    assert described['strict_encoding'] is False

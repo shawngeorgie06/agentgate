@@ -1019,7 +1019,8 @@ def email_details(*, extra_headers=(), mime_headers=MIME_HEADERS, **changes):
     value = {'draft_id': 'd1', 'from': [], 'to': ['bob@example.com'],
              'cc': ['carol@example.com'], 'bcc': [], 'subject': 'Quarterly numbers', 'date': '',
              'reply_to': [], 'content_type': 'text/plain',
-             'parts': [{'type': 'text/plain', 'content': 'Hello team'}], 'attachments': [], 'sha256': 'abc'}
+             'parts': [{'type': 'text/plain', 'content': 'Hello team'}], 'attachments': [], 'sha256': 'abc',
+             'strict_encoding': True}
     value.update(changes)
     if 'headers' not in changes:
         headers = [[key, address] for key in ('from', 'to', 'cc', 'bcc')
@@ -1083,6 +1084,8 @@ HIDDEN_EMAIL_CONTENT = {
     'attachment': {'attachments': [{'filename': 'TAILMARK.pdf', 'type': 'application/pdf'}]},
     'reply-to': {'reply_to': ['TAILMARK@evil.example'], 'extra_headers': [('reply-to', 'TAILMARK@evil.example')]},
     'reply-to unknown': {'reply_to': None},
+    'loose transfer encoding': {'strict_encoding': False, 'subject': 'Hi TAILMARK'},
+    'transfer encoding unchecked': {'strict_encoding': None, 'subject': 'Hi TAILMARK'},
     'multipart message': {'content_type': 'multipart/mixed'},
     'structure unknown': {'content_type': None},
     'unlisted header': {'extra_headers': [('mail-followup-to', 'TAILMARK@evil.example')]},
@@ -1150,7 +1153,7 @@ async def test_email_with_content_the_text_cannot_show_gets_no_code(tmp_path, re
     service, queue = await approvals_on(tmp_path, world, clock, registry)
     changes = dict(HIDDEN_EMAIL_CONTENT[case])
     details = json.loads(email_details(**changes))
-    for key in ('reply_to', 'content_type', 'headers'):
+    for key in ('reply_to', 'content_type', 'headers', 'strict_encoding'):
         if key in changes and changes[key] is None:
             del details[key]
     task = await submit(queue, details=json.dumps(details))

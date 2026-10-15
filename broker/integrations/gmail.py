@@ -64,11 +64,33 @@ def decode_raw(raw: str) -> bytes:
         raise GmailError('Gmail returned an invalid message.') from exc
 
 
+_QP_LINE = re.compile(r'(?:[!-<>-~ \t]|=[0-9A-F]{2})*=?')
+
+
+def _canonical_transfer_encoding(part) -> bool:
+    """True when the raw payload is exactly what the encoder would produce, so decoding cannot hide bytes."""
+    encoding = part.get('Content-Transfer-Encoding')
+    payload = part.get_payload(decode=False)
+    if encoding in (None, '7bit', '8bit'):
+        return True
+    if encoding == 'base64':
+        stripped = re.sub(r'[ \t\r\n]', '', payload)
+        try:
+            return base64.b64encode(base64.b64decode(stripped, validate=True)) == stripped.encode('ascii')
+        except ValueError:
+            return False
+    if encoding == 'quoted-printable':
+        lines = payload.replace('\r\n', '\n').split('\n')
+        return all(_QP_LINE.fullmatch(line) and not line.endswith((' ', '\t')) for line in lines)
+    return False
+
+
 def describe_message(raw: str) -> dict:
     content = decode_raw(raw)
     message = BytesParser(policy=policy.default).parsebytes(content)
     parts = []
     attachments = []
+    strict_encoding = True
     for part in message.walk():
         if part.is_multipart():
             continue
@@ -80,6 +102,7 @@ def describe_message(raw: str) -> dict:
             except (LookupError, UnicodeError):
                 raise GmailError('This message uses an unsupported text encoding.') from None
             parts.append({'type': part.get_content_type(), 'content': text})
+            strict_encoding = strict_encoding and _canonical_transfer_encoding(part)
     return {
         'from': message.get_all('From', []),
         'to': message.get_all('To', []),
@@ -93,6 +116,7 @@ def describe_message(raw: str) -> dict:
         'date': message.get('Date', ''),
         'parts': parts,
         'attachments': attachments,
+        'strict_encoding': strict_encoding,
         'sha256': hashlib.sha256(content).hexdigest(),
     }
 

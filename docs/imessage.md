@@ -94,6 +94,7 @@ A code is offered only when the text shows everything the request would send. Ag
   - a From name with anything beyond ASCII letters, digits, spaces, and `.`, `'`, or `-`
   - subjects written as encoded words (`=?...?=`)
   - a charset other than UTF-8 or US-ASCII
+  - a base64 or quoted-printable body that does not decode exactly one way
   - invisible, control, or right-to-left characters, and long bodies
 - **GitHub issue creation** gets a code only when the owner and repository are plain names and the title and body can be shown as written.
 - **Everything else** gets `AgentGate approval needed from AGENT: open the AgentGate dashboard to review it.` with no code.

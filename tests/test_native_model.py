@@ -45,7 +45,9 @@ def test_incomplete_body_cannot_get_a_guessed_reply_recommendation(local_model, 
     assert result.get('ok')
     text = result['data']['text']
     assert text.startswith('Checked 1 requested email.')
-    assert 'Taylor Nguyen: Interview availability' in text
+    assert 'Taylor Nguyen:' in text
+    if not body:
+        assert 'Interview availability' in text
     assert limitation in text
     assert "can't determine whether a reply is needed" in text
     assert 'No reply' not in text and 'lol' not in text

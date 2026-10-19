@@ -88,9 +88,8 @@ struct AgentGateModel {
         for email in review.messages {
             let sender = line(email.sender.isEmpty ? "Unknown sender" : email.sender, limit: 60)
             let subject = line(email.subject.isEmpty ? "No subject" : email.subject, limit: 120)
-            if !email.complete || email.body.isEmpty {
-                let missing = email.body.isEmpty ? "Body unavailable" : "Body truncated"
-                lines.append("- \(sender): \(subject)\n  \(missing); I can't determine whether a reply is needed.")
+            if email.body.isEmpty {
+                lines.append("- \(sender): \(subject)\n  Body unavailable; I can't determine whether a reply is needed.")
                 continue
             }
             let session = LanguageModelSession(model: model, instructions: """
@@ -99,10 +98,15 @@ struct AgentGateModel {
             Use normal capitalization, clear complete thoughts, and concrete details. Never copy the user's slang or texting shorthand.
             Classify whether a personal reply is requested. Distinguish replying from optional event registration or following a link.
             Explain the classification using evidence from the message. Do not invent details or claim any action was taken.
+            If the supplied body is an excerpt, summarize only the text provided, without guessing what comes later.
             """)
             let input = "Sender: \(email.sender)\nSubject: \(email.subject)\nDate: \(email.date)\nBody:\n\(email.body)"
             let assessment = try await session.respond(to: input, generating: EmailAssessment.self).content
             let summary = line(assessment.summary, limit: 150)
+            if !email.complete {
+                lines.append("- \(sender): \(summary)\n  Body truncated; I can't determine whether a reply is needed.")
+                continue
+            }
             let reason = line(assessment.reason, limit: 120)
             let label: String
             switch assessment.replyNeed {

@@ -128,14 +128,54 @@ struct AgentGateModel {
         request.range(of: #"\b(no need to|(?:do not|don['’]t) (?:send|reply|respond|submit|complete|provide|confirm)|not required to|need not|no longer need to)\b"#,
                       options: [.regularExpression, .caseInsensitive]) != nil
     }
-    static func requestEvidence(_ quote: String?, body: String) -> RequestEvidence {
-        let words = evidenceWords(quote ?? "")
-        guard !words.isEmpty && (" " + evidenceWords(body) + " ").contains(" " + words + " ") else {
-            return .unverified
+    static func sourceQuote(_ quote: String?, body: String) -> String? {
+        let needle = evidenceWords(quote ?? "").split(separator: " ").map(String.init)
+        guard !needle.isEmpty else { return nil }
+        let scalars = body.unicodeScalars
+        var tokens: [(word: String, range: Range<String.Index>)] = []
+        var start: String.Index?
+        func appendWord(endingAt end: String.Index) {
+            guard let begin = start else { return }
+            for word in evidenceWords(String(scalars[begin..<end])).split(separator: " ") {
+                tokens.append((String(word), begin..<end))
+            }
         }
+        for index in scalars.indices {
+            if CharacterSet.alphanumerics.contains(scalars[index]) {
+                if start == nil { start = index }
+            } else {
+                appendWord(endingAt: index)
+                start = nil
+            }
+        }
+        appendWord(endingAt: scalars.endIndex)
+        guard tokens.count >= needle.count else { return nil }
+        for offset in 0...(tokens.count - needle.count) {
+            guard zip(tokens[offset..<(offset + needle.count)], needle).allSatisfy({ $0.0.word == $0.1 }) else { continue }
+            var begin = tokens[offset].range.lowerBound
+            var end = tokens[offset + needle.count - 1].range.upperBound
+            // Preserve adjacent currency signs, quotes, and sentence punctuation from the source.
+            while begin > scalars.startIndex {
+                let previous = scalars.index(before: begin)
+                guard !CharacterSet.alphanumerics.contains(scalars[previous]),
+                      !CharacterSet.whitespacesAndNewlines.contains(scalars[previous]) else { break }
+                begin = previous
+            }
+            while end < scalars.endIndex,
+                  !CharacterSet.alphanumerics.contains(scalars[end]),
+                  !CharacterSet.whitespacesAndNewlines.contains(scalars[end]) {
+                end = scalars.index(after: end)
+            }
+            return String(scalars[begin..<end])
+        }
+        return nil
+    }
+    static func requestEvidence(_ quote: String?, body: String) -> RequestEvidence {
+        guard let original = sourceQuote(quote, body: body) else { return .unverified }
+        let words = evidenceWords(original)
         var foundPositive = false
         var foundNegation = false
-        let quoteIncludesNegation = negatedRequest(quote ?? "")
+        let quoteIncludesNegation = negatedRequest(original)
         body.enumerateSubstrings(in: body.startIndex..., options: .bySentences) { sentence, _, _, _ in
             guard let sentence else { return }
             // Contrast clauses can ask for one step while explicitly declining another.
@@ -152,7 +192,7 @@ struct AgentGateModel {
             }
         }
         if foundNegation && (quoteIncludesNegation || !foundPositive) { return .negated }
-        if foundPositive { return .verified((quote ?? "").trimmingCharacters(in: .whitespacesAndNewlines)) }
+        if foundPositive { return .verified(original) }
         return .unverified
     }
     static func noticePrefix(_ email: EmailInput, summary: String) -> String {

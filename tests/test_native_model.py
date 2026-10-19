@@ -191,6 +191,13 @@ def test_rendering_keeps_other_emails_after_failure_and_handles_empty_fields(tmp
             assert(!notificationText.contains("Reply needed"))
             assert(notificationText.components(separatedBy: "Only excerpts reviewed").count == 2)
             assert(notificationText.unicodeScalars.count <= 1200)
+            let unverifiedNotification = await AgentGateModel.emailReply(
+                EmailReview(kind: "email_review", scope: wideReview.scope, messages: notifications),
+                prompt: "Which need a reply?") { _, _ in
+                    EmailAssessment(summary: "Review posted with no actionable comments.", followUp: .task,
+                                    reason: "Work may be needed.")
+                }
+            assert(!unverifiedNotification.contains("Task mentioned") && !unverifiedNotification.contains("Possible task"))
             let partialWide = wideMessages.map { email in
                 EmailInput(sender: email.sender, subject: email.subject, date: "", body: email.body, complete: false)
             }
@@ -252,7 +259,7 @@ def test_zero_comment_review_notice_does_not_invent_work(local_model):
     result = local_model.answer('Which emails need a reply?', context)
     assert result.get('ok')
     text = result['data']['text'].lower()
-    assert 'task mentioned' not in text and 'reply requested' not in text
+    assert 'task mentioned' not in text and 'possible task' not in text and 'reply requested' not in text
     assert '14' in text
     assert 'comments' in text
     assert 'chill' not in text and 'run id' not in text and 'configuration' not in text

@@ -169,7 +169,8 @@ struct AgentGateModel {
             let body = evidenceWords(email.body)
             let supported = !quote.isEmpty && (" " + body + " ").contains(" " + quote + " ")
             let unsupportedRequest = (assessment.followUp == .reply || assessment.followUp == .task) && !supported
-            let classified = assessment.followUp
+            let classified: FollowUp = unsupportedRequest && email.source == "github"
+                ? .unclear : assessment.followUp
             let need: FollowUp = email.source == "github" && classified == .reply ? .task : classified
             let generatedReason = unsupportedRequest ? "I couldn't verify the suggested follow-up against the body."
                 : explanation(assessment.reason, limit: email.complete ? 120 : 90, need: need)

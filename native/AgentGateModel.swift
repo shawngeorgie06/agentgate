@@ -181,7 +181,6 @@ struct AgentGateModel {
         guard let original = sourceQuote(quote, body: body) else { return .unverified }
         var foundPositive = false
         var foundNegation = false
-        let quoteIncludesNegation = negatedRequest(original.text)
         body.enumerateSubstrings(in: body.startIndex..., options: .bySentences) { _, sentence, _, _ in
             guard sentence.overlaps(original.range) else { return }
             // Evaluate only clauses at this occurrence, never a similar phrase elsewhere in the email.
@@ -199,7 +198,7 @@ struct AgentGateModel {
                 else { foundPositive = true }
             }
         }
-        if foundNegation && (quoteIncludesNegation || !foundPositive) { return .negated }
+        if foundNegation { return .negated }
         if foundPositive { return .verified(original.text) }
         return .unverified
     }

@@ -229,6 +229,15 @@ def test_rendering_keeps_other_emails_after_failure_and_handles_empty_fields(tmp
                 assessment("Deck instructions.", purpose: .personalRequest, quote: "send the deck"))
             assert(!firstOccurrence.contains("Requested:") && firstOccurrence.contains("Follow-up unclear"), firstOccurrence)
             assert(AgentGateModel.sourceQuote("invented words", body: "Please reply.") == nil)
+            for (body, quote) in [
+                ("Don't send the deck, please.", "send the deck, please"),
+                ("Don't send the deck. Thanks.", "send the deck. Thanks"),
+                ("Don't send the deck; thanks!", "send the deck; thanks")
+            ] {
+                let extendedNegative = await report(EmailInput(sender: "Sender", subject: "Deck", date: "", body: body, complete: true),
+                    assessment("Deck instructions.", purpose: .personalRequest, quote: quote))
+                assert(!extendedNegative.contains("Requested:") && extendedNegative.contains("Follow-up unclear"), extendedNegative)
+            }
             for purpose: EmailPurpose in [.information, .unclear] {
                 let body = "Can you send me the deck by Friday?"
                 let possible = await report(EmailInput(sender: "Priya", subject: "Deck", date: "", body: body, complete: true),

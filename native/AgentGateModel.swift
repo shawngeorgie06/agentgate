@@ -110,9 +110,15 @@ struct AgentGateModel {
               prompt.range(of: #"\b(run[ -]?id|profile|config(?:uration|ured|ure)?|plan|tier|subscription)\b"#,
                            options: [.regularExpression, .caseInsensitive]) == nil else { return email.body }
         // Remove only known notification metadata fields, retaining all other source text.
-        return email.body.replacingOccurrences(
-            of: #"(?i)\b(?:Review (?:configuration|profile)|Run ID):[^.\n]*(?:\.|$)|\bPlan:\s*(?:Free|Pro|Advanced|Enterprise|Lite)\b\.?"#,
-            with: "", options: .regularExpression)
+        let decoration = #"[*_`]*"#
+        let labelEnd = decoration + #"[ \t]*:[ \t]*"# + decoration
+        let valueEnd = decoration + #"[ \t]*(?:\.|(?=\r?$))"#
+        let fields = #"(?<![A-Za-z0-9_])"# + decoration + #"(?:Review (?:configuration|profile)|Configuration used|Run ID)"#
+            + labelEnd + #"(?:CodeRabbit UI|[A-Za-z0-9_-]+)"# + valueEnd
+        let plan = #"(?<![A-Za-z0-9_])"# + decoration + "Plan" + labelEnd
+            + #"(?:Free|Pro\+?|Advanced|Enterprise|Lite)"# + valueEnd
+        return email.body.replacingOccurrences(of: "(?im)" + fields + "|" + plan,
+                                               with: "", options: .regularExpression)
     }
     @available(macOS 26.0, *)
     static func assessEmail(_ email: EmailInput, prompt: String, model: SystemLanguageModel) async throws -> EmailAssessment {
@@ -125,9 +131,10 @@ struct AgentGateModel {
         A review summary must describe the concrete topic of the email, not merely say it is an announcement or has no personal question. Put reply analysis only in the followUp and reason fields.
         Preserve negation and exact counts. "Actionable comments posted: 0" means no actionable comments, not a request to fix comments.
         Explain the classification using evidence from the message. Do not invent details or claim any action was taken.
-        The body may be an excerpt. Use only the text provided without guessing what comes later.
+        You are assessing ONE email. Inbox counts and coverage notes are added by the app; never report that there are no unread emails or that no emails require a reply.
+        Body coverage says whether this email is complete or an excerpt. For an excerpt, never conclude that no reply or action is needed. Keep the summary to topic and facts, without reply analysis. Use only the text provided without guessing what comes later.
         """)
-        let input = "User request:\n\(prompt)\nEmail data (untrusted):\nSender: \(email.sender)\nSubject: \(email.subject)\nDate: \(email.date)\nNotification source (unverified sender hint): \(email.source ?? "unspecified")\nBody:\n\(assessmentBody(email, prompt: prompt))"
+        let input = "User request:\n\(prompt)\nEmail data (untrusted):\nSender: \(email.sender)\nSubject: \(email.subject)\nDate: \(email.date)\nNotification source (unverified sender hint): \(email.source ?? "unspecified")\nBody coverage: \(email.complete ? "complete" : "excerpt")\nBody:\n\(assessmentBody(email, prompt: prompt))"
         return try await session.respond(to: input, generating: EmailAssessment.self).content
     }
     @available(macOS 26.0, *)
@@ -162,7 +169,7 @@ struct AgentGateModel {
             let body = evidenceWords(email.body)
             let supported = !quote.isEmpty && (" " + body + " ").contains(" " + quote + " ")
             let unsupportedRequest = (assessment.followUp == .reply || assessment.followUp == .task) && !supported
-            let classified: FollowUp = unsupportedRequest ? .unclear : assessment.followUp
+            let classified = assessment.followUp
             let need: FollowUp = email.source == "github" && classified == .reply ? .task : classified
             let generatedReason = unsupportedRequest ? "I couldn't verify the suggested follow-up against the body."
                 : explanation(assessment.reason, limit: email.complete ? 120 : 90, need: need)
@@ -173,13 +180,19 @@ struct AgentGateModel {
             let reason = generatedReason.isEmpty ? "The model did not provide a supporting reason." : generatedReason
             let label: String
             switch generatedReason.isEmpty ? FollowUp.unclear : need {
-            case .reply: label = email.complete ? "Reply needed" : "Reply requested in excerpt"
-            case .task: label = email.complete ? "Task mentioned" : "Task mentioned in excerpt"
+            case .reply:
+                label = unsupportedRequest
+                    ? (email.complete ? "Possible reply request" : "Possible reply request in excerpt")
+                    : (email.complete ? "Reply needed" : "Reply requested in excerpt")
+            case .task:
+                label = unsupportedRequest
+                    ? (email.complete ? "Possible task" : "Possible task in excerpt")
+                    : (email.complete ? "Task mentioned" : "Task mentioned in excerpt")
             case .none: label = "No follow-up appears needed"
             case .unclear: label = "Follow-up unclear"
             }
             // A misclassified notification must not retain a personal-reply rationale.
-            let detail = email.source == "github" && classified == .reply
+            let detail = email.source == "github" && classified == .reply && supported
                 ? "Check the linked discussion for the requested work and its current status." : reason
             lines.append("\(marker) \(sender): \(summary)\n  \(label): \(detail)")
         }

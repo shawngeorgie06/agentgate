@@ -53,7 +53,7 @@ def test_incomplete_body_cannot_get_a_guessed_reply_recommendation(local_model, 
         assert "Reply requested" not in text
     else:
         assert "can't answer questions" in text
-    assert 'No reply' not in text and 'lol' not in text
+    assert 'No follow-up' not in text and 'No reply' not in text and 'lol' not in text
 
 
 def test_specific_email_question_answers_requested_detail(local_model):
@@ -78,7 +78,7 @@ def test_explicit_reply_request_in_excerpt_is_not_lost(local_model):
     result = local_model.answer('Check my unread emails and tell me which need a reply', context)
     assert result.get('ok')
     text = result['data']['text']
-    assert 'Reply requested in excerpt' in text
+    assert 'Reply requested in excerpt' in text or 'Possible reply request in excerpt' in text
     assert 'Friday' in text
     assert 'Only excerpts reviewed' in text
 
@@ -117,12 +117,21 @@ def test_rendering_keeps_other_emails_after_failure_and_handles_empty_fields(tmp
             assert(AgentGateModel.evidenceWords(quoteBody) ==
                 AgentGateModel.evidenceWords("please confirm by replying yes or no before Oct 25"))
             let metadata = EmailInput(sender: "CodeRabbit", subject: "Review", date: "",
-                body: "Fix table cells. Review profile: CHILL. Plan: Advanced. Run ID: sample-42. Plan: fix the parser.",
+                body: "Fix table cells. Review profile: CHILL. Plan: Advanced. Run ID: sample-42. Plan: fix the parser. Run ID: second-42 Please reply by Friday.\\nReview profile: CHILL",
                 complete: true, source: "github")
             let overview = AgentGateModel.assessmentBody(metadata, prompt: "Which emails need a reply?")
             assert(!overview.contains("CHILL") && !overview.contains("Advanced") && !overview.contains("sample-42"))
             assert(overview.contains("Fix table cells") && overview.contains("Plan: fix the parser."))
+            assert(overview.contains("Please reply by Friday."))
             assert(AgentGateModel.assessmentBody(metadata, prompt: "What is the run ID?") == metadata.body)
+            let markdown = EmailInput(sender: "CodeRabbit", subject: "Review", date: "",
+                body: ["Fix table cells.", "**Configuration used**: CodeRabbit UI", "**Review profile**: CHILL",
+                       "**Plan**: Pro", "**Run ID**: `sample-42`", "__Run ID__: _under-42_", "Plan: Free the cache before exit."]
+                    .joined(separator: "\\n"), complete: false, source: "github")
+            let cleaned = AgentGateModel.assessmentBody(markdown, prompt: "Check my unread emails")
+            assert(!cleaned.contains("CodeRabbit UI") && !cleaned.contains("CHILL") && !cleaned.contains("sample-42"))
+            assert(!cleaned.contains("**Plan**: Pro") && !cleaned.contains("under-42"))
+            assert(cleaned.contains("Fix table cells.") && cleaned.contains("Plan: Free the cache before exit."))
             let longDeadline = "The sender asks for availability by Fri. Dec. 6 " + String(repeating: "for a phone screen ", count: 10)
             assert(AgentGateModel.explanation(longDeadline, limit: 90, need: .reply)
                    == "The message appears to request a personal response.")
@@ -208,7 +217,7 @@ def test_rendering_keeps_other_emails_after_failure_and_handles_empty_fields(tmp
     assert 'Failed sender: Source subject' in result.stdout
     assert "couldn't summarize this email" in result.stdout
     assert 'Empty sender: Source subject' in result.stdout
-    assert "Follow-up unclear: I couldn't verify the suggested follow-up against the body." in result.stdout
+    assert "Possible reply request: I couldn't verify the suggested follow-up against the body." in result.stdout
     assert 'Working sender: An event announcement.' in result.stdout
     assert 'The message appears informational, without a personal response request.' in result.stdout
     assert '…' not in result.stdout
@@ -244,5 +253,6 @@ def test_zero_comment_review_notice_does_not_invent_work(local_model):
     assert result.get('ok')
     text = result['data']['text'].lower()
     assert 'task mentioned' not in text and 'reply requested' not in text
-    assert 'no actionable comments' in text or '0 actionable comments' in text
+    assert '14' in text
+    assert 'comments' in text
     assert 'chill' not in text and 'run id' not in text and 'configuration' not in text

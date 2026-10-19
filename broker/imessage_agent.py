@@ -5,6 +5,7 @@ import re
 import json
 import unicodedata
 from html.parser import HTMLParser
+from email.utils import getaddresses
 
 PROMPT_LIMIT = 2000
 HISTORY_LIMIT = 2000
@@ -197,7 +198,11 @@ def _message_data(data):
                    if unicodedata.category(character) != 'Cf' and character != '\u034f')
     lines = [' '.join(_CONTROL.sub(' ', line).split()) for line in body.splitlines()]
     body = '\n'.join(line for line in lines if line)
-    return {'sender': _CONTROL.sub(' ', _text(data.get('from'), 200)).strip(),
+    raw_sender = _CONTROL.sub(' ', _text(data.get('from'), 200)).strip()
+    addresses = getaddresses([raw_sender])
+    sender = (', '.join(name or address for name, address in addresses) or raw_sender) if '@' in raw_sender else raw_sender
+    source = 'github' if len(addresses) == 1 and addresses[0][1].lower() == 'notifications@github.com' else None
+    return {'sender': sender, 'source': source,
             'date': _CONTROL.sub(' ', _text(data.get('date'), 100)).strip(),
             'subject': _CONTROL.sub(' ', _text(data.get('subject'), 200)).strip(), 'body': body[:BODY_LIMIT],
             'complete': bool(body) and len(body) <= BODY_LIMIT and not source_truncated}

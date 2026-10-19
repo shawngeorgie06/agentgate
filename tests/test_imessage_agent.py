@@ -227,3 +227,16 @@ async def test_email_context_budget_preserves_json_and_marks_clipped_bodies():
     context = json.loads(model.contexts[0])
     assert len(context['messages']) == 3
     assert any(not message['complete'] for message in context['messages'])
+
+
+def test_notification_source_and_display_name_are_preserved_without_address_clutter():
+    message = _message_data({'from': ['"coderabbitai[bot]" <notifications@github.com>'],
+                             'subject': 'Review of PR #14', 'text': 'Fix review comments.'})
+    assert message['sender'] == 'coderabbitai[bot]'
+    assert message['source'] == 'github'
+    personal = _message_data({'from': ['Taylor Nguyen <taylor@example.com>'], 'text': 'Please reply.'})
+    assert personal['sender'] == 'Taylor Nguyen'
+    assert personal['source'] is None
+    bare = _message_data({'from': ['taylor@example.com'], 'text': 'Hello'})
+    assert bare['sender'] == 'taylor@example.com'
+    assert _message_data({'from': ['Taylor Nguyen']})['sender'] == 'Taylor Nguyen'

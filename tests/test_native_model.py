@@ -35,7 +35,7 @@ def local_model(tmp_path_factory):
     return model
 
 
-@pytest.mark.parametrize('body,limitation', [('', 'Body unavailable'), ('An announcement...', 'Body truncated')])
+@pytest.mark.parametrize('body,limitation', [('', 'Body unavailable'), ('An announcement...', 'Only excerpts reviewed')])
 def test_incomplete_body_cannot_get_a_guessed_reply_recommendation(local_model, body, limitation):
     context = json.dumps({'kind': 'email_review', 'scope': 'Checked 1 requested email.', 'messages': [
         {'sender': 'Taylor Nguyen', 'subject': 'Interview availability', 'date': '',
@@ -50,7 +50,7 @@ def test_incomplete_body_cannot_get_a_guessed_reply_recommendation(local_model, 
         assert 'Interview availability' in text
     assert limitation in text
     if body:
-        assert "can't determine whether a reply is needed" in text
+        assert "Reply requested" not in text
     else:
         assert "can't answer questions" in text
     assert 'No reply' not in text and 'lol' not in text
@@ -80,7 +80,7 @@ def test_explicit_reply_request_in_excerpt_is_not_lost(local_model):
     text = result['data']['text']
     assert 'Reply requested in excerpt' in text
     assert 'Friday' in text
-    assert 'Rest not reviewed' in text
+    assert 'Only excerpts reviewed' in text
 
 
 def test_rendering_keeps_other_emails_after_failure_and_handles_empty_fields(tmp_path):
@@ -114,7 +114,7 @@ def test_rendering_keeps_other_emails_after_failure_and_handles_empty_fields(tmp
                 assert(AgentGateModel.wantsReplyAssessment(question) == expected, question)
             }
             let longDeadline = "The sender asks for availability by Fri. Dec. 6 " + String(repeating: "for a phone screen ", count: 10)
-            assert(AgentGateModel.explanation(longDeadline, limit: 90, need: .needed)
+            assert(AgentGateModel.explanation(longDeadline, limit: 90, need: .reply)
                    == "The message appears to request a personal response.")
             let messages = ["Failed sender", "Empty sender", "Working sender"].map {
                 EmailInput(sender: $0, subject: "Source subject", date: "", body: "Message text", complete: true)
@@ -123,10 +123,10 @@ def test_rendering_keeps_other_emails_after_failure_and_handles_empty_fields(tmp
             let text = await AgentGateModel.emailReply(review, prompt: "Review these emails") { email, prompt in
                 if email.sender == "Failed sender" { throw NSError(domain: "sample-only", code: 1) }
                 if email.sender == "Empty sender" {
-                    return EmailAssessment(summary: "", replyNeed: .needed, reason: "")
+                    return EmailAssessment(summary: "", followUp: .reply, reason: "")
                 }
                 return EmailAssessment(summary: "An event announcement.",
-                                       replyNeed: .notNeeded, reason: String(repeating: "An informational message ", count: 20))
+                                       followUp: .none, reason: String(repeating: "An informational message ", count: 20))
             }
             print(text)
             let wideMessages = (0..<3).map { _ in
@@ -136,11 +136,37 @@ def test_rendering_keeps_other_emails_after_failure_and_handles_empty_fields(tmp
             let wideReview = EmailReview(kind: "email_review",
                 scope: "Checked 3 matching messages from the first search page, not the entire inbox.", messages: wideMessages)
             let wideText = await AgentGateModel.emailReply(wideReview, prompt: "Which need a reply?") { _, _ in
-                EmailAssessment(summary: String(repeating: "U", count: 150), replyNeed: .notNeeded,
-                                reason: String(repeating: "V", count: 120))
+                EmailAssessment(summary: String(repeating: "U", count: 150), followUp: .none,
+                                reason: String(repeating: "V", count: 90))
             }
             assert(wideText.unicodeScalars.count <= 1200, "Three-email review exceeded the output budget")
-            assert(wideText.components(separatedBy: "No reply appears needed").count == 4)
+            assert(wideText.components(separatedBy: "No follow-up appears needed").count == 4)
+            let notifications = (0..<3).map { _ in
+                EmailInput(sender: "CodeRabbit", subject: "Review of PR #14", date: "",
+                           body: "Fix review comments", complete: false, source: "github")
+            }
+            let notificationText = await AgentGateModel.emailReply(
+                EmailReview(kind: "email_review", scope: wideReview.scope, messages: notifications),
+                prompt: "Which need a reply?") { _, _ in
+                    EmailAssessment(summary: "Fix review comments on PR #14.", followUp: .reply,
+                                    reason: "The sender requests a personal response.", requestQuote: "Fix review comments")
+                }
+            assert(notificationText.components(separatedBy: "Task mentioned in excerpt").count == 4)
+            assert(!notificationText.contains("personal response"))
+            assert(!notificationText.contains("Reply needed"))
+            assert(notificationText.components(separatedBy: "Only excerpts reviewed").count == 2)
+            assert(notificationText.unicodeScalars.count <= 1200)
+            let partialWide = wideMessages.map { email in
+                EmailInput(sender: email.sender, subject: email.subject, date: "", body: email.body, complete: false)
+            }
+            let partialText = await AgentGateModel.emailReply(
+                EmailReview(kind: "email_review", scope: wideReview.scope, messages: partialWide),
+                prompt: "Which need a reply?") { _, _ in
+                    EmailAssessment(summary: String(repeating: "U", count: 150), followUp: .task,
+                                    reason: String(repeating: "V", count: 90), requestQuote: "Message text")
+                }
+            assert(partialText.unicodeScalars.count <= 1200, "Partial review exceeded output budget")
+
         }
     }
 }
@@ -156,7 +182,26 @@ def test_rendering_keeps_other_emails_after_failure_and_handles_empty_fields(tmp
     assert 'Failed sender: Source subject' in result.stdout
     assert "couldn't summarize this email" in result.stdout
     assert 'Empty sender: Source subject' in result.stdout
-    assert 'Reply need unclear: The model did not provide a supporting reason.' in result.stdout
+    assert 'Follow-up unclear: No matching request was found in the supplied body.' in result.stdout
     assert 'Working sender: An event announcement.' in result.stdout
     assert 'The message appears informational, without a personal response request.' in result.stdout
     assert '…' not in result.stdout
+
+
+def test_github_notification_reports_task_and_preserves_targeted_metadata(local_model):
+    context = json.dumps({'kind': 'email_review', 'scope': 'Checked 1 requested email.', 'messages': [
+        {'sender': 'coderabbitai[bot]', 'source': 'github', 'subject': 'Review of PR #14',
+         'date': '', 'complete': False,
+         'body': 'Fix CodeRabbit comments on PR #14: separate HTML table cells. '
+                 'Review profile: CHILL. Plan: Advanced. Run ID: synthetic-run-42. '},
+    ]})
+    result = local_model.answer('Which emails need a reply?', context)
+    assert result.get('ok')
+    text = result['data']['text']
+    assert 'Task mentioned' in text
+    assert 'Reply needed' not in text and 'Reply requested' not in text
+    assert 'CHILL' not in text and 'Run ID' not in text and 'Advanced' not in text
+    assert '14' in text and 'table' in text.lower()
+    detail = local_model.answer('What run ID does the review notification give?', context)
+    assert detail.get('ok')
+    assert 'synthetic-run-42' in detail['data']['text']

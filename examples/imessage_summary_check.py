@@ -46,6 +46,19 @@ async def main(helper):
     model = AsyncAppleModel(AppleModel(helper))
     style = 'very short texts (about 4 words); writes in all lowercase; rarely ends with a period; often says lol, u'
     cases = [
+        ('GitHub tasks, review notice, and event excerpts', [
+            {'from': ['"coderabbitai[bot]" <notifications@github.com>'],
+             'subject': 'Fix CodeRabbit comments on PR #14',
+             'text': 'Fix CodeRabbit comments on this PR: separate HTML table cells and guard the renderer output budget. '
+                     + 'Review configuration: CHILL. Plan: Advanced. Run ID: synthetic-run. ' * 30},
+            {'from': ['"coderabbitai[bot]" <notifications@github.com>'],
+             'subject': 'Review of PR #14 for sample/project',
+             'text': 'CodeRabbit reviewed PR #14. Actionable comments posted: 0. '
+                     + 'Review configuration: CHILL. Plan: Advanced. Run ID: synthetic-run. ' * 30},
+            {'from': ['Metro Stadium <news@example.com>'], 'subject': 'Bon Jovi concert announcement',
+             'text': 'Bon Jovi plays Metro Stadium on July 15, 2027. Presale starts October 28. '
+                     + 'Optional ticket registration. This is an event announcement. ' * 30},
+        ]),
         ('Mixed announcements and a direct reply request', MESSAGES),
         ('Missing body', [{'from': ['Taylor Nguyen'], 'subject': 'Interview availability'}]),
         ('Truncated body', [{'from': ['Harbor Bank Careers'], 'subject': 'Career events',

@@ -91,8 +91,8 @@ def test_rendering_keeps_other_emails_after_failure_and_handles_empty_fields(tmp
 @main struct RenderCheck {
     @available(macOS 26.0, *)
     static func assessment(_ summary: String, purpose: EmailPurpose = .information,
-                           context: String = "", quote: String = "") -> EmailAssessment {
-        EmailAssessment(contextQuote: context, requestQuote: quote, purpose: purpose, summary: summary)
+                           quote: String = "") -> EmailAssessment {
+        EmailAssessment(summary: summary, purpose: purpose, requestQuote: quote.isEmpty ? nil : quote)
     }
     @available(macOS 26.0, *)
     static func report(_ email: EmailInput, _ result: EmailAssessment) async -> String {
@@ -149,28 +149,25 @@ def test_rendering_keeps_other_emails_after_failure_and_handles_empty_fields(tmp
             let noticeContent = AgentGateModel.assessmentBody(agentPrompt, prompt: "Review unread emails")
             assert(!noticeContent.contains("untrusted") && noticeContent.contains("separate HTML table cells"))
             assert(AgentGateModel.assessmentBody(agentPrompt, prompt: "What are the instructions for AI agents?") == agentPrompt.body)
-            assert(AgentGateModel.confirmedProcess("We have received your application. Complete the assessment.") != nil)
-            assert(AgentGateModel.confirmedProcess("We would like to receive your application. Apply today.") == nil)
-            assert(AgentGateModel.confirmedProcess("If we have received your application, we will contact you.") == nil)
-            assert(AgentGateModel.confirmedProcess("Your interview is scheduled for Tuesday if you register.") == nil)
-            assert(AgentGateModel.confirmedProcess("Dear Shawn, join our event. Registration is required to attend.") == nil)
-            let existingApplication = EmailInput(sender: "Employer via WayUp", subject: "Next steps", date: "",
-                body: "We have received your application. Please complete the assessment by Monday to continue in the hiring process.", complete: true)
-            let application = await report(existingApplication, assessment("Application assessment due Monday.",
-                purpose: .opportunity, context: "We have received your application.",
-                quote: "Please complete the assessment by Monday to continue in the hiring process."))
-            assert(application.contains("Requested:") && !application.contains("Optional:"), application)
-            let unrelatedInvite = EmailInput(sender: "Employer", subject: "Optional event", date: "",
-                body: "We have received your application. Join our public event tomorrow.", complete: true)
-            let unrelated = await report(unrelatedInvite, assessment("Public event tomorrow.", purpose: .opportunity,
-                context: "Join our public event tomorrow.", quote: "Join our public event tomorrow."))
-            assert(unrelated.contains("Optional:") && !unrelated.contains("Requested:"), unrelated)
-            let schedulingRequest = "Could you reply by Friday with your availability for a Tuesday interview?"
-            assert(AgentGateModel.establishedContext(schedulingRequest, request: schedulingRequest) == schedulingRequest)
-            let panel = "Reply with your availability for the interview workshop."
-            assert(AgentGateModel.establishedContext(panel, request: panel) == nil)
-            let onboarding = "Please submit your signed form by Friday so we can complete your hiring paperwork."
-            assert(AgentGateModel.establishedContext(onboarding, request: onboarding) == "your hiring paperwork")
+            let negated = "No need to send your availability for the interview; we will call you."
+            let noRequest = await report(EmailInput(sender: "Recruiter", subject: "Update", date: "",
+                body: negated, complete: true), assessment("We will call you.", purpose: .personalRequest, quote: negated))
+            assert(!noRequest.contains("Requested:"), noRequest)
+            let partialNegation = await report(EmailInput(sender: "Recruiter", subject: "Update", date: "",
+                body: negated, complete: true), assessment("We will call you.", purpose: .personalRequest,
+                quote: "send your availability for the interview"))
+            assert(!partialNegation.contains("Requested:"), partialNegation)
+            let footerBody = "Please submit your onboarding form by Friday. Please do not reply to this automated message."
+            let footerRequest = await report(EmailInput(sender: "HR", subject: "Form", date: "",
+                body: footerBody, complete: true), assessment("Form due Friday.", purpose: .personalRequest, quote: footerBody))
+            assert(footerRequest.contains("Requested: Please submit your onboarding form by Friday."), footerRequest)
+            let stitched = await report(EmailInput(sender: "HR", subject: "Form", date: "",
+                body: "Please submit the signed form. The deadline is Friday.", complete: true),
+                assessment("Form due Friday.", purpose: .personalRequest, quote: "Please submit the signed form by Friday"))
+            assert(stitched.contains("Possible request; exact wording not confirmed."), stitched)
+            assert(!AgentGateModel.negatedRequest("Please do not forget to send the slides by Friday."))
+            assert(!AgentGateModel.wantsNotificationDetail("Did the travel agent reply? Which emails need a response?"))
+            assert(AgentGateModel.wantsNotificationDetail("Does the PR review need action, and what's the run ID?"))
             let prNotice = EmailInput(sender: "CodeRabbit", subject: "Review comments on PR #17", date: "",
                 body: "Review posted.", complete: true, source: "github")
             assert(AgentGateModel.noticePrefix(prNotice, summary: "Separate HTML cells.") == "GitHub update: PR #17. ")
@@ -181,30 +178,25 @@ def test_rendering_keeps_other_emails_after_failure_and_handles_empty_fields(tmp
                 let invitation = EmailInput(sender: "HSBC via WayUp", subject: "Career event", date: "",
                     body: invitationBody, complete: complete)
                     let text = await report(invitation, assessment("Virtual career event; registration closes tomorrow.",
-                        purpose: .opportunity, context: "We invite you to a virtual career event.",
-                        quote: "Please register by tomorrow to attend."))
+                        purpose: .invitationOrPromotion, quote: "Please register by tomorrow to attend."))
                     assert(text.contains("Optional:") && text.contains("tomorrow"), text)
                     assert(!text.contains("Requested"), text)
                     assert(!text.contains("may be needed") && !text.contains("Task mentioned"), text)
                 let personal = EmailInput(sender: "Recruiter", subject: "Interview paperwork", date: "",
                     body: requestBody, complete: complete)
                 let task = await report(personal, assessment("Interview form due Friday.", purpose: .personalRequest,
-                    context: "Your interview is scheduled for Tuesday.", quote: "Please submit the signed form by Friday."))
+                    quote: "Please submit the signed form by Friday."))
                 assert(task.contains("Requested") && task.contains("Friday"), task)
                 assert(!task.contains("Optional:"), task)
-                let invalidContext = await report(personal, assessment("Interview form due Friday.", purpose: .personalRequest,
-                    context: "Made-up context.", quote: "Please submit the signed form by Friday."))
-                assert(!invalidContext.contains("Requested"), invalidContext)
                 let reply = await report(personal, assessment("Please confirm your interview.", purpose: .personalRequest,
-                    context: "Your interview is scheduled for Tuesday.", quote: "Please submit the signed form by Friday."))
+                    quote: "Please submit the signed form by Friday."))
                 assert(reply.contains("Requested") && reply.contains("Friday"), reply)
-                let uncertain = await report(personal, assessment("Confirm your interview.", purpose: .personalRequest,
-                    context: "Your interview is scheduled for Tuesday."))
-                assert(!uncertain.contains("Requested:") && !uncertain.contains("couldn't verify"), uncertain)
+                let uncertain = await report(personal, assessment("Confirm your interview.", purpose: .personalRequest))
+                assert(uncertain.contains("Possible request; exact wording not confirmed."), uncertain)
                 let notice = EmailInput(sender: "CodeRabbit", subject: "PR review", date: "",
                     body: requestBody, complete: complete, source: "github")
                 let activity = await report(notice, assessment("PR #17 review: separate HTML table cells.",
-                    purpose: .personalRequest, context: requestBody, quote: requestBody))
+                    purpose: .personalRequest, quote: requestBody))
                 assert(activity.contains("GitHub update:") && activity.contains("table cells"), activity)
                 assert(!activity.contains("Requested"), activity)
                 assert(activity.components(separatedBy: "Only excerpts reviewed").count == (complete ? 1 : 2))
@@ -219,10 +211,44 @@ def test_rendering_keeps_other_emails_after_failure_and_handles_empty_fields(tmp
                     scope: "Checked 3 matching messages from the first search page, not the entire inbox.", messages: messages)
                 let text = await AgentGateModel.emailReply(review, prompt: "Which need a reply?") { _, _ in
                     assessment(String(repeating: "U", count: 150), purpose: .personalRequest,
-                        context: "Existing interview.", quote: quote)
+                        quote: quote)
                 }
                 assert(text.unicodeScalars.count <= 1200, "Three-message response exceeded budget")
                 assert(text.components(separatedBy: "Requested").count == 4)
+            }
+            assert(AgentGateModel.reviewSummary("Excerpt email promoting fragrance discounts; no required action.",
+                body: "Optional shopping links.") == "Promoting fragrance discounts.")
+            assert(AgentGateModel.reviewSummary("Excerpt email: iPhone sale.", body: "iPhone sale.") == "iPhone sale.")
+            assert(AgentGateModel.reviewSummary("Automatic renewal; no action required.",
+                body: "Automatic renewal. No action required.") == "Automatic renewal; no action required.")
+            assert(AgentGateModel.reviewSummary("Sale items have no refunds.", body: "No refunds on sale items.")
+                == "Sale items have no refunds.")
+            assert(AgentGateModel.reviewSummary("Excerpt email offering 30% off fragrances through Sunday; no required action.",
+                body: "Save 30% on fragrances through Sunday.") == "Offering 30% off fragrances through Sunday.")
+            let summaryOnlyEmail = EmailInput(sender: "Shop", subject: "Promotion", date: "",
+                body: "Save 30% through Sunday.", complete: false)
+            let summaryOnly = await AgentGateModel.emailReply(
+                EmailReview(kind: "email_review", scope: "Checked 1 requested email.", messages: [summaryOnlyEmail]),
+                prompt: "Summarize my inbox", assessReplies: false) { _, _ in
+                    assessment("Excerpt email promoting fragrance discounts.")
+                }
+            assert(summaryOnly.contains("Promoting fragrance discounts.") && !summaryOnly.contains("Excerpt email"), summaryOnly)
+            let exactSummary = "Topic " + String(repeating: "x", count: 137) + " Friday"
+            assert(exactSummary.unicodeScalars.count == 150)
+            assert(AgentGateModel.reviewSummary(exactSummary, body: exactSummary) == exactSummary,
+                   "Punctuation must not displace the final word")
+            assert(AgentGateModel.reviewSummary("Excerpt of an email promoting fragrance discounts, no required action.",
+                body: "Sale.") == "Promoting fragrance discounts.")
+            assert(AgentGateModel.reviewSummary("This email excerpt offers discounts — no action necessary.",
+                body: "Sale.") == "Offers discounts.")
+            assert(AgentGateModel.reviewSummary("Automatic renewal; no action necessary.",
+                body: "Renewal details.", stripVerdicts: false) == "Automatic renewal; no action necessary.")
+            assert(AgentGateModel.reviewSummary("Excerpt email — promoting fragrance discounts.", body: "Sale.")
+                == "Promoting fragrance discounts.")
+            assert(AgentGateModel.reviewSummary("Excerpt email – promoting discounts", body: "Sale.")
+                == "Promoting discounts.")
+            for ending in ["会議は金曜日です。", "完了！", "確認？", #"Bob wrote "see you Friday.""#, "Deadline (Friday.)"] {
+                assert(AgentGateModel.reviewSummary(ending, body: ending) == ending, "Duplicate sentence punctuation")
             }
             let messages = ["Failed sender", "Empty sender", "Working sender"].map {
                 EmailInput(sender: $0, subject: "Source subject", date: "", body: "Message text", complete: true)
@@ -274,6 +300,13 @@ def test_github_notification_reports_activity_and_preserves_targeted_metadata(lo
     detail = local_model.answer('What run ID does the review notification give?', context)
     assert detail.get('ok')
     assert 'synthetic-run-42' in detail['data']['text']
+    combined = local_model.answer('Does the review need action, and what run ID does it give?', context)
+    assert combined.get('ok')
+    assert 'synthetic-run-42' in combined['data']['text'], combined
+    travel = local_model.answer('Did the travel agent reply? Which emails need a response?', context)
+    assert travel.get('ok')
+    assert 'table' in travel['data']['text'].lower(), travel
+    assert 'CHILL' not in travel['data']['text'] and 'Run ID' not in travel['data']['text'], travel
 
 
 def test_zero_comment_review_notice_does_not_invent_work(local_model):
@@ -350,6 +383,8 @@ def test_personalized_invitation_and_ai_review_prompt_are_not_obligations(local_
 @pytest.mark.parametrize('sender,body,category,detail', [
     ('Events team', 'Hi Jordan, join our live software panel next Thursday. Reserve your place today. Everyone is welcome.',
      'Optional:', 'Thursday'),
+    ('Employer', 'We have received your application. While you wait, register for our public webinar to continue learning about us on Thursday.',
+     'Optional:', 'Thursday'),
     ('Employer via WayUp', 'We have received your application. Please complete your assessment by Monday to continue in the hiring process.',
      'Requested:', 'Monday'),
 ])
@@ -365,3 +400,15 @@ def test_new_invitation_and_existing_application_are_distinguished(local_model, 
         assert 'Requested' not in text, text
     else:
         assert 'Optional:' not in text, text
+
+
+def test_plain_personal_request_without_process_rule_stays_visible(local_model):
+    context = json.dumps({'kind': 'email_review', 'scope': 'Checked 1 requested email.', 'messages': [
+        {'sender': 'Priya', 'subject': 'Slides', 'date': '', 'complete': True,
+         'body': 'Hi Shawn, could you send me the slides by Friday? Thanks, Priya.'},
+    ]})
+    result = local_model.answer('Which emails need a reply or action?', context)
+    assert result.get('ok')
+    text = result['data']['text']
+    assert 'Requested:' in text and 'Friday' in text and 'slides' in text.lower(), text
+    assert 'Optional:' not in text, text

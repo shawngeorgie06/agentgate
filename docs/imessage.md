@@ -49,6 +49,10 @@ The assistant plans one read-only action for each request:
 
 Other questions get a plain chat reply. Requests for anything else get a short explanation that the assistant is read-only. Replies are capped at 1,200 characters. The last 6 exchanges are kept in memory and cleared 30 minutes after the last one, so follow-up questions work. At most 2,000 characters of them are sent as context.
 
+Email reviews state how many messages were checked and give each sender a separate summary, with a reply recommendation and reason. A review covers up to three messages from the first search page, not the entire inbox. HTML-only email is converted to text locally without loading external content. If a body is unavailable or cut off by the context limit, the assistant says it cannot determine whether a reply is needed. Treat other reply recommendations as model judgments, not guarantees.
+
+Learned texting style applies to casual conversation. Email reviews use normal capitalization and keep names and useful details instead of copying shorthand.
+
 AgentGate accepts at most one message every 5 seconds and 30 per hour. Questions and approval replies share this limit, so an approval sent within 5 seconds of a question is dropped. When you go over, AgentGate sends one notice and drops the rest of that burst.
 
 ## Approving requests by text

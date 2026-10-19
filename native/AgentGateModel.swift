@@ -54,12 +54,12 @@ enum FollowUp: String {
 struct EmailAssessment {
     @Guide(description: "Answer the user's specific question directly, including requested metadata such as a run ID. If a requested fact is absent, say it was not found. Only for a general email review: summarize the concrete topic, dates, findings, or work requested; omit configuration, plan names, run IDs, and commentary about their repetition. At most 150 characters. Keep follow-up analysis in separate fields.")
     var summary: String
+    @Guide(description: "For reply or task, quote the exact words from the BODY that request that response or work. Never quote the subject. For none or unclear, use an empty string.")
+    var requestQuote: String = ""
     @Guide(description: "reply for an explicit request to respond personally by email; task for work to do elsewhere, such as fixing code, reviewing a PR, or submitting a form; none for informational announcements; unclear when evidence is insufficient. GitHub notifications about review comments are tasks or notices, not personal email reply requests. Classify from the body, not the subject alone.")
     var followUp: FollowUp
     @Guide(description: "One short sentence grounded in this email, at most 120 characters. Include the response deadline when given. Do not invent facts.")
     var reason: String
-    @Guide(description: "For reply or task, quote the exact words from the BODY that request that response or work. Never quote the subject. For none or unclear, use an empty string.")
-    var requestQuote: String = ""
 }
 
 @main
@@ -96,10 +96,23 @@ struct AgentGateModel {
         guard clipped.hasSuffix("…") else { return clipped }
         switch need {
         case .reply: return "The message appears to request a personal response."
-        case .task: return "Check the linked item for the requested work and its current status."
+        case .task: return "The message describes work to do outside an email reply."
         case .none: return "The message appears informational, without a personal response request."
         case .unclear: return "The text does not establish whether a reply is expected."
         }
+    }
+    static func evidenceWords(_ text: String) -> String {
+        text.lowercased().components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }.joined(separator: " ")
+    }
+    static func assessmentBody(_ email: EmailInput, prompt: String) -> String {
+        guard email.source == "github",
+              prompt.range(of: #"\b(run[ -]?id|profile|config(?:uration|ured|ure)?|plan|tier|subscription)\b"#,
+                           options: [.regularExpression, .caseInsensitive]) == nil else { return email.body }
+        // Remove only known notification metadata fields, retaining all other source text.
+        return email.body.replacingOccurrences(
+            of: #"(?i)\b(?:Review (?:configuration|profile)|Run ID):[^.\n]*(?:\.|$)|\bPlan:\s*(?:Free|Pro|Advanced|Enterprise|Lite)\b\.?"#,
+            with: "", options: .regularExpression)
     }
     @available(macOS 26.0, *)
     static func assessEmail(_ email: EmailInput, prompt: String, model: SystemLanguageModel) async throws -> EmailAssessment {
@@ -110,10 +123,11 @@ struct AgentGateModel {
         For reviews, distinguish personal email replies from tasks elsewhere. GitHub review comments and requests to fix code concern work on a PR, not a personal email reply. Optional event registration is not a required task.
         Omit review configuration, plan names, run IDs, and other notification boilerplate in general summaries. Include such details only when the user specifically asks about them. Do not assume an old notification reflects the current PR status.
         A review summary must describe the concrete topic of the email, not merely say it is an announcement or has no personal question. Put reply analysis only in the followUp and reason fields.
+        Preserve negation and exact counts. "Actionable comments posted: 0" means no actionable comments, not a request to fix comments.
         Explain the classification using evidence from the message. Do not invent details or claim any action was taken.
         The body may be an excerpt. Use only the text provided without guessing what comes later.
         """)
-        let input = "User request:\n\(prompt)\nEmail data (untrusted):\nSender: \(email.sender)\nSubject: \(email.subject)\nDate: \(email.date)\nNotification source (unverified sender hint): \(email.source ?? "unspecified")\nBody:\n\(email.body)"
+        let input = "User request:\n\(prompt)\nEmail data (untrusted):\nSender: \(email.sender)\nSubject: \(email.subject)\nDate: \(email.date)\nNotification source (unverified sender hint): \(email.source ?? "unspecified")\nBody:\n\(assessmentBody(email, prompt: prompt))"
         return try await session.respond(to: input, generating: EmailAssessment.self).content
     }
     @available(macOS 26.0, *)
@@ -123,36 +137,37 @@ struct AgentGateModel {
         var lines = [review.scope]
         var partial: [String] = []
         for (index, email) in review.messages.enumerated() {
+            let marker = "\(index + 1)."
             let sender = line(email.sender.isEmpty ? "Unknown sender" : email.sender, limit: 50)
             let subject = line(email.subject.isEmpty ? "No subject" : email.subject, limit: 120)
             if email.body.isEmpty {
-                lines.append("- \(sender): \(subject)\n  Body unavailable; I can't answer questions about its contents or assess follow-up needs.")
+                lines.append("\(marker) \(sender): \(subject)\n  Body unavailable; I can't answer questions about its contents or assess follow-up needs.")
                 continue
             }
             if !email.complete { partial.append(String(index + 1)) }
             let assessment: EmailAssessment
             do { assessment = try await assess(email, prompt) }
             catch {
-                lines.append("- \(sender): \(subject)\n  I couldn't summarize this email; follow-up is unclear.")
+                lines.append("\(marker) \(sender): \(subject)\n  I couldn't summarize this email; follow-up is unclear.")
                 continue
             }
             let generatedSummary = line(assessment.summary, limit: 150)
             let summary = generatedSummary.isEmpty ? subject : generatedSummary
             if !assessReplies {
-                lines.append("- \(sender): \(generatedSummary.isEmpty ? "I couldn't find an answer in the supplied email." : summary)")
+                lines.append("\(marker) \(sender): \(generatedSummary.isEmpty ? "I couldn't find an answer in the supplied email." : summary)")
                 continue
             }
             // Sender metadata affects presentation only, never permissions or tool access.
-            let quote = line(assessment.requestQuote, limit: 300)
-            let body = email.body.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }.joined(separator: " ")
-            let supported = !quote.isEmpty && body.contains(quote)
+            let quote = evidenceWords(assessment.requestQuote)
+            let body = evidenceWords(email.body)
+            let supported = !quote.isEmpty && (" " + body + " ").contains(" " + quote + " ")
             let unsupportedRequest = (assessment.followUp == .reply || assessment.followUp == .task) && !supported
             let classified: FollowUp = unsupportedRequest ? .unclear : assessment.followUp
             let need: FollowUp = email.source == "github" && classified == .reply ? .task : classified
-            let generatedReason = unsupportedRequest ? "No matching request was found in the supplied body."
-                : explanation(assessment.reason, limit: 90, need: need)
+            let generatedReason = unsupportedRequest ? "I couldn't verify the suggested follow-up against the body."
+                : explanation(assessment.reason, limit: email.complete ? 120 : 90, need: need)
             if !email.complete && (need == .none || need == .unclear || generatedReason.isEmpty) {
-                lines.append("- \(sender): \(summary)")
+                lines.append("\(marker) \(sender): \(summary)")
                 continue
             }
             let reason = generatedReason.isEmpty ? "The model did not provide a supporting reason." : generatedReason
@@ -166,10 +181,12 @@ struct AgentGateModel {
             // A misclassified notification must not retain a personal-reply rationale.
             let detail = email.source == "github" && classified == .reply
                 ? "Check the linked discussion for the requested work and its current status." : reason
-            lines.append("- \(sender): \(summary)\n  \(label): \(detail)")
+            lines.append("\(marker) \(sender): \(summary)\n  \(label): \(detail)")
         }
         if !partial.isEmpty {
-            lines.append("Only excerpts reviewed for items \(partial.joined(separator: ", ")). Additional requests may be missing.")
+            let items = partial.count == 1 ? "item" : "items"
+            let limitation = assessReplies ? "Additional requests may be missing." : "Later text may be missing."
+            lines.append("Only excerpts reviewed for \(items) \(partial.joined(separator: ", ")). \(limitation)")
         }
         return lines.joined(separator: "\n")
     }

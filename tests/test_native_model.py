@@ -91,6 +91,24 @@ def test_rendering_keeps_other_emails_after_failure_and_handles_empty_fields(tmp
 @main struct RenderCheck {
     static func main() async {
         if #available(macOS 26.0, *) {
+            let requests: [(String, Bool)] = [
+                ("anything worth replying to?", true),
+                ("who should I be responding to", true),
+                ("do I need to answer anyone?", true),
+                ("any emails I have to deal with?", true),
+                ("which messages should I act on?", true),
+                ("tell me which emails need a reply", true),
+                ("what did delta say in their response?", false),
+                ("did hsbc reply about my card?", false),
+                ("what is the hotel Wi-Fi password?", false),
+                ("what gate and seat am I in?", false),
+            ]
+            for (question, expected) in requests {
+                assert(AgentGateModel.wantsReplyAssessment(question) == expected, question)
+            }
+            let longDeadline = "The sender asks for availability by Fri. Dec. 6 " + String(repeating: "for a phone screen ", count: 10)
+            assert(AgentGateModel.explanation(longDeadline, limit: 90, need: .needed)
+                   == "The message appears to request a personal response.")
             let messages = ["Failed sender", "Empty sender", "Working sender"].map {
                 EmailInput(sender: $0, subject: "Source subject", date: "", body: "Message text", complete: true)
             }
@@ -126,7 +144,8 @@ def test_rendering_keeps_other_emails_after_failure_and_handles_empty_fields(tmp
     subprocess.run([shutil.which('swiftc'), '-parse-as-library', str(check), '-o', str(binary),
                     '-framework', 'Foundation', '-framework', 'FoundationModels'],
                    check=True, capture_output=True, timeout=120)
-    result = subprocess.run([str(binary)], check=True, capture_output=True, text=True, timeout=10)
+    result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr[:1200]
     assert 'Failed sender: Source subject' in result.stdout
     assert "couldn't summarize this email" in result.stdout
     assert 'Empty sender: Source subject' in result.stdout

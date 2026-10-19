@@ -196,6 +196,14 @@ def test_control_characters_cannot_overflow_the_email_metadata_budget():
     assert 'Please confirm.' in message['body']
 
 
+def test_invisible_preview_padding_does_not_hide_the_email_request():
+    html = '<div>' + '\u200b\u200c\u034f\u2060\ufeff&nbsp;' * 400 + '</div>'
+    html += '<p>Interview request: please reply by Friday with your availability.</p>'
+    message = _message_data({'parts': [{'type': 'text/html', 'content': html}]})
+    assert message['body'] == 'Interview request: please reply by Friday with your availability.'
+    assert message['complete'] is True
+
+
 @pytest.mark.asyncio
 async def test_email_summary_context_reports_partial_scope():
     model, tools = Model(), Tools()

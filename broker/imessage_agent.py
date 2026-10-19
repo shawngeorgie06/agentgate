@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 import json
+import unicodedata
 from html.parser import HTMLParser
 
 PROMPT_LIMIT = 2000
@@ -192,6 +193,8 @@ def _message_data(data):
     if not isinstance(data, dict):
         return None
     body, source_truncated = _message_body(data)
+    body = ''.join(character for character in body
+                   if unicodedata.category(character) != 'Cf' and character != '\u034f')
     lines = [' '.join(_CONTROL.sub(' ', line).split()) for line in body.splitlines()]
     body = '\n'.join(line for line in lines if line)
     return {'sender': _CONTROL.sub(' ', _text(data.get('from'), 200)).strip(),

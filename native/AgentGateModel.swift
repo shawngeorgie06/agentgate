@@ -76,8 +76,12 @@ struct AgentGateModel {
         text.unicodeScalars.count <= limit && !text.contains("\0")
     }
     static func wantsReplyAssessment(_ prompt: String) -> Bool {
-        prompt.range(of: #"\b(reply|replies|respond|response|write back|get back)\b"#,
-                     options: [.regularExpression, .caseInsensitive]) != nil
+        let options: String.CompareOptions = [.regularExpression, .caseInsensitive]
+        // Questions about someone else's past response ask for its contents.
+        if prompt.range(of: #"^\s*(?:what did (?!i\b|we\b)|did (?!i\b|we\b)|has (?!i\b|we\b))"#,
+                        options: options) != nil { return false }
+        return prompt.range(of: #"\b(repl(?:y|ies|ied|ying)|respond(?:s|ed|ing)?|responses?|answer(?:s|ed|ing)?|writ(?:e|ing) back|get(?:ting)? back|deal with|act on|action|attention)\b"#,
+                            options: options) != nil
     }
     static func line(_ text: String, limit: Int) -> String {
         let clean = text.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }.joined(separator: " ")
@@ -90,10 +94,6 @@ struct AgentGateModel {
     static func explanation(_ text: String, limit: Int, need: ReplyNeed) -> String {
         let clipped = line(text, limit: limit)
         guard clipped.hasSuffix("…") else { return clipped }
-        if let end = clipped.lastIndex(where: { ".!?".contains($0) }),
-           clipped.distance(from: clipped.startIndex, to: end) > 20 {
-            return String(clipped[...end])
-        }
         switch need {
         case .needed: return "The message appears to request a personal response."
         case .notNeeded: return "The message appears informational, without a personal response request."

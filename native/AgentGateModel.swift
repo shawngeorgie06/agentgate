@@ -77,10 +77,7 @@ struct AgentGateModel {
     }
     static func wantsReplyAssessment(_ prompt: String) -> Bool {
         let options: String.CompareOptions = [.regularExpression, .caseInsensitive]
-        // Questions about someone else's past response ask for its contents.
-        if prompt.range(of: #"^\s*(?:what did (?!i\b|we\b)|did (?!i\b|we\b)|has (?!i\b|we\b))"#,
-                        options: options) != nil { return false }
-        return prompt.range(of: #"\b(repl(?:y|ies|ied|ying)|respond(?:s|ed|ing)?|responses?|answer(?:s|ed|ing)?|writ(?:e|ing) back|get(?:ting)? back|deal with|act on|action|attention)\b"#,
+        return prompt.range(of: #"\b(repl(?:y|ies|ied|ying)|respond(?:s|ed|ing)?|responses?|answer(?:s|ed|ing)?|writ(?:e|ing) back|deal with|act on|action|attention)\b"#,
                             options: options) != nil
     }
     static func line(_ text: String, limit: Int) -> String {

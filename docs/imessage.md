@@ -49,7 +49,7 @@ The assistant plans one read-only action for each request:
 
 Other questions get a plain chat reply. Requests for anything else get a short explanation that the assistant is read-only. Replies are capped at 1,200 characters. The last 6 exchanges are kept in memory and cleared 30 minutes after the last one, so follow-up questions work. At most 2,000 characters of them are sent as context.
 
-Email reviews state how many messages were checked and give each sender a separate summary, with a reply recommendation and reason. A review covers up to three messages from the first search page, not the entire inbox. HTML-only email is converted to text locally without loading external content.
+Email reviews state how many messages were checked and give each sender a separate summary. When you ask about replying or responding, the summary also includes a reply recommendation and reason. A review covers up to three messages from the first search page, not the entire inbox. HTML-only email is converted to text locally without loading external content.
 
 Each body is limited to 1,200 characters, with further trimming if needed to fit the shared context budget. Available excerpts are still summarized. An explicit response request in an excerpt can be reported, but the assistant never concludes that no reply is needed when the rest is unread. Missing bodies and failed summaries are reported per email. Treat reply recommendations as model judgments, not guarantees.
 

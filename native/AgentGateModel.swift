@@ -90,10 +90,10 @@ struct AgentGateModel {
         let end = prefix.lastIndex(of: " ") ?? prefix.endIndex
         return String(prefix[..<end]) + "…"
     }
-    static func reviewSummary(_ text: String, body: String) -> String {
+    static func reviewSummary(_ text: String, body: String, stripVerdicts: Bool = true) -> String {
         var clean = text.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }.joined(separator: " ")
         let withoutPrefix = clean.replacingOccurrences(
-            of: #"(?i)^(?:an? )?(?:excerpt(?:ed)? (?:email|message)|email excerpt)\s*[:,\-]?\s+"#,
+            of: #"(?i)^(?:(?:an? )?excerpt(?:ed)?(?: of(?: an?)?)? (?:email|message)|(?:this )?email excerpt)\s*[:,\-]?\s+"#,
             with: "", options: .regularExpression)
         if withoutPrefix != clean, let first = withoutPrefix.first {
             let firstWord = withoutPrefix.split(separator: " ").first ?? ""
@@ -101,8 +101,8 @@ struct AgentGateModel {
             clean = keepsCase ? withoutPrefix : first.uppercased() + withoutPrefix.dropFirst()
         }
         // These verdicts belong in the follow-up fields, not the factual summary.
-        let verdict = #"(?i)(?:[.;]\s*|^)(no (?:personal )?(?:reply|response|action|follow-up)(?: is| appears)? (?:needed|required|requested)|no required action)\s*[.!]?\s*$"#
-        if let regex = try? NSRegularExpression(pattern: verdict),
+        let verdict = #"(?i)(?:[.;,]\s*|\s+[—–-]\s*|^)(no (?:personal )?(?:reply|response|action|follow-up)(?: is| appears)? (?:needed|required|requested|necessary)|no required action)\s*[.!]?\s*$"#
+        if stripVerdicts, let regex = try? NSRegularExpression(pattern: verdict),
            let match = regex.firstMatch(in: clean, range: NSRange(clean.startIndex..., in: clean)),
            let phraseRange = Range(match.range(at: 1), in: clean),
            let fullRange = Range(match.range, in: clean) {
@@ -113,8 +113,10 @@ struct AgentGateModel {
                 clean = clean.trimmingCharacters(in: .whitespacesAndNewlines)
             }
         }
-        if !clean.isEmpty && ![".", "!", "?", "…"].contains(String(clean.suffix(1))) { clean += "." }
-        return line(clean, limit: 150)
+        clean = line(clean, limit: 150)
+        if stripVerdicts && !clean.isEmpty && clean.unicodeScalars.count < 150
+            && ![".", "!", "?", "…"].contains(String(clean.suffix(1))) { clean += "." }
+        return clean
     }
     @available(macOS 26.0, *)
     static func explanation(_ text: String, limit: Int, need: FollowUp) -> String {
@@ -184,7 +186,7 @@ struct AgentGateModel {
                 lines.append("\(marker) \(sender): \(subject)\n  I couldn't summarize this email; follow-up is unclear.")
                 continue
             }
-            let generatedSummary = assessReplies ? reviewSummary(assessment.summary, body: email.body) : line(assessment.summary, limit: 150)
+            let generatedSummary = reviewSummary(assessment.summary, body: email.body, stripVerdicts: assessReplies)
             let summary = generatedSummary.isEmpty ? subject : generatedSummary
             if !assessReplies {
                 lines.append("\(marker) \(sender): \(generatedSummary.isEmpty ? "I couldn't find an answer in the supplied email." : summary)")

@@ -207,6 +207,24 @@ def test_rendering_keeps_other_emails_after_failure_and_handles_empty_fields(tmp
                 == "Sale items have no refunds.")
             assert(AgentGateModel.reviewSummary("Excerpt email offering 30% off fragrances through Sunday; no required action.",
                 body: "Save 30% on fragrances through Sunday.") == "Offering 30% off fragrances through Sunday.")
+            let summaryOnlyEmail = EmailInput(sender: "Shop", subject: "Promotion", date: "",
+                body: "Save 30% through Sunday.", complete: false)
+            let summaryOnly = await AgentGateModel.emailReply(
+                EmailReview(kind: "email_review", scope: "Checked 1 requested email.", messages: [summaryOnlyEmail]),
+                prompt: "Summarize my inbox", assessReplies: false) { _, _ in
+                    EmailAssessment(summary: "Excerpt email promoting fragrance discounts.", followUp: .none, reason: "")
+                }
+            assert(summaryOnly.contains("Promoting fragrance discounts.") && !summaryOnly.contains("Excerpt email"), summaryOnly)
+            let exactSummary = "Topic " + String(repeating: "x", count: 137) + " Friday"
+            assert(exactSummary.unicodeScalars.count == 150)
+            assert(AgentGateModel.reviewSummary(exactSummary, body: exactSummary) == exactSummary,
+                   "Punctuation must not displace the final word")
+            assert(AgentGateModel.reviewSummary("Excerpt of an email promoting fragrance discounts, no required action.",
+                body: "Sale.") == "Promoting fragrance discounts.")
+            assert(AgentGateModel.reviewSummary("This email excerpt offers discounts — no action necessary.",
+                body: "Sale.") == "Offers discounts.")
+            assert(AgentGateModel.reviewSummary("Automatic renewal; no action necessary.",
+                body: "Renewal details.", stripVerdicts: false) == "Automatic renewal; no action necessary.")
             for complete in [true, false] {
                 let noiseMessages = [
                     EmailInput(sender: "WayUp", subject: "Two software roles", date: "",
@@ -322,7 +340,7 @@ def test_job_ad_and_promotion_keep_content_while_required_form_stays_visible(loc
     assert any(word in text.lower() for word in ('discount', 'save', 'sale')), text
     assert 'Friday' in text and 'form' in text.lower()
     assert 'Possible task' not in text and "couldn't verify" not in text
-    assert 'Excerpt email' not in text and 'no required action' not in text
+    assert 'excerpt email' not in text.lower() and 'no required action' not in text.lower()
     assert text.count('Task mentioned') == 1
     assert text.count('Only excerpts reviewed') == 1
     promotion = json.dumps({'kind': 'email_review', 'scope': 'Checked 1 requested email.',

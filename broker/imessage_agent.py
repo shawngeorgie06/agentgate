@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import re
+import json
+import unicodedata
+from html.parser import HTMLParser
 
 PROMPT_LIMIT = 2000
 HISTORY_LIMIT = 2000
@@ -12,6 +15,7 @@ MESSAGE_LIMIT = 3
 ISSUE_LIMIT = 10
 REPO_LIMIT = 20
 BODY_LIMIT = 1200
+HTML_SOURCE_LIMIT = 100000
 FILE_LIMIT = 4000
 QUERY_LIMIT = 200
 PATH_LIMIT = 500
@@ -134,23 +138,83 @@ def _text(value, limit: int) -> str:
     return value[:limit]
 
 
-def _message_block(data) -> str:
-    if not isinstance(data, dict):
-        return ''
+class _EmailHTMLText(HTMLParser):
+    """Extract readable text locally, without loading links, images, or scripts."""
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.text = []
+        self.ignored = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == 'body' and self.ignored == ['head']:
+            self.ignored.clear()
+        if tag in ('head', 'script', 'style', 'template'):
+            self.ignored.append(tag)
+        elif not self.ignored and tag in ('br', 'p', 'div', 'li', 'tr', 'td', 'th', 'h1', 'h2', 'h3'):
+            self.text.append('\n')
+
+    def handle_endtag(self, tag):
+        if self.ignored:
+            if tag == self.ignored[-1]:
+                self.ignored.pop()
+        elif tag in ('p', 'div', 'li', 'tr', 'td', 'th', 'h1', 'h2', 'h3'):
+            self.text.append('\n')
+
+    def handle_data(self, text):
+        if not self.ignored:
+            self.text.append(text)
+
+
+def _message_body(data):
     body = data.get('text')
-    if not isinstance(body, str):
-        parts = data.get('parts')
-        body = ''
-        if isinstance(parts, list):
-            body = next((p.get('content', '') for p in parts
-                         if isinstance(p, dict) and p.get('type') == 'text/plain'
-                         and isinstance(p.get('content'), str)), '')
-    return '\n'.join([
-        f'From: {_text(data.get("from"), 200)}',
-        f'Date: {_text(data.get("date"), 100)}',
-        f'Subject: {_text(data.get("subject"), 200)}',
-        f'Body: {_text(body, BODY_LIMIT)}',
-    ])
+    if isinstance(body, str) and body.strip():
+        return body[:HTML_SOURCE_LIMIT], len(body) > HTML_SOURCE_LIMIT
+    parts = data.get('parts')
+    parts = parts if isinstance(parts, list) else []
+    for content_type in ('text/plain', 'text/html'):
+        for part in parts:
+            if not isinstance(part, dict) or part.get('type') != content_type:
+                continue
+            content = part.get('content')
+            if not isinstance(content, str) or not content.strip():
+                continue
+            if content_type == 'text/plain':
+                return content[:HTML_SOURCE_LIMIT], len(content) > HTML_SOURCE_LIMIT
+            parser = _EmailHTMLText()
+            parser.feed(content[:HTML_SOURCE_LIMIT])
+            parser.close()
+            text = ''.join(parser.text)
+            if text.strip():
+                return text, len(content) > HTML_SOURCE_LIMIT
+    return '', False
+
+
+def _message_data(data):
+    if not isinstance(data, dict):
+        return None
+    body, source_truncated = _message_body(data)
+    body = ''.join(character for character in body
+                   if unicodedata.category(character) != 'Cf' and character != '\u034f')
+    lines = [' '.join(_CONTROL.sub(' ', line).split()) for line in body.splitlines()]
+    body = '\n'.join(line for line in lines if line)
+    return {'sender': _CONTROL.sub(' ', _text(data.get('from'), 200)).strip(),
+            'date': _CONTROL.sub(' ', _text(data.get('date'), 100)).strip(),
+            'subject': _CONTROL.sub(' ', _text(data.get('subject'), 200)).strip(), 'body': body[:BODY_LIMIT],
+            'complete': bool(body) and len(body) <= BODY_LIMIT and not source_truncated}
+
+
+def _email_context(messages, scope):
+    """Keep the review envelope valid when escaping consumes the context budget."""
+    review = {'kind': 'email_review', 'scope': scope, 'messages': messages}
+    while True:
+        text = json.dumps(review, ensure_ascii=False)
+        if len(text) <= CONTEXT_LIMIT:
+            return text
+        longest = max(messages, key=lambda message: len(message['body']))
+        if not longest['body']:
+            raise _ToolFailed()
+        longest['body'] = longest['body'][:max(0, len(longest['body']) - (len(text) - CONTEXT_LIMIT))]
+        longest['complete'] = False
 
 
 def _clean_reply(answer) -> str:
@@ -241,12 +305,20 @@ class ReadOnlyMessageAgent:
                     continue
                 data = await self._call(self._gmail, agent_name, 'gmail:read', 'read', guard,
                                         message_id=message_id)
-                blocks.append(_message_block(data))
-            return '\n\n---\n\n'.join(blocks)[:CONTEXT_LIMIT] or NO_RESULTS
+                message = _message_data(data)
+                if message is not None:
+                    blocks.append(message)
+            if not blocks:
+                return NO_RESULTS
+            noun = 'message' if len(blocks) == 1 else 'messages'
+            scope = f'unread {noun}' if action == 'gmail_unread' else f'matching {noun}'
+            coverage = f'Checked {len(blocks)} {scope} from the first search page, not the entire inbox.'
+            return _email_context(blocks, coverage)
         if action == 'gmail_read':
             data = await self._call(self._gmail, agent_name, 'gmail:read', 'read', guard,
                                     message_id=args['message_id'])
-            return _message_block(data)[:CONTEXT_LIMIT] or NO_RESULTS
+            message = _message_data(data)
+            return _email_context([message], 'Checked 1 requested email.') if message is not None else NO_RESULTS
         if action == 'github_repos':
             data = await self._call(self._github, agent_name, 'github:read', 'repos', guard,
                                     per_page=REPO_LIMIT, page=1)

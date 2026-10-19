@@ -1,5 +1,6 @@
+import json
 import pytest
-from broker.imessage_agent import FALLBACK_MESSAGE, ReadOnlyMessageAgent, _clean_reply
+from broker.imessage_agent import FALLBACK_MESSAGE, ReadOnlyMessageAgent, _clean_reply, _message_data
 
 class Model:
     def __init__(self, action='gmail_unread', **args):
@@ -145,3 +146,84 @@ def test_clean_reply_never_returns_text_that_would_read_as_an_approval(answer):
 
 def test_clean_reply_keeps_ordinary_text_that_mentions_approval():
     assert _clean_reply('approve the draft before lunch') == 'approve the draft before lunch'
+
+
+def test_html_email_keeps_the_actual_request_without_scripts_or_styles():
+    message = _message_data({
+        'from': ['Taylor Nguyen <taylor@example.com>'],
+        'subject': 'Interview availability',
+        'parts': [{'type': 'text/html', 'content': '<html><head><style>PRIVATE_STYLE</style></head>'
+                   '<body><p>Can you confirm Tuesday at 2 p.m.?</p><p>Reply by Monday.</p>'
+                   '<script>PRIVATE_SCRIPT</script><p>Thanks &amp; regards</p></body></html>'}],
+    })
+    context = message['body']
+    assert 'Can you confirm Tuesday at 2 p.m.?' in context
+    assert 'Reply by Monday.' in context
+    assert 'Thanks & regards' in context
+    assert 'PRIVATE_STYLE' not in context and 'PRIVATE_SCRIPT' not in context
+    assert '<p>' not in context
+
+
+def test_empty_plain_part_falls_back_to_html():
+    message = _message_data({'parts': [
+        {'type': 'text/plain', 'content': '   '},
+        {'type': 'text/html', 'content': '<p>Please confirm your appointment.</p>'},
+    ]})
+    assert 'Please confirm your appointment.' in message['body']
+
+
+@pytest.mark.parametrize('html,expected', [
+    ('<table><tr><th>Event</th><td>Career Fair</td></tr></table>', 'Event\nCareer Fair'),
+    ('<head><title>Notice</title><body><p>Please confirm Tuesday.</p>', 'Please confirm Tuesday.'),
+])
+def test_email_html_preserves_table_cells_and_recovers_omitted_head_end(html, expected):
+    message = _message_data({'parts': [{'type': 'text/html', 'content': html}]})
+    assert expected in message['body']
+
+
+def test_missing_and_truncated_email_bodies_are_explicit():
+    assert _message_data({'subject': 'Meeting'})['complete'] is False
+    message = _message_data({'text': 'A long body. ' * 500})
+    assert message['complete'] is False
+    assert len(message['body']) <= 1200
+
+
+def test_control_characters_cannot_overflow_the_email_metadata_budget():
+    message = _message_data({'from': ['\x00' * 200], 'subject': '\x01' * 200,
+                             'date': '\x02' * 100, 'text': '\x00Please confirm.\x7f'})
+    assert not any(ord(character) < 32 or ord(character) == 127
+                   for field in message.values() if isinstance(field, str) for character in field)
+    assert 'Please confirm.' in message['body']
+
+
+def test_invisible_preview_padding_does_not_hide_the_email_request():
+    html = '<div>' + '\u200b\u200c\u034f\u2060\ufeff&nbsp;' * 400 + '</div>'
+    html += '<p>Interview request: please reply by Friday with your availability.</p>'
+    message = _message_data({'parts': [{'type': 'text/html', 'content': html}]})
+    assert message['body'] == 'Interview request: please reply by Friday with your availability.'
+    assert message['complete'] is True
+
+
+@pytest.mark.asyncio
+async def test_email_summary_context_reports_partial_scope():
+    model, tools = Model(), Tools()
+    await ReadOnlyMessageAgent(None, tools, tools, model).reply('reader', lambda: True, 'check email')
+    context = json.loads(model.contexts[0])
+    assert '3 unread messages' in context['scope']
+    assert 'not the entire inbox' in context['scope']
+    assert len(context['messages']) == 3
+
+
+@pytest.mark.asyncio
+async def test_email_context_budget_preserves_json_and_marks_clipped_bodies():
+    class EscapedBody(Tools):
+        async def execute(self, agent, resource, operation, *, identity_guard, **args):
+            if operation == 'search':
+                return await super().execute(agent, resource, operation, identity_guard=identity_guard, **args)
+            return {'ok': True, 'data': {'from': ['A' * 200], 'subject': 'B' * 200, 'text': '"' * 1200}}
+    model, tools = Model(), EscapedBody()
+    await ReadOnlyMessageAgent(None, tools, tools, model).reply('reader', lambda: True, 'check email')
+    assert len(model.contexts[0]) <= 6000
+    context = json.loads(model.contexts[0])
+    assert len(context['messages']) == 3
+    assert any(not message['complete'] for message in context['messages'])

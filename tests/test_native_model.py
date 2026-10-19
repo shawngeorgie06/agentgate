@@ -198,6 +198,46 @@ def test_rendering_keeps_other_emails_after_failure_and_handles_empty_fields(tmp
                                     reason: "Work may be needed.")
                 }
             assert(!unverifiedNotification.contains("Task mentioned") && !unverifiedNotification.contains("Possible task"))
+            assert(AgentGateModel.reviewSummary("Excerpt email promoting fragrance discounts; no required action.",
+                body: "Optional shopping links.") == "Promoting fragrance discounts.")
+            assert(AgentGateModel.reviewSummary("Excerpt email: iPhone sale.", body: "iPhone sale.") == "iPhone sale.")
+            assert(AgentGateModel.reviewSummary("Automatic renewal; no action required.",
+                body: "Automatic renewal. No action required.") == "Automatic renewal; no action required.")
+            assert(AgentGateModel.reviewSummary("Sale items have no refunds.", body: "No refunds on sale items.")
+                == "Sale items have no refunds.")
+            assert(AgentGateModel.reviewSummary("Excerpt email offering 30% off fragrances through Sunday; no required action.",
+                body: "Save 30% on fragrances through Sunday.") == "Offering 30% off fragrances through Sunday.")
+            for complete in [true, false] {
+                let noiseMessages = [
+                    EmailInput(sender: "WayUp", subject: "Two software roles", date: "",
+                        body: "Software Engineer Intern and Spring 2027 Software Co-Op openings. Apply online if interested.",
+                        complete: complete),
+                    EmailInput(sender: "Fragrance Shop", subject: "Fragrance discounts", date: "",
+                        body: "Save on fragrances. Shop online if interested. No refunds on opened products.", complete: false),
+                    EmailInput(sender: "HR", subject: "Onboarding", date: "",
+                        body: "Please submit your signed onboarding form by Friday.", complete: true)
+                ]
+                let noiseText = await AgentGateModel.emailReply(
+                    EmailReview(kind: "email_review", scope: "Checked 3 unread messages.", messages: noiseMessages),
+                    prompt: "Which need a reply?") { email, _ in
+                        if email.sender == "WayUp" {
+                            return EmailAssessment(summary: "Software internship and Spring 2027 Co-Op openings.",
+                                followUp: .task, reason: "Apply for the roles.")
+                        }
+                        if email.sender == "Fragrance Shop" {
+                            return EmailAssessment(summary: "Excerpt email promoting fragrance discounts; no required action.",
+                                followUp: .none, reason: "Optional shopping.")
+                        }
+                        return EmailAssessment(summary: "Submit the signed onboarding form by Friday.",
+                            requestQuote: "Please submit your signed onboarding form by Friday.",
+                            followUp: .task, reason: "The signed form is due Friday.")
+                    }
+                assert(!noiseText.contains("Possible task") && !noiseText.contains("couldn't verify"), noiseText)
+                assert(!noiseText.contains("Excerpt email") && !noiseText.contains("no required action"), noiseText)
+                assert(noiseText.contains("Promoting fragrance discounts"), noiseText)
+                assert(noiseText.contains("Task mentioned: The signed form is due Friday."), noiseText)
+                assert(noiseText.components(separatedBy: "Only excerpts reviewed").count == 2)
+            }
             let partialWide = wideMessages.map { email in
                 EmailInput(sender: email.sender, subject: email.subject, date: "", body: email.body, complete: false)
             }
@@ -263,3 +303,31 @@ def test_zero_comment_review_notice_does_not_invent_work(local_model):
     assert '14' in text
     assert 'comments' in text
     assert 'chill' not in text and 'run id' not in text and 'configuration' not in text
+
+
+def test_job_ad_and_promotion_keep_content_while_required_form_stays_visible(local_model):
+    context = json.dumps({'kind': 'email_review', 'scope': 'Checked 3 unread messages.', 'messages': [
+        {'sender': 'WayUp', 'subject': 'Two software roles at Schneider Electric', 'date': '', 'complete': True,
+         'body': 'Schneider Electric has openings for Software Engineer Intern and Energy + Software Solutions '
+                 'Engineer Co-Op for Spring 2027. These are advertised opportunities. Applying is optional.'},
+        {'sender': 'Fragrance Shop', 'subject': 'Save on fragrances', 'date': '', 'complete': False,
+         'body': 'Save 30% on selected fragrances through Sunday. Shopping is optional.'},
+        {'sender': 'HR', 'subject': 'Onboarding form due', 'date': '', 'complete': True,
+         'body': 'Please submit your signed onboarding form by Friday so we can complete your hiring paperwork.'},
+    ]})
+    result = local_model.answer('Check my unread emails and tell me which need a reply', context)
+    assert result.get('ok')
+    text = result['data']['text']
+    assert 'Schneider' in text and '2027' in text
+    assert any(word in text.lower() for word in ('discount', 'save', 'sale')), text
+    assert 'Friday' in text and 'form' in text.lower()
+    assert 'Possible task' not in text and "couldn't verify" not in text
+    assert 'Excerpt email' not in text and 'no required action' not in text
+    assert text.count('Task mentioned') == 1
+    assert text.count('Only excerpts reviewed') == 1
+    promotion = json.dumps({'kind': 'email_review', 'scope': 'Checked 1 requested email.',
+                            'messages': [json.loads(context)['messages'][1]]})
+    detail = local_model.answer('What discount does the fragrance promotion offer, and when does it end?', promotion)
+    assert detail.get('ok')
+    answer = detail['data']['text']
+    assert ('30%' in answer or '30 percent' in answer.lower()) and 'Sunday' in answer, answer

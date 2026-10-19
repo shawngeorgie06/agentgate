@@ -7,6 +7,7 @@ from pathlib import Path
 import plistlib
 import stat
 import subprocess
+import sys
 import tempfile
 
 import requests
@@ -28,11 +29,11 @@ def generate_plist(project_dir, config_dir, helper_path, port=8765):
     env['ESCALATION_TIMEOUT_SECONDS'] = '300'
     return {
         'Label': LABEL,
-        'ProgramArguments': [str(project / '.venv/bin/python'), '-m', 'broker.main', '--app', '--no-open',
+        'ProgramArguments': [str(project / '.venv/bin/python'), '-m', 'broker.mac_service', 'run', '--app', '--no-open',
                              '--keychain-helper', str(helper), '--token-file', str(config / 'mcp-token'),
                              '--operator-token-file', str(config / 'operator-token'), '--port', str(port)],
         'WorkingDirectory': str(project), 'EnvironmentVariables': env,
-        'RunAtLoad': True, 'KeepAlive': True, 'ThrottleInterval': 30,
+        'RunAtLoad': True, 'KeepAlive': {'SuccessfulExit': False}, 'ThrottleInterval': 30,
         'Umask': 63, 'LimitLoadToSessionType': 'Aqua',
         'StandardOutPath': str(config / 'broker.stdout.log'),
         'StandardErrorPath': str(config / 'broker.stderr.log'),
@@ -149,6 +150,20 @@ def is_ready(operator_token, *, port=8765, get=None):
 
 
 def main():
+    if sys.argv[1:2] == ['run']:
+        from broker.main import main as broker_main
+        try:
+            broker_main(sys.argv[2:])
+        except SystemExit as error:
+            if error.code == 2:
+                # Configuration/unlock failures need operator intervention.
+                # A clean service exit pauses launchd until an explicit kickstart
+                # or the next login; direct broker commands still exit with 2.
+                print('[AgentGate] Background startup paused. Open AgentGate to correct setup and retry.', file=sys.stderr)
+                return
+            raise
+        # An unexpected server return must still trigger launchd supervision.
+        raise SystemExit(1)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--project-dir', required=True)
     parser.add_argument('--config-dir', required=True)

@@ -204,7 +204,7 @@ async def run(
                           keychain_helper=keychain_helper)
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description='AgentGate MCP broker')
     parser.add_argument('--http', action='store_true', help='serve authenticated MCP on localhost')
     parser.add_argument('--port', type=int, default=8765, help='localhost HTTP port (default: 8765)')
@@ -215,7 +215,7 @@ def main() -> None:
     parser.add_argument('--operator-token-file', help='separate private app credential, required with --app')
     parser.add_argument('--keychain-helper', help='private macOS Keychain helper for background startup')
     parser.add_argument('--no-open', action='store_true', help='do not automatically open the app browser')
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if args.app and not args.operator_token_file:
         parser.error('--app requires --operator-token-file')
     if args.operator_token_file and not args.app:

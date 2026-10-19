@@ -204,6 +204,18 @@ def test_rendering_keeps_other_emails_after_failure_and_handles_empty_fields(tmp
                 assert(source.contains("Requested: " + body), source)
             }
             assert(AgentGateModel.sourceQuote("1.500", body: "Please pay $1,500 today.") == "$1,500")
+            for (body, quote) in [
+                ("Please pay $1,500,000 by Friday.", "Please pay $1,500"),
+                ("Pay $1,500 by Friday.", "Pay $1"),
+                ("Pay $1,500 by Friday.", "$500 by Friday"),
+                ("Rent due 5/16 please.", "due 5")
+            ] {
+                assert(AgentGateModel.sourceQuote(quote, body: body) == nil)
+                let partialNumber = await report(EmailInput(sender: "Sender", subject: "Request", date: "", body: body, complete: true),
+                    assessment("Request needs review.", purpose: .personalRequest, quote: quote))
+                assert(!partialNumber.contains("Requested:") && partialNumber.contains("Possible request; exact wording not confirmed."), partialNumber)
+            }
+            assert(AgentGateModel.sourceQuote("Pay $1,500", body: "Pay $1,500,000 now. Pay $1,500 later.") == "Pay $1,500")
             assert(AgentGateModel.sourceQuote("invented words", body: "Please reply.") == nil)
             for purpose: EmailPurpose in [.information, .unclear] {
                 let body = "Can you send me the deck by Friday?"

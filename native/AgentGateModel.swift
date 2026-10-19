@@ -166,6 +166,9 @@ struct AgentGateModel {
                   !CharacterSet.whitespacesAndNewlines.contains(scalars[end]) {
                 end = scalars.index(after: end)
             }
+            if begin > scalars.startIndex,
+               CharacterSet.alphanumerics.contains(scalars[scalars.index(before: begin)]) { continue }
+            if end < scalars.endIndex, CharacterSet.alphanumerics.contains(scalars[end]) { continue }
             return String(scalars[begin..<end])
         }
         return nil

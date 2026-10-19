@@ -145,16 +145,18 @@ class _EmailHTMLText(HTMLParser):
         self.ignored = []
 
     def handle_starttag(self, tag, attrs):
+        if tag == 'body' and self.ignored == ['head']:
+            self.ignored.clear()
         if tag in ('head', 'script', 'style', 'template'):
             self.ignored.append(tag)
-        elif not self.ignored and tag in ('br', 'p', 'div', 'li', 'tr', 'h1', 'h2', 'h3'):
+        elif not self.ignored and tag in ('br', 'p', 'div', 'li', 'tr', 'td', 'th', 'h1', 'h2', 'h3'):
             self.text.append('\n')
 
     def handle_endtag(self, tag):
         if self.ignored:
             if tag == self.ignored[-1]:
                 self.ignored.pop()
-        elif tag in ('p', 'div', 'li', 'tr', 'h1', 'h2', 'h3'):
+        elif tag in ('p', 'div', 'li', 'tr', 'td', 'th', 'h1', 'h2', 'h3'):
             self.text.append('\n')
 
     def handle_data(self, text):

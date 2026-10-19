@@ -50,6 +50,10 @@ async def main(helper):
         ('Missing body', [{'from': ['Taylor Nguyen'], 'subject': 'Interview availability'}]),
         ('Truncated body', [{'from': ['Harbor Bank Careers'], 'subject': 'Career events',
                              'text': 'Information about career events. ' * 100}]),
+        ('Reply request in a recruiter excerpt', [{'from': ['Taylor Nguyen'], 'subject': 'Interview slots',
+            'parts': [{'type': 'text/html', 'content':
+                '<p>Could you reply by Friday with your availability for a Tuesday phone interview?</p>'
+                + '<p>Our internship program includes mentoring and team projects.</p>' * 40}]}]),
     ]
     for name, messages in cases:
         agent = ReadOnlyMessageAgent(None, SampleGmail(messages), None, model)

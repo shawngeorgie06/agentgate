@@ -172,6 +172,15 @@ def test_empty_plain_part_falls_back_to_html():
     assert 'Please confirm your appointment.' in message['body']
 
 
+@pytest.mark.parametrize('html,expected', [
+    ('<table><tr><th>Event</th><td>Career Fair</td></tr></table>', 'Event\nCareer Fair'),
+    ('<head><title>Notice</title><body><p>Please confirm Tuesday.</p>', 'Please confirm Tuesday.'),
+])
+def test_email_html_preserves_table_cells_and_recovers_omitted_head_end(html, expected):
+    message = _message_data({'parts': [{'type': 'text/html', 'content': html}]})
+    assert expected in message['body']
+
+
 def test_missing_and_truncated_email_bodies_are_explicit():
     assert _message_data({'subject': 'Meeting'})['complete'] is False
     message = _message_data({'text': 'A long body. ' * 500})

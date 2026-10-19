@@ -104,6 +104,18 @@ def test_rendering_keeps_other_emails_after_failure_and_handles_empty_fields(tmp
                                        replyNeed: .notNeeded, reason: String(repeating: "An informational message ", count: 20))
             }
             print(text)
+            let wideMessages = (0..<3).map { _ in
+                EmailInput(sender: String(repeating: "S", count: 200), subject: String(repeating: "T", count: 200),
+                           date: "", body: "Message text", complete: true)
+            }
+            let wideReview = EmailReview(kind: "email_review",
+                scope: "Checked 3 matching messages from the first search page, not the entire inbox.", messages: wideMessages)
+            let wideText = await AgentGateModel.emailReply(wideReview, prompt: "Which need a reply?") { _, _ in
+                EmailAssessment(summary: String(repeating: "U", count: 150), replyNeed: .notNeeded,
+                                reason: String(repeating: "V", count: 120))
+            }
+            assert(wideText.unicodeScalars.count <= 1200, "Three-email review exceeded the output budget")
+            assert(wideText.components(separatedBy: "No reply appears needed").count == 4)
         }
     }
 }

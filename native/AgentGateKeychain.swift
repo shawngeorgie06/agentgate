@@ -37,6 +37,10 @@ if arguments.first == "read" || arguments.first == "forget" {
         let status = SecItemDelete(query(arguments[2]) as CFDictionary)
         exit(status == errSecSuccess || status == errSecItemNotFound ? 0 : 1)
     }
+    guard isatty(STDOUT_FILENO) == 0 else {
+        FileHandle.standardError.write(Data("AgentGate refuses to display a saved password in a terminal.\n".utf8))
+        exit(2)
+    }
     guard let value = readSecret(arguments[2]), value.count > 0, value.count <= 4096 else { exit(1) }
     FileHandle.standardOutput.write(value)
     exit(0)

@@ -1,5 +1,5 @@
 """Exercise macOS launchd with temporary sample credentials; no live accounts."""
-import os,sys,asyncio,subprocess,tempfile,time,socket,plistlib,re
+import os,sys,asyncio,subprocess,tempfile,time,socket,plistlib,re,shlex
 from pathlib import Path
 import requests
 project=Path(__file__).resolve().parents[1]
@@ -15,7 +15,11 @@ with tempfile.TemporaryDirectory(prefix='agentgate-background-smoke-') as direct
  CredentialStore(str(config/'credentials.json'),'sample-only-password').store('sample-key','sample-only-value')
  (config/'policies.yaml').write_text('policies:\n  - name: sample\n    agent: "*"\n    credential: "*"\n    auto_approve: false\n    escalate: false\n')
  helper=config/'sample-helper'
- helper.write_text('#!/bin/sh\nprintf %s sample-only-password\n');helper.chmod(0o700)
+ def set_helper(password=None):
+  command='exit 1' if password is None else 'printf %s '+shlex.quote(password)
+  helper.write_text('#!/bin/sh\necho attempt >> '+shlex.quote(str(config/'attempts'))+'\n'+command+'\n')
+  helper.chmod(0o700)
+ set_helper()
  with socket.socket() as reserve:
   reserve.bind(('127.0.0.1',0));port=reserve.getsockname()[1]
  definition=generate_plist(project,config,helper,port)
@@ -36,15 +40,33 @@ with tempfile.TemporaryDirectory(prefix='agentgate-background-smoke-') as direct
    if current and current!=previous and ready(): return current
    time.sleep(.2)
   raise RuntimeError('Sample background broker did not become ready.')
+ def wait_paused(attempts):
+  until=time.monotonic()+15
+  while time.monotonic()<until:
+   result=subprocess.run(['/bin/launchctl','print',target],capture_output=True,text=True)
+   if 'last exit code = 0' in result.stdout and pid() is None: break
+   time.sleep(.2)
+  else: raise RuntimeError('Failed unlock did not pause sample background startup.')
+  time.sleep(2.5)  # Longer than this sample job's restart throttle.
+  assert pid() is None,'Failed unlock restarted without operator intervention.'
+  assert len((config/'attempts').read_text().splitlines())==attempts,'Unlock was retried automatically.'
+  assert (config/'broker.stderr.log').read_text().count('Background startup paused.')==attempts
+ def retry():
+  result=subprocess.run(['/bin/launchctl','kickstart',target],capture_output=True)
+  assert result.returncode==0,'Sample background retry failed.'
  try:
   r=subprocess.run(['/bin/launchctl','bootstrap',f'gui/{os.getuid()}',str(plist)],capture_output=True)
   assert r.returncode==0,'Sample launchd bootstrap failed.'
+  wait_paused(1);print('Missing saved unlock: paused without repeated helper calls')
+  set_helper('sample-wrong-password');retry()
+  wait_paused(2);print('Incorrect saved unlock: paused without repeated helper calls')
+  set_helper('sample-only-password');retry()
   first=wait_ready();print('Headless launchd broker: authenticated app ready')
   r=subprocess.run(['/bin/launchctl','kill','SIGTERM',target],capture_output=True)
   assert r.returncode==0,'Sample stop failed.'
   second=wait_ready(first);print('Crash/exit supervision: restarted with a new process')
   logs=''.join(p.read_text() for p in [config/'broker.stdout.log',config/'broker.stderr.log'] if p.exists())
-  for value in ['sample-only-password','sample-only-value',read_token_file(str(config/'mcp-token')),read_token_file(str(config/'operator-token'))]: assert value not in logs
+  for value in ['sample-only-password','sample-wrong-password','sample-only-value',read_token_file(str(config/'mcp-token')),read_token_file(str(config/'operator-token'))]: assert value not in logs
   print('Sample startup logs: no passwords or bearer credentials')
  finally:
   subprocess.run(['/bin/launchctl','bootout',target],capture_output=True)

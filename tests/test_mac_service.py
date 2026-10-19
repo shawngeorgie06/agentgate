@@ -14,14 +14,64 @@ def test_plist_is_absolute_supervised_and_contains_no_inherited_secret(tmp_path,
     helper = tmp_path / 'helper'
     result = generate_plist(project, config, helper)
     assert result['ProgramArguments'][0] == str(project / '.venv/bin/python')
+    assert result['ProgramArguments'][1:4] == ['-m', 'broker.mac_service', 'run']
     assert '--no-open' in result['ProgramArguments']
     assert '--keychain-helper' in result['ProgramArguments']
-    assert result['KeepAlive'] is True
+    assert result['KeepAlive'] == {'SuccessfulExit': False}
     assert result['RunAtLoad'] is True
     assert result['Umask'] == 63
     assert result['LimitLoadToSessionType'] == 'Aqua'
     assert 'never-export-this' not in plistlib.dumps(result).decode()
     assert 'AGENTGATE_MASTER_PASSWORD' not in result['EnvironmentVariables']
+
+
+def test_launchd_stops_retrying_configuration_errors(tmp_path, monkeypatch, capsys):
+    from broker import mac_service
+    from broker import main as broker_main
+    monkeypatch.setattr('sys.argv', ['mac_service', 'run', '--keychain-helper', '/sample/helper'])
+
+    async def failed_start(**kwargs):
+        raise ConfigError('Could not unlock AgentGate with macOS Keychain.')
+
+    monkeypatch.setattr(broker_main, 'run', failed_start)
+    # launchd's SuccessfulExit condition must see a deliberate pause, not a crash.
+    mac_service.main()
+    error = capsys.readouterr().err
+    assert 'Could not unlock AgentGate' in error
+    assert 'Background startup paused.' in error
+
+
+@pytest.mark.parametrize('failure', [None, RuntimeError('unexpected failure')])
+def test_launchd_still_restarts_unexpected_broker_exits(monkeypatch, failure):
+    from broker import mac_service
+    from broker import main as broker_main
+    monkeypatch.setattr('sys.argv', ['mac_service', 'run'])
+
+    async def ended(**kwargs):
+        if failure is not None:
+            raise failure
+
+    monkeypatch.setattr(broker_main, 'run', ended)
+    if failure is None:
+        with pytest.raises(SystemExit) as error:
+            mac_service.main()
+        assert error.value.code == 1
+    else:
+        with pytest.raises(RuntimeError, match='unexpected failure'):
+            mac_service.main()
+
+
+def test_direct_broker_command_keeps_nonzero_configuration_exit(monkeypatch):
+    from broker import main as broker_main
+    monkeypatch.setattr('sys.argv', ['broker'])
+
+    async def failed_start(**kwargs):
+        raise ConfigError('Invalid configuration.')
+
+    monkeypatch.setattr(broker_main, 'run', failed_start)
+    with pytest.raises(SystemExit) as error:
+        broker_main.main()
+    assert error.value.code == 2
 
 
 def test_plist_gives_approvals_long_enough_to_answer_by_text(tmp_path):

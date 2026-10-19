@@ -14,6 +14,7 @@ def test_plist_is_absolute_supervised_and_contains_no_inherited_secret(tmp_path,
     helper = tmp_path / 'helper'
     result = generate_plist(project, config, helper)
     assert result['ProgramArguments'][0] == str(project / '.venv/bin/python')
+    assert result['ProgramArguments'][1:4] == ['-m', 'broker.mac_service', 'run']
     assert '--no-open' in result['ProgramArguments']
     assert '--keychain-helper' in result['ProgramArguments']
     assert result['KeepAlive'] == {'SuccessfulExit': False}
@@ -35,7 +36,9 @@ def test_launchd_stops_retrying_configuration_errors(tmp_path, monkeypatch, caps
     monkeypatch.setattr(broker_main, 'run', failed_start)
     # launchd's SuccessfulExit condition must see a deliberate pause, not a crash.
     mac_service.main()
-    assert 'Could not unlock AgentGate' in capsys.readouterr().err
+    error = capsys.readouterr().err
+    assert 'Could not unlock AgentGate' in error
+    assert 'Background startup paused.' in error
 
 
 @pytest.mark.parametrize('failure', [None, RuntimeError('unexpected failure')])

@@ -10,6 +10,8 @@ Before activating the background service, stop the existing terminal broker. Bot
 
 The service starts at login and restarts unexpected exits with a 30-second throttle. Configuration errors, including a missing or incorrect saved unlock, pause startup instead of retrying indefinitely. Its private log records the error and "Background startup paused." Open **AgentGate.app**, use **Set up saved unlock…** if needed, then **Open AgentGate** to retry. A paused job remains loaded but is not running; macOS also tries it again at the next login.
 
+A locked Keychain or another broker holding the vault lock also pauses startup. Unlock the Keychain or stop the other broker before retrying.
+
 It starts quietly without opening browser windows on each restart. Closing the browser does not stop agents or revoke their access. To stop the service, unload the LaunchAgent; merely killing a supervised process makes macOS restart it. Uninstalling unloads the service and removes its definition, while preserving your accounts, policies, identities, and audit records. Keychain removal is a separate explicit action.
 
 Log out stops the per-user service. Log in starts it again. The broker is unavailable while your Mac is asleep or shut down. This is local background operation, not cloud hosting or a public website. Never expose its listener through an internet proxy.

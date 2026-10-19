@@ -50,7 +50,7 @@ with tempfile.TemporaryDirectory(prefix='agentgate-background-smoke-') as direct
   time.sleep(2.5)  # Longer than this sample job's restart throttle.
   assert pid() is None,'Failed unlock restarted without operator intervention.'
   assert len((config/'attempts').read_text().splitlines())==attempts,'Unlock was retried automatically.'
-  assert 'Background startup paused.' in (config/'broker.stderr.log').read_text()
+  assert (config/'broker.stderr.log').read_text().count('Background startup paused.')==attempts
  def retry():
   result=subprocess.run(['/bin/launchctl','kickstart',target],capture_output=True)
   assert result.returncode==0,'Sample background retry failed.'

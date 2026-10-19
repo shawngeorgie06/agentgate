@@ -133,14 +133,14 @@ struct AgentGateModel {
         guard !words.isEmpty && (" " + evidenceWords(body) + " ").contains(" " + words + " ") else {
             return .unverified
         }
-        var verified: [String] = []
+        var foundPositive = false
         var foundNegation = false
         let quoteIncludesNegation = negatedRequest(quote ?? "")
         body.enumerateSubstrings(in: body.startIndex..., options: .bySentences) { sentence, _, _, _ in
             guard let sentence else { return }
             // Contrast clauses can ask for one step while explicitly declining another.
             let separated = sentence.replacingOccurrences(
-                of: #"(?i);|,\s*(?=just\b|please\b|do not\b|don['’]t\b|no need\b)|\bbut\b"#,
+                of: #"(?i);|,\s*(?=just\b|please\b|do not\b|don['’]t\b|no need\b)|,\s*but\b"#,
                 with: "\n", options: .regularExpression)
             for clause in separated.components(separatedBy: "\n") {
                 let source = evidenceWords(clause)
@@ -148,13 +148,12 @@ struct AgentGateModel {
                     && (" " + words + " ").contains(" " + source + " ")
                 guard !source.isEmpty && ((" " + source + " ").contains(" " + words + " ") || wholeClause) else { continue }
                 if negatedRequest(clause) { foundNegation = true }
-                else if !quoteIncludesNegation || !foundNegation {
-                    verified.append(clause.trimmingCharacters(in: .whitespacesAndNewlines))
-                }
+                else { foundPositive = true }
             }
         }
-        if !verified.isEmpty { return .verified(verified.joined(separator: " ")) }
-        return foundNegation ? .negated : .unverified
+        if foundNegation && (quoteIncludesNegation || !foundPositive) { return .negated }
+        if foundPositive { return .verified((quote ?? "").trimmingCharacters(in: .whitespacesAndNewlines)) }
+        return .unverified
     }
     static func noticePrefix(_ email: EmailInput, summary: String) -> String {
         guard email.source == "github" else { return "Activity update: " }
@@ -276,7 +275,7 @@ struct AgentGateModel {
                 if purpose == .personalRequest { lines.append("  Possible request; exact wording not confirmed.") }
                 else if purpose == .unclear { lines.append("  Follow-up unclear.") }
             case .negated:
-                if purpose == .personalRequest { lines.append("  Follow-up unclear; source includes a negative instruction.") }
+                if purpose == .personalRequest { lines.append("  Follow-up unclear; quoted wording needs review.") }
                 else if purpose == .unclear { lines.append("  Follow-up unclear.") }
             }
         }

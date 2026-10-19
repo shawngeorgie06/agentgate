@@ -159,8 +159,11 @@ def test_rendering_keeps_other_emails_after_failure_and_handles_empty_fields(tmp
             assert(!partialNegation.contains("Requested:") && partialNegation.contains("Follow-up unclear"), partialNegation)
             let footerBody = "Please submit your onboarding form by Friday. Please do not reply to this automated message."
             let footerRequest = await report(EmailInput(sender: "HR", subject: "Form", date: "",
-                body: footerBody, complete: true), assessment("Form due Friday.", purpose: .personalRequest, quote: footerBody))
+                body: footerBody, complete: true), assessment("Form due Friday.", purpose: .personalRequest, quote: "Please submit your onboarding form by Friday."))
             assert(footerRequest.contains("Requested: Please submit your onboarding form by Friday."), footerRequest)
+            let footerInQuote = await report(EmailInput(sender: "HR", subject: "Form", date: "",
+                body: footerBody, complete: true), assessment("Form due Friday.", purpose: .personalRequest, quote: footerBody))
+            assert(footerInQuote.contains("Follow-up unclear") && !footerInQuote.contains("Requested:"), footerInQuote)
             let stitched = await report(EmailInput(sender: "HR", subject: "Form", date: "",
                 body: "Please submit the signed form. The deadline is Friday.", complete: true),
                 assessment("Form due Friday.", purpose: .personalRequest, quote: "Please submit the signed form by Friday"))
@@ -175,6 +178,20 @@ def test_rendering_keeps_other_emails_after_failure_and_handles_empty_fields(tmp
                     assessment("Form due Friday.", purpose: .personalRequest, quote: quote))
                 assert(mixed.contains("Requested:") && mixed.contains("Friday"), mixed)
                 assert(!mixed.contains("Requested: No need") && !mixed.contains("Requested: Please don't"), mixed)
+            }
+            for body in ["No need to send your availability; we will call you.",
+                         "We will call you; no need to send your availability."] {
+                for purpose: EmailPurpose in [.personalRequest, .information] {
+                    let reversed = await report(EmailInput(sender: "HR", subject: "Update", date: "", body: body, complete: true),
+                        assessment("We will call you.", purpose: purpose, quote: body))
+                    assert(!reversed.contains("Requested:") && !reversed.contains("Possible request:"), reversed)
+                }
+            }
+            for body in ["Please send everything but the cover letter by Friday.",
+                         "Please sign the lease but not the addendum by Friday."] {
+                let preserved = await report(EmailInput(sender: "HR", subject: "Request", date: "", body: body, complete: true),
+                    assessment("Request due Friday.", purpose: .personalRequest, quote: body))
+                assert(preserved.contains("Requested: " + body), preserved)
             }
             for purpose: EmailPurpose in [.information, .unclear] {
                 let body = "Can you send me the deck by Friday?"

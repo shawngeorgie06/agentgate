@@ -128,7 +128,11 @@ struct AgentGateModel {
         request.range(of: #"\b(no need to|(?:do not|don['’]t) (?:send|reply|respond|submit|complete|provide|confirm)|not required to|need not|no longer need to)\b"#,
                       options: [.regularExpression, .caseInsensitive]) != nil
     }
-    static func sourceQuote(_ quote: String?, body: String) -> String? {
+    struct SourceQuote {
+        let text: String
+        let range: Range<String.Index>
+    }
+    static func sourceQuote(_ quote: String?, body: String) -> SourceQuote? {
         let needle = evidenceWords(quote ?? "").split(separator: " ").map(String.init)
         guard !needle.isEmpty else { return nil }
         let scalars = body.unicodeScalars
@@ -169,35 +173,37 @@ struct AgentGateModel {
             if begin > scalars.startIndex,
                CharacterSet.alphanumerics.contains(scalars[scalars.index(before: begin)]) { continue }
             if end < scalars.endIndex, CharacterSet.alphanumerics.contains(scalars[end]) { continue }
-            return String(scalars[begin..<end])
+            return SourceQuote(text: String(scalars[begin..<end]), range: begin..<end)
         }
         return nil
     }
     static func requestEvidence(_ quote: String?, body: String) -> RequestEvidence {
         guard let original = sourceQuote(quote, body: body) else { return .unverified }
-        let words = evidenceWords(original)
         var foundPositive = false
         var foundNegation = false
-        let quoteIncludesNegation = negatedRequest(original)
-        body.enumerateSubstrings(in: body.startIndex..., options: .bySentences) { sentence, _, _, _ in
-            guard let sentence else { return }
-            // Contrast clauses can ask for one step while explicitly declining another.
-            let separated = sentence.replacingOccurrences(
-                of: #"(?i);|,\s*(?=just\b|please\b|do not\b|don['’]t\b|no need\b)|,\s*but\b"#,
-                with: "\n", options: .regularExpression)
-            for clause in separated.components(separatedBy: "\n") {
-                let source = evidenceWords(clause)
-                let wholeClause = source.split(separator: " ").count >= 3
-                    && (" " + words + " ").contains(" " + source + " ")
-                guard !source.isEmpty && ((" " + source + " ").contains(" " + words + " ") || wholeClause) else { continue }
-                if negatedRequest(clause) { foundNegation = true }
+        let quoteIncludesNegation = negatedRequest(original.text)
+        body.enumerateSubstrings(in: body.startIndex..., options: .bySentences) { _, sentence, _, _ in
+            guard sentence.overlaps(original.range) else { return }
+            // Evaluate only clauses at this occurrence, never a similar phrase elsewhere in the email.
+            var begin = sentence.lowerBound
+            let boundary = #";|,\s*(?=just\b|please\b|do not\b|don['’]t\b|no need\b)|,\s*but\b"#
+            var clauses: [Range<String.Index>] = []
+            while let separator = body.range(of: boundary, options: [.regularExpression, .caseInsensitive],
+                                             range: begin..<sentence.upperBound) {
+                clauses.append(begin..<separator.lowerBound)
+                begin = separator.upperBound
+            }
+            clauses.append(begin..<sentence.upperBound)
+            for clause in clauses where !clause.isEmpty && clause.overlaps(original.range) {
+                if negatedRequest(String(body[clause])) { foundNegation = true }
                 else { foundPositive = true }
             }
         }
         if foundNegation && (quoteIncludesNegation || !foundPositive) { return .negated }
-        if foundPositive { return .verified(original) }
+        if foundPositive { return .verified(original.text) }
         return .unverified
     }
+
     static func noticePrefix(_ email: EmailInput, summary: String) -> String {
         guard email.source == "github" else { return "Activity update: " }
         let pattern = #"\bPR\s*#?\s*(\d{1,9})\b"#

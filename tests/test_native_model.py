@@ -203,7 +203,7 @@ def test_rendering_keeps_other_emails_after_failure_and_handles_empty_fields(tmp
                     assessment("Request due Friday.", purpose: .personalRequest, quote: quote))
                 assert(source.contains("Requested: " + body), source)
             }
-            assert(AgentGateModel.sourceQuote("1.500", body: "Please pay $1,500 today.") == "$1,500")
+            assert(AgentGateModel.sourceQuote("1.500", body: "Please pay $1,500 today.")?.text == "$1,500")
             for (body, quote) in [
                 ("Please pay $1,500,000 by Friday.", "Please pay $1,500"),
                 ("Pay $1,500 by Friday.", "Pay $1"),
@@ -215,7 +215,19 @@ def test_rendering_keeps_other_emails_after_failure_and_handles_empty_fields(tmp
                     assessment("Request needs review.", purpose: .personalRequest, quote: quote))
                 assert(!partialNumber.contains("Requested:") && partialNumber.contains("Possible request; exact wording not confirmed."), partialNumber)
             }
-            assert(AgentGateModel.sourceQuote("Pay $1,500", body: "Pay $1,500,000 now. Pay $1,500 later.") == "Pay $1,500")
+            assert(AgentGateModel.sourceQuote("Pay $1,500", body: "Pay $1,500,000 now. Pay $1,500 later.")?.text == "Pay $1,500")
+            let wrongOccurrence = "Send $1,500,000 now. Don't send $1,500."
+            let scoped = await report(EmailInput(sender: "Sender", subject: "Request", date: "", body: wrongOccurrence, complete: true),
+                assessment("Payment instructions.", purpose: .personalRequest, quote: "send $1,500"))
+            assert(!scoped.contains("Requested:") && scoped.contains("Follow-up unclear"), scoped)
+            let rightOccurrence = "Don't send $1,500,000. Send $1,500 now."
+            let positiveScoped = await report(EmailInput(sender: "Sender", subject: "Request", date: "", body: rightOccurrence, complete: true),
+                assessment("Payment instructions.", purpose: .personalRequest, quote: "send $1,500"))
+            assert(positiveScoped.contains("Requested: Send $1,500"), positiveScoped)
+            let repeatedAsk = "Don't send the deck. Send the deck by Friday."
+            let firstOccurrence = await report(EmailInput(sender: "Sender", subject: "Deck", date: "", body: repeatedAsk, complete: true),
+                assessment("Deck instructions.", purpose: .personalRequest, quote: "send the deck"))
+            assert(!firstOccurrence.contains("Requested:") && firstOccurrence.contains("Follow-up unclear"), firstOccurrence)
             assert(AgentGateModel.sourceQuote("invented words", body: "Please reply.") == nil)
             for purpose: EmailPurpose in [.information, .unclear] {
                 let body = "Can you send me the deck by Friday?"

@@ -93,7 +93,7 @@ struct AgentGateModel {
     static func reviewSummary(_ text: String, body: String, stripVerdicts: Bool = true) -> String {
         var clean = text.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }.joined(separator: " ")
         let withoutPrefix = clean.replacingOccurrences(
-            of: #"(?i)^(?:(?:an? )?excerpt(?:ed)?(?: of(?: an?)?)? (?:email|message)|(?:this )?email excerpt)\s*[:,\-]?\s+"#,
+            of: #"(?i)^(?:(?:an? )?excerpt(?:ed)?(?: of(?: an?)?)? (?:email|message)|(?:this )?email excerpt)\s*[:,\-—–]?\s+"#,
             with: "", options: .regularExpression)
         if withoutPrefix != clean, let first = withoutPrefix.first {
             let firstWord = withoutPrefix.split(separator: " ").first ?? ""
@@ -114,8 +114,9 @@ struct AgentGateModel {
             }
         }
         clean = line(clean, limit: 150)
+        let sentenceEnd = clean.replacingOccurrences(of: #"["'”’)\]]+$"#, with: "", options: .regularExpression)
         if stripVerdicts && !clean.isEmpty && clean.unicodeScalars.count < 150
-            && ![".", "!", "?", "…"].contains(String(clean.suffix(1))) { clean += "." }
+            && ![".", "!", "?", "…", "。", "！", "？"].contains(String(sentenceEnd.suffix(1))) { clean += "." }
         return clean
     }
     @available(macOS 26.0, *)

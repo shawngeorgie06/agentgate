@@ -225,6 +225,13 @@ def test_rendering_keeps_other_emails_after_failure_and_handles_empty_fields(tmp
                 body: "Sale.") == "Offers discounts.")
             assert(AgentGateModel.reviewSummary("Automatic renewal; no action necessary.",
                 body: "Renewal details.", stripVerdicts: false) == "Automatic renewal; no action necessary.")
+            assert(AgentGateModel.reviewSummary("Excerpt email — promoting fragrance discounts.", body: "Sale.")
+                == "Promoting fragrance discounts.")
+            assert(AgentGateModel.reviewSummary("Excerpt email – promoting discounts", body: "Sale.")
+                == "Promoting discounts.")
+            for ending in ["会議は金曜日です。", "完了！", "確認？", #"Bob wrote "see you Friday.""#, "Deadline (Friday.)"] {
+                assert(AgentGateModel.reviewSummary(ending, body: ending) == ending, "Duplicate sentence punctuation")
+            }
             for complete in [true, false] {
                 let noiseMessages = [
                     EmailInput(sender: "WayUp", subject: "Two software roles", date: "",

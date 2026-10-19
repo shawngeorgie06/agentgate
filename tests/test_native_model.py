@@ -191,13 +191,22 @@ def test_rendering_keeps_other_emails_after_failure_and_handles_empty_fields(tmp
             assert(!notificationText.contains("Reply needed"))
             assert(notificationText.components(separatedBy: "Only excerpts reviewed").count == 2)
             assert(notificationText.unicodeScalars.count <= 1200)
-            let unverifiedNotification = await AgentGateModel.emailReply(
-                EmailReview(kind: "email_review", scope: wideReview.scope, messages: notifications),
-                prompt: "Which need a reply?") { _, _ in
-                    EmailAssessment(summary: "Review posted with no actionable comments.", followUp: .task,
-                                    reason: "Work may be needed.")
+            for kind: FollowUp in [.reply, .task] {
+                for complete in [true, false] {
+                    let notification = EmailInput(sender: "CodeRabbit", subject: "Review", date: "",
+                        body: "Review posted with no actionable comments.", complete: complete, source: "github")
+                    let unverifiedNotification = await AgentGateModel.emailReply(
+                        EmailReview(kind: "email_review", scope: "Checked 1 requested email.", messages: [notification]),
+                        prompt: "Which need a reply?") { _, _ in
+                            EmailAssessment(summary: "Review posted with no actionable comments.", followUp: kind,
+                                            reason: "Work may be needed.")
+                        }
+                    assert(unverifiedNotification.contains("Review posted with no actionable comments."))
+                    assert(!unverifiedNotification.contains("Task mentioned") && !unverifiedNotification.contains("Possible"),
+                           "GitHub activity must not acquire unsupported email-reply labels: " + unverifiedNotification)
+                    assert(!unverifiedNotification.contains("couldn't verify"))
                 }
-            assert(!unverifiedNotification.contains("Task mentioned") && !unverifiedNotification.contains("Possible task"))
+            }
             assert(AgentGateModel.reviewSummary("Excerpt email promoting fragrance discounts; no required action.",
                 body: "Optional shopping links.") == "Promoting fragrance discounts.")
             assert(AgentGateModel.reviewSummary("Excerpt email: iPhone sale.", body: "iPhone sale.") == "iPhone sale.")

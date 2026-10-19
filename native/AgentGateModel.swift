@@ -135,13 +135,23 @@ struct AgentGateModel {
         }
         var verified: [String] = []
         var foundNegation = false
+        let quoteIncludesNegation = negatedRequest(quote ?? "")
         body.enumerateSubstrings(in: body.startIndex..., options: .bySentences) { sentence, _, _, _ in
             guard let sentence else { return }
-            let source = evidenceWords(sentence)
-            guard !source.isEmpty && ((" " + source + " ").contains(" " + words + " ")
-                || (" " + words + " ").contains(" " + source + " ")) else { return }
-            if negatedRequest(sentence) { foundNegation = true }
-            else { verified.append(sentence.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            // Contrast clauses can ask for one step while explicitly declining another.
+            let separated = sentence.replacingOccurrences(
+                of: #"(?i);|,\s*(?=just\b|please\b|do not\b|don['’]t\b|no need\b)|\bbut\b"#,
+                with: "\n", options: .regularExpression)
+            for clause in separated.components(separatedBy: "\n") {
+                let source = evidenceWords(clause)
+                let wholeClause = source.split(separator: " ").count >= 3
+                    && (" " + words + " ").contains(" " + source + " ")
+                guard !source.isEmpty && ((" " + source + " ").contains(" " + words + " ") || wholeClause) else { continue }
+                if negatedRequest(clause) { foundNegation = true }
+                else if !quoteIncludesNegation || !foundNegation {
+                    verified.append(clause.trimmingCharacters(in: .whitespacesAndNewlines))
+                }
+            }
         }
         if !verified.isEmpty { return .verified(verified.joined(separator: " ")) }
         return foundNegation ? .negated : .unverified
@@ -164,6 +174,11 @@ struct AgentGateModel {
         prompt.range(of: #"\b(run[ -]?id|profile|config(?:uration|ured|ure)?|plan|tier|subscription|untrusted|(?:AI|reviewer|agent) (?:prompts?|instructions?)|(?:prompts?|instructions?|guidance) (?:for|to) (?:AI |the )?(?:agents?|reviewers?))\b"#,
                      options: [.regularExpression, .caseInsensitive]) != nil
     }
+    static func wantsNotificationAnswer(_ prompt: String) -> Bool {
+        wantsNotificationDetail(prompt) || prompt.range(
+            of: #"\bwho\b.*\b(commented|reviewed|posted|wrote|authored)\b"#,
+            options: [.regularExpression, .caseInsensitive]) != nil
+    }
     static func assessmentBody(_ email: EmailInput, prompt: String) -> String {
         guard email.source == "github", !wantsNotificationDetail(prompt) else { return email.body }
         // Remove only known notification metadata fields, retaining all other source text.
@@ -183,7 +198,7 @@ struct AgentGateModel {
     @available(macOS 26.0, *)
     static func assessEmail(_ email: EmailInput, prompt: String, model: SystemLanguageModel,
                             classify: Bool = true) async throws -> EmailAssessment {
-        let factsOnly = classify && email.source == "github" && !wantsNotificationDetail(prompt)
+        let factsOnly = classify && email.source == "github" && !wantsNotificationAnswer(prompt)
         let question = factsOnly
             ? "Summarize the concrete review findings or activity in this notification, preserving counts, files, and dates."
             : prompt
@@ -250,14 +265,19 @@ struct AgentGateModel {
             default: prefix = ""
             }
             lines.append("\(marker) \(sender): \(prefix)\(summary)")
-            guard purpose == .personalRequest else { continue }
+            guard purpose != .invitationOrPromotion && purpose != .activityNotice else { continue }
             switch requestEvidence(assessment.requestQuote, body: email.body) {
             case .verified(let text):
-                let label = email.complete ? "Requested" : "Requested in excerpt"
+                let label = purpose == .personalRequest
+                    ? (email.complete ? "Requested" : "Requested in excerpt")
+                    : (email.complete ? "Possible request" : "Possible request in excerpt")
                 lines.append("  \(label): \(line(text, limit: email.complete ? 120 : 90))")
             case .unverified:
-                lines.append("  Possible request; exact wording not confirmed.")
-            case .negated: break
+                if purpose == .personalRequest { lines.append("  Possible request; exact wording not confirmed.") }
+                else if purpose == .unclear { lines.append("  Follow-up unclear.") }
+            case .negated:
+                if purpose == .personalRequest { lines.append("  Follow-up unclear; source includes a negative instruction.") }
+                else if purpose == .unclear { lines.append("  Follow-up unclear.") }
             }
         }
         if !partial.isEmpty {

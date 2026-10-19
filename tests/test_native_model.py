@@ -156,7 +156,7 @@ def test_rendering_keeps_other_emails_after_failure_and_handles_empty_fields(tmp
             let partialNegation = await report(EmailInput(sender: "Recruiter", subject: "Update", date: "",
                 body: negated, complete: true), assessment("We will call you.", purpose: .personalRequest,
                 quote: "send your availability for the interview"))
-            assert(!partialNegation.contains("Requested:"), partialNegation)
+            assert(!partialNegation.contains("Requested:") && partialNegation.contains("Follow-up unclear"), partialNegation)
             let footerBody = "Please submit your onboarding form by Friday. Please do not reply to this automated message."
             let footerRequest = await report(EmailInput(sender: "HR", subject: "Form", date: "",
                 body: footerBody, complete: true), assessment("Form due Friday.", purpose: .personalRequest, quote: footerBody))
@@ -165,6 +165,26 @@ def test_rendering_keeps_other_emails_after_failure_and_handles_empty_fields(tmp
                 body: "Please submit the signed form. The deadline is Friday.", complete: true),
                 assessment("Form due Friday.", purpose: .personalRequest, quote: "Please submit the signed form by Friday"))
             assert(stitched.contains("Possible request; exact wording not confirmed."), stitched)
+            for (body, quote) in [
+                ("No need to print it; just sign and return the attached offer letter by Friday.",
+                 "sign and return the attached offer letter by Friday"),
+                ("Please don't reply to this email, but submit the form at the portal by Friday.",
+                 "submit the form at the portal by Friday")
+            ] {
+                let mixed = await report(EmailInput(sender: "HR", subject: "Form", date: "", body: body, complete: true),
+                    assessment("Form due Friday.", purpose: .personalRequest, quote: quote))
+                assert(mixed.contains("Requested:") && mixed.contains("Friday"), mixed)
+                assert(!mixed.contains("Requested: No need") && !mixed.contains("Requested: Please don't"), mixed)
+            }
+            for purpose: EmailPurpose in [.information, .unclear] {
+                let body = "Can you send me the deck by Friday?"
+                let possible = await report(EmailInput(sender: "Priya", subject: "Deck", date: "", body: body, complete: true),
+                    assessment("Deck due Friday.", purpose: purpose, quote: body))
+                assert(possible.contains("Possible request: Can you send me the deck by Friday?"), possible)
+            }
+            let unclear = await report(EmailInput(sender: "Priya", subject: "Deck", date: "", body: "We should discuss this.", complete: true),
+                assessment("Discussion about the deck.", purpose: .unclear))
+            assert(unclear.contains("Follow-up unclear."), unclear)
             assert(!AgentGateModel.negatedRequest("Please do not forget to send the slides by Friday."))
             assert(!AgentGateModel.wantsNotificationDetail("Did the travel agent reply? Which emails need a response?"))
             assert(AgentGateModel.wantsNotificationDetail("Does the PR review need action, and what's the run ID?"))
@@ -209,12 +229,14 @@ def test_rendering_keeps_other_emails_after_failure_and_handles_empty_fields(tmp
                 }
                 let review = EmailReview(kind: "email_review",
                     scope: "Checked 3 matching messages from the first search page, not the entire inbox.", messages: messages)
-                let text = await AgentGateModel.emailReply(review, prompt: "Which need a reply?") { _, _ in
-                    assessment(String(repeating: "U", count: 150), purpose: .personalRequest,
-                        quote: quote)
+                for purpose: EmailPurpose in [.personalRequest, .information, .unclear] {
+                    let text = await AgentGateModel.emailReply(review, prompt: "Which need a reply?") { _, _ in
+                        assessment(String(repeating: "U", count: 150), purpose: purpose, quote: quote)
+                    }
+                    assert(text.unicodeScalars.count <= 1200, "Three-message response exceeded budget")
+                    let label = purpose == .personalRequest ? "Requested" : "Possible request"
+                    assert(text.components(separatedBy: label).count == 4)
                 }
-                assert(text.unicodeScalars.count <= 1200, "Three-message response exceeded budget")
-                assert(text.components(separatedBy: "Requested").count == 4)
             }
             assert(AgentGateModel.reviewSummary("Excerpt email promoting fragrance discounts; no required action.",
                 body: "Optional shopping links.") == "Promoting fragrance discounts.")
@@ -307,6 +329,9 @@ def test_github_notification_reports_activity_and_preserves_targeted_metadata(lo
     assert travel.get('ok')
     assert 'table' in travel['data']['text'].lower(), travel
     assert 'CHILL' not in travel['data']['text'] and 'Run ID' not in travel['data']['text'], travel
+    author_context = context.replace('Fix CodeRabbit comments on PR #14:', 'Morgan reviewed PR #14 and commented:')
+    author = local_model.answer('Who commented on the PR, and should I respond?', author_context)
+    assert author.get('ok') and 'Morgan' in author['data']['text'], author
 
 
 def test_zero_comment_review_notice_does_not_invent_work(local_model):

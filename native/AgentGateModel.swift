@@ -250,7 +250,7 @@ struct AgentGateModel {
         })
     }
     static func wantsExactEmailDetail(_ prompt: String) -> Bool {
-        prompt.range(of: #"\b(urls?|links?|addresses?|websites?|codes?|passwords?|pins?)\b"#,
+        prompt.range(of: #"\b(urls?|links?|address(?:es)?|websites?|codes?|passwords?|pins?)\b"#,
                      options: [.regularExpression, .caseInsensitive]) != nil
     }
     static func refinedEmailSummary(_ candidate: String, original: String, body: String) -> String {

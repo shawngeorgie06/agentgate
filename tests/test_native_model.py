@@ -129,7 +129,7 @@ def test_rendering_keeps_other_emails_after_failure_and_handles_empty_fields(tmp
             assert(AgentGateModel.refinedEmailSummary("Gate B14", original: "Gate B12", body: "Gate B12") == "Gate B12")
             assert(AgentGateModel.refinedEmailSummary("No action required.", original: "New cloud models available.", body: "New cloud models available.") == "New cloud models available.")
             assert(AgentGateModel.refinedEmailSummary("  Pay as you go access.  ", original: "New access.", body: "New access.") == "Pay as you go access.")
-            for prompt in ["What URL is linked, and do I need to reply?", "Give me the coupon code and assess follow-up", "Tell me the password", "Which link should I use?"] {
+            for prompt in ["What URL is linked, and do I need to reply?", "Give me the coupon code and assess follow-up", "Tell me the password", "Which link should I use?", "What is the mailing address?", "What email address should I use?", "List the mailing addresses"] {
                 assert(AgentGateModel.wantsExactEmailDetail(prompt), prompt)
             }
             assert(!AgentGateModel.wantsExactEmailDetail("Check my unread emails and tell me which need a reply"))

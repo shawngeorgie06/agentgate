@@ -123,6 +123,8 @@ def test_rendering_keeps_other_emails_after_failure_and_handles_empty_fields(tmp
             for (question, expected) in requests {
                 assert(AgentGateModel.wantsReplyAssessment(question) == expected, question)
             }
+            assert(AgentGateModel.summaryNumbers("50% off until October 31, 2026; https://example.com/123") == ["50", "31", "2026"])
+            assert(!AgentGateModel.summaryNumbers("Spring 2027 roles").isSubset(of: AgentGateModel.summaryNumbers("Open roles")))
             let quoteBody = "PLEASE confirm by replying “yes” or “no” before Oct. 25."
             assert(AgentGateModel.evidenceWords(quoteBody) ==
                 AgentGateModel.evidenceWords("please confirm by replying yes or no before Oct 25"))
@@ -242,8 +244,12 @@ def test_rendering_keeps_other_emails_after_failure_and_handles_empty_fields(tmp
                 let body = "Can you send me the deck by Friday?"
                 let possible = await report(EmailInput(sender: "Priya", subject: "Deck", date: "", body: body, complete: true),
                     assessment("Deck due Friday.", purpose: purpose, quote: body))
-                assert(possible.contains("Possible request: Can you send me the deck by Friday?"), possible)
+                assert(possible.contains(purpose == .information ? "Follow-up unclear." : "Possible request: Can you send me the deck by Friday?"), possible)
             }
+            let noRequestBody = "Add credits at https://example.com/plans."
+            let informationalOffer = await report(EmailInput(sender: "Product", subject: "Update", date: "", body: noRequestBody, complete: true),
+                assessment("Pay-as-you-go access announced.", purpose: .information, quote: noRequestBody))
+            assert(!informationalOffer.contains("Possible request") && !informationalOffer.contains("Requested:") && informationalOffer.contains("Follow-up unclear."), informationalOffer)
             let unclear = await report(EmailInput(sender: "Priya", subject: "Deck", date: "", body: "We should discuss this.", complete: true),
                 assessment("Discussion about the deck.", purpose: .unclear))
             assert(unclear.contains("Follow-up unclear."), unclear)
@@ -297,7 +303,7 @@ def test_rendering_keeps_other_emails_after_failure_and_handles_empty_fields(tmp
                     }
                     assert(text.unicodeScalars.count <= 1200, "Three-message response exceeded budget")
                     let label = purpose == .personalRequest ? "Requested" : "Possible request"
-                    assert(text.components(separatedBy: label).count == 4)
+                    assert(text.components(separatedBy: label).count == (purpose == .information ? 1 : 4))
                 }
             }
             assert(AgentGateModel.reviewSummary("Excerpt email promoting fragrance discounts; no required action.",
@@ -426,7 +432,7 @@ def test_job_ad_and_promotion_keep_content_while_required_form_stays_visible(loc
     assert result.get('ok')
     text = result['data']['text']
     assert 'Schneider' in text and '2027' in text
-    assert any(word in text.lower() for word in ('discount', 'save', 'sale')), text
+    assert any(word in text.lower() for word in ('discount', 'save', 'sale', '30% off')), text
     assert 'Friday' in text and 'form' in text.lower()
     assert 'Possible task' not in text and "couldn't verify" not in text
     assert 'excerpt email' not in text.lower() and 'no required action' not in text.lower()
@@ -499,3 +505,62 @@ def test_plain_personal_request_without_process_rule_stays_visible(local_model):
     text = result['data']['text']
     assert 'Requested:' in text and 'Friday' in text and 'slides' in text.lower(), text
     assert 'Optional:' not in text, text
+
+
+def test_product_upsells_do_not_become_requests_or_sales_copy(local_model):
+    messages = [
+        {'sender': 'Grammarly', 'subject': '50% off Pro', 'date': '', 'complete': False,
+         'body': 'Get 50% off Grammarly Pro. Redeem your offer today.'},
+        {'sender': 'Ollama', 'subject': 'Introducing pay as you go', 'date': '', 'complete': True,
+         'body': 'All Ollama Cloud models can now be used through pay as you go. Flexible, Fast, Private. '
+                 'Add credits [https://ollama.com/plans]. Sign up for Team for shared access.'},
+        {'sender': 'Costco Wholesale', 'subject': 'Member savings', 'date': '', 'complete': False,
+         'body': 'Warehouse offers valid through September 13, 2026. Redeem rewards by October 31, 2026. '
+                 'Browse deals and shop online.'},
+    ]
+    context = json.dumps({'kind': 'email_review', 'scope': 'Checked 3 unread messages.', 'messages': messages})
+    result = local_model.answer('Check my unread emails and tell me which need a reply', context)
+    assert result.get('ok')
+    text = result['data']['text']
+    assert 'Grammarly: Optional:' in text, text
+    assert 'Possible request' not in text and 'Requested' not in text, text
+    assert '50%' in text or '50 percent' in text.lower(), text
+    assert 'pay as you go' in text.lower().replace('-', ' '), text
+    assert 'flexible' not in text.lower() and 'private' not in text.lower(), text
+    assert 'no specific' not in text.lower() and 'not provided' not in text.lower(), text
+    assert 'http' not in text.lower(), text
+    assert 'add credits' not in text.lower() and 'sign up' not in text.lower(), text
+    assert '31' in text and ('Oct' in text or '10/31' in text), text
+    assert text.count('Only excerpts reviewed') == 1, text
+    detail_context = json.dumps({'kind': 'email_review', 'scope': 'Checked 1 requested email.',
+                                 'messages': [messages[1]]})
+    detail = local_model.answer('What URL is linked for adding credits?', detail_context)
+    assert detail.get('ok') and 'https://ollama.com/plans' in detail['data']['text'], detail
+    combined = local_model.answer('What URL is linked for adding credits, and do I need to reply?', detail_context)
+    assert combined.get('ok') and 'https://ollama.com/plans' in combined['data']['text'], combined
+
+
+def test_existing_account_credit_request_is_not_hidden_as_an_upsell(local_model):
+    context = json.dumps({'kind': 'email_review', 'scope': 'Checked 1 requested email.', 'messages': [
+        {'sender': 'Finance team', 'subject': 'Approved deployment paused', 'date': '', 'complete': True,
+         'body': 'Your approved cloud deployment is paused for insufficient credits. '
+                 'Please add the agreed $20 in credits by Friday to resume that deployment.'},
+    ]})
+    result = local_model.answer('Which emails need a reply or action?', context)
+    assert result.get('ok')
+    text = result['data']['text']
+    assert 'Requested:' in text and '$20' in text and 'Friday' in text, text
+    assert 'Optional:' not in text, text
+
+
+def test_combined_follow_up_question_preserves_requested_promo_detail(local_model):
+    context = json.dumps({'kind': 'email_review', 'scope': 'Checked 1 requested email.', 'messages': [
+        {'sender': 'Cloud Tools', 'subject': 'Subscription offer', 'date': '', 'complete': True,
+         'body': 'Get 25% off a new subscription with promo code ORBIT25 through Friday. '
+                 'This is an optional purchase offer.'},
+    ]})
+    result = local_model.answer('Does this email need a reply? Give me the promo code.', context)
+    assert result.get('ok')
+    text = result['data']['text']
+    assert 'ORBIT25' in text, text
+    assert 'Requested:' not in text and 'Possible request' not in text, text

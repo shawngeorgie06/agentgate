@@ -123,8 +123,16 @@ def test_rendering_keeps_other_emails_after_failure_and_handles_empty_fields(tmp
             for (question, expected) in requests {
                 assert(AgentGateModel.wantsReplyAssessment(question) == expected, question)
             }
-            assert(AgentGateModel.summaryNumbers("50% off until October 31, 2026; https://example.com/123") == ["50", "31", "2026"])
-            assert(!AgentGateModel.summaryNumbers("Spring 2027 roles").isSubset(of: AgentGateModel.summaryNumbers("Open roles")))
+            assert(AgentGateModel.summaryIdentifiers("50% off until October 31, 2026; https://example.com/123") == ["50", "31", "2026"])
+            assert(!AgentGateModel.summaryIdentifiers("Spring 2027 roles").isSubset(of: AgentGateModel.summaryIdentifiers("Open roles")))
+            assert(AgentGateModel.summaryIdentifiers("Gate B12, seat 14C") == ["B12", "14C"])
+            assert(AgentGateModel.refinedEmailSummary("Gate B14", original: "Gate B12", body: "Gate B12") == "Gate B12")
+            assert(AgentGateModel.refinedEmailSummary("No action required.", original: "New cloud models available.", body: "New cloud models available.") == "New cloud models available.")
+            assert(AgentGateModel.refinedEmailSummary("  Pay as you go access.  ", original: "New access.", body: "New access.") == "Pay as you go access.")
+            for prompt in ["What URL is linked, and do I need to reply?", "Give me the coupon code and assess follow-up", "Tell me the password", "Which link should I use?"] {
+                assert(AgentGateModel.wantsExactEmailDetail(prompt), prompt)
+            }
+            assert(!AgentGateModel.wantsExactEmailDetail("Check my unread emails and tell me which need a reply"))
             let quoteBody = "PLEASE confirm by replying “yes” or “no” before Oct. 25."
             assert(AgentGateModel.evidenceWords(quoteBody) ==
                 AgentGateModel.evidenceWords("please confirm by replying yes or no before Oct 25"))

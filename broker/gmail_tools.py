@@ -9,7 +9,7 @@ from fastmcp import FastMCP
 
 from broker import state
 from broker.access import AccessController, AccessError
-from broker.integrations.gmail import Gmail, GmailError, INTERNAL_PREFIX
+from broker.integrations.gmail import Gmail, GmailError, ReplyDraftValidationError, INTERNAL_PREFIX
 
 if TYPE_CHECKING:
     from broker.mcp_server import Broker
@@ -46,7 +46,10 @@ class GmailTools:
     async def execute(self, agent: str, resource: str, operation: str, *, identity_guard=None, **arguments) -> dict:
         identity_guard = self.access_guard(agent, resource, identity_guard)
         if not await self.authorize(agent, resource, identity_guard=identity_guard):
-            return {'ok': False, 'reason': 'Access denied or approval timed out.'}
+            result = {'ok': False, 'reason': 'Access denied or approval timed out.'}
+            if operation == 'reply_draft':
+                result['code'] = 'draft_not_created'
+            return result
         def check_active():
             if identity_guard is not None and not identity_guard():
                 raise IdentityError()
@@ -54,12 +57,25 @@ class GmailTools:
             data = await asyncio.to_thread(self.gmail.call, operation, before_dispatch=check_active, **arguments)
         except AccessError:
             self.audit(agent, resource, operation, state.read_mode(self.broker.config.state_path), 'denied')
-            return {'ok': False, 'reason': 'Agent access is no longer active, or permissions changed.'}
+            result = {'ok': False, 'reason': 'Agent access is no longer active, or permissions changed.'}
+            if operation == 'reply_draft':
+                result['code'] = 'draft_not_created'
+            return result
+        except ReplyDraftValidationError as exc:
+            self.audit(agent, resource, operation, state.read_mode(self.broker.config.state_path), 'failed')
+            return {'ok': False, 'reason': str(exc), 'code': 'draft_not_created'}
         except GmailError as exc:
             self.audit(agent, resource, operation, state.read_mode(self.broker.config.state_path), 'failed')
             return {'ok': False, 'reason': str(exc)}
         self.audit(agent, resource, operation, state.read_mode(self.broker.config.state_path), 'completed')
         return {'ok': True, 'data': data}
+
+    async def create_reply_draft(self, agent: str, message_id: str, body: str, *, identity_guard=None) -> dict:
+        read_guard = self.access_guard(agent, 'gmail:read', identity_guard)
+        if not await self.authorize(agent, 'gmail:read', identity_guard=read_guard):
+            return {'ok': False, 'reason': 'Read access denied or approval timed out.', 'code': 'draft_not_created'}
+        return await self.execute(agent, 'gmail:draft', 'reply_draft', identity_guard=read_guard,
+                                  message_id=message_id, body=body)
 
     async def send_draft(self, agent: str, draft_id: str, *, identity_guard=None,
                          trusted_operator: bool = False) -> dict:

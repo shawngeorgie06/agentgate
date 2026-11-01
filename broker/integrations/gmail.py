@@ -36,6 +36,10 @@ class GmailError(Exception):
     """A safe error message that can be returned to an agent."""
 
 
+class ReplyDraftValidationError(GmailError):
+    """A safe reply validation failure before any draft creation attempt."""
+
+
 def connect(client_file: str, store: CredentialStore) -> str:
     # Installed-app flow validates OAuth state and uses PKCE on a loopback callback.
     flow = InstalledAppFlow.from_client_secrets_file(
@@ -180,7 +184,7 @@ class Gmail:
                     raise GmailError('Gmail is not connected. Run gmail-connect in the operator CLI.')
                 if before_dispatch is not None:
                     before_dispatch()
-                if operation == 'send':
+                if operation in ('send', 'reply_draft'):
                     arguments['before_dispatch'] = before_dispatch
                 return getattr(self, '_' + operation)(service, **arguments)
             except RefreshError:
@@ -209,7 +213,8 @@ class Gmail:
 
     def _read(self, service, message_id: str):
         result = service.users().messages().get(userId='me', id=message_id, format='raw').execute()
-        return {'id': result['id'], 'thread_id': result.get('threadId'), **describe_message(result['raw'])}
+        return {'id': result['id'], 'thread_id': result.get('threadId'),
+                'label_ids': result.get('labelIds', []), **describe_message(result['raw'])}
 
     def _inbox(self, service, query: str = 'in:inbox', page_token: str | None = None):
         result = self._search(service, query, limit=10, page_token=page_token)
@@ -247,6 +252,62 @@ class Gmail:
         message.set_content(body)
         raw = base64.urlsafe_b64encode(message.as_bytes()).decode('ascii')
         return service.users().drafts().create(userId='me', body={'message': {'raw': raw}}).execute()
+
+    def _reply_draft(self, service, message_id: str, body: str, before_dispatch=None):
+        from email.utils import getaddresses
+        from email.headerregistry import Address
+        from email.errors import HeaderParseError
+        if not isinstance(body, str) or not body.strip() or len(body) > 1000 or '\x00' in body:
+            raise ReplyDraftValidationError('Reply body must contain between 1 and 1000 characters.')
+        source = self._read(service, message_id)
+        if {'SENT', 'DRAFT'} & set(source['label_ids']):
+            raise ReplyDraftValidationError('Choose a received email; sent messages and drafts cannot be reply sources.')
+        recipients = source['reply_to'] or source['from']
+        if any(re.search(r'[\x00-\x1f\x7f]', value) for value in recipients):
+            raise ReplyDraftValidationError('The source has an unsafe reply address.')
+        addresses = getaddresses(recipients)
+        if len(addresses) != 1:
+            raise ReplyDraftValidationError('The source must have one unambiguous reply address.')
+        if not re.fullmatch(r'[^\s@<>]+@[^\s@<>]+', addresses[0][1]):
+            raise ReplyDraftValidationError('The source has an invalid reply address.')
+        try:
+            address = Address(addr_spec=addresses[0][1])
+            if not address.username or not address.domain:
+                raise ValueError()
+        except (ValueError, HeaderParseError):
+            raise ReplyDraftValidationError('The source has an invalid reply address.') from None
+        account = self._account(service)['email']
+        if address.addr_spec.casefold() == account.casefold():
+            raise ReplyDraftValidationError('The reply address is your own account. Choose a received email from the other person.')
+        ids = [value for name, value in source['headers'] if name == 'message-id']
+        if len(ids) != 1 or not re.fullmatch(r'<[^<>\s@]+@[^<>\s@]+>', ids[0]):
+            raise ReplyDraftValidationError('The source has no unambiguous Message-ID for a threaded reply.')
+        thread = source.get('thread_id')
+        if not isinstance(thread, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', thread):
+            raise ReplyDraftValidationError('The source has no valid thread identifier.')
+        subject = str(source['subject'])
+        if not subject.lower().startswith('re:'):
+            subject = 'Re: ' + subject
+        message = EmailMessage()
+        try:
+            message['To'] = address.addr_spec
+            message['Subject'] = subject
+            message['In-Reply-To'] = ids[0]
+            references = [value for name, value in source['headers'] if name == 'references']
+            if len(references) > 1:
+                raise ReplyDraftValidationError('The source has ambiguous References headers.')
+            previous = references[0].strip() if references else ''
+            if previous and not re.fullmatch(r'(?:<[^<>\s@]+@[^<>\s@]+>\s*)+', previous):
+                raise ReplyDraftValidationError('The source has invalid References headers.')
+            message['References'] = (previous + ' ' + ids[0]).strip()
+        except ValueError:
+            raise ReplyDraftValidationError('The source has unsafe reply headers.') from None
+        message.set_content(body)
+        raw = base64.urlsafe_b64encode(message.as_bytes()).decode('ascii')
+        if before_dispatch is not None:
+            before_dispatch()
+        result = service.users().drafts().create(userId='me', body={'message': {'raw': raw, 'threadId': thread}}).execute()
+        return {'id': result['id'], 'to': address.addr_spec, 'subject': subject}
 
     def _snapshot(self, service, draft_id: str):
         draft = service.users().drafts().get(userId='me', id=draft_id, format='raw').execute()

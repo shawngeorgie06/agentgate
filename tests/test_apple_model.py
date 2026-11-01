@@ -127,3 +127,23 @@ def test_answer_passes_bounded_style(tmp_path):
     with patch('broker.apple_model.subprocess.run', return_value=ok) as run:
         assert not model.answer('hi', '', '', style='x' * 501)['ok']
         assert not run.called
+
+
+def test_draft_reply_uses_private_transport_and_typed_result(tmp_path):
+    model = AppleModel(helper(tmp_path))
+    data = {'body': 'Friday works for me.', 'clarification': ''}
+    with patch('broker.apple_model.subprocess.run', return_value=response({'ok': True, 'data': data})) as run:
+        assert model.draft_reply('Draft a reply saying Friday works', '{}')['data'] == data
+        assert json.loads(run.call_args.kwargs['input'])['mode'] == 'draft_reply'
+
+
+@pytest.mark.parametrize('data', [
+    {'body': 'Friday works', 'clarification': 'Which Friday?'},
+    {'body': '', 'clarification': ''},
+    {'body': 'x' * 1001, 'clarification': ''},
+    {'body': 1, 'clarification': ''},
+    {'body': 'Okay', 'clarification': '', 'to': 'other@example.test'},
+])
+def test_draft_reply_rejects_ambiguous_oversized_or_recipient_bearing_result(tmp_path, data):
+    with patch('broker.apple_model.subprocess.run', return_value=response({'ok': True, 'data': data})):
+        assert not AppleModel(helper(tmp_path)).draft_reply('Draft a reply', '{}')['ok']

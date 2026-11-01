@@ -35,6 +35,10 @@ class FakeService:
     def users(self):
         return self
 
+    def getProfile(self, **kwargs):
+        self.calls.append(('account', 'getProfile', kwargs))
+        return SimpleNamespace(execute=lambda: {'emailAddress': 'me@example.test'})
+
     def messages(self):
         self.endpoint = 'messages'
         return self
@@ -531,3 +535,137 @@ def test_describe_message_strict_encoding_false_for_loose_bodies(encoding, body)
                f'Content-Transfer-Encoding: {encoding}\r\n\r\n')
     described = describe_message(raw_bytes_as_gmail_stores((headers + body).encode('ascii')))
     assert described['strict_encoding'] is False
+
+
+def reply_source(reply_to='Taylor <reply@example.test>', message_id='<interview@example.test>'):
+    message = EmailMessage()
+    message['From'] = 'Recruiting <jobs@example.test>'
+    message['Reply-To'] = reply_to
+    message['Subject'] = 'Interview'
+    message['Message-ID'] = message_id
+    message.set_content('Are you available Friday?')
+    return base64.urlsafe_b64encode(message.as_bytes()).decode()
+
+
+@pytest.mark.asyncio
+async def test_reply_draft_uses_source_recipient_and_thread_without_sending(tmp_path):
+    broker, service, gmail, tools = make_tools(tmp_path)
+    service.raw = reply_source()
+    result = await tools.create_reply_draft('local-agent', 'message-1', 'Friday works.')
+    assert result['ok'] and result['data']['to'] == 'reply@example.test'
+    create = next(args for endpoint, operation, args in service.calls if operation == 'create')
+    payload = create['body']['message']
+    assert payload['threadId'] == 'thread-1'
+    preview = describe_message(payload['raw'])
+    assert preview['to'] == ['reply@example.test'] and not preview['cc'] and not preview['bcc']
+    assert ['in-reply-to', '<interview@example.test>'] in preview['headers']
+    assert ['references', '<interview@example.test>'] in preview['headers']
+    assert not any(operation == 'send' for _, operation, _ in service.calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('resource', ['gmail:read', 'gmail:draft'])
+async def test_reply_draft_requires_both_read_and_draft_permission(tmp_path, resource):
+    broker, service, gmail, tools = make_tools(tmp_path)
+    broker.engine = PolicyEngine([
+        {'name': 'deny', 'agent': 'local-agent', 'credential': resource, 'auto_approve': False, 'escalate': False},
+        {'name': 'allow', 'agent': 'local-agent', 'credential': '*', 'auto_approve': True, 'escalate': False},
+    ])
+    result = await tools.create_reply_draft('local-agent', 'message-1', 'Friday works.')
+    assert not result['ok'] and not service.calls
+
+
+@pytest.mark.parametrize('reply_to', ['a@example.test, b@example.test', 'not-an-address', ''])
+def test_reply_draft_rejects_ambiguous_or_invalid_address(tmp_path, reply_to):
+    _, service, gmail, _ = make_tools(tmp_path)
+    service.raw = reply_source(reply_to=reply_to)
+    with pytest.raises(GmailError):
+        gmail.call('reply_draft', message_id='message-1', body='Friday works.')
+    assert not any(operation == 'create' for _, operation, _ in service.calls)
+
+
+def test_reply_draft_rechecks_access_after_source_read_before_creation(tmp_path):
+    from broker.gmail_tools import IdentityError
+    _, service, gmail, _ = make_tools(tmp_path)
+    service.raw = reply_source()
+    checks = []
+    def guard():
+        checks.append(True)
+        if len(checks) == 2:
+            raise IdentityError()
+    with pytest.raises(IdentityError):
+        gmail.call('reply_draft', message_id='message-1', body='Friday works.', before_dispatch=guard)
+    assert len(checks) == 2
+    assert not any(operation == 'create' for _, operation, _ in service.calls)
+
+
+def test_reply_draft_preserves_reference_chain_and_falls_back_to_from(tmp_path):
+    _, service, gmail, _ = make_tools(tmp_path)
+    message = EmailMessage()
+    message['From'] = 'Taylor <taylor@example.test>'
+    message['Subject'] = 'Re: Interview'
+    message['Message-ID'] = '<current@example.test>'
+    message['References'] = '<first@example.test> <second@example.test>'
+    message.set_content('Interview details.')
+    service.raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
+    result = gmail.call('reply_draft', message_id='message-1', body='Friday works.')
+    assert result['to'] == 'taylor@example.test' and result['subject'] == 'Re: Interview'
+    created = next(args for _, operation, args in service.calls if operation == 'create')
+    preview = describe_message(created['body']['message']['raw'])
+    assert ['references', '<first@example.test> <second@example.test> <current@example.test>'] in preview['headers']
+
+
+@pytest.mark.asyncio
+async def test_reply_draft_policy_change_during_source_fetch_blocks_create(tmp_path):
+    broker, service, gmail, tools = make_tools(tmp_path)
+    service.raw = reply_source()
+    original = service.get
+    def revoked_get(**kwargs):
+        result = original(**kwargs)
+        def execute():
+            broker.policy_revision += 1
+            return result.execute()
+        return SimpleNamespace(execute=execute)
+    service.get = revoked_get
+    result = await tools.create_reply_draft('local-agent', 'message-1', 'Friday works.')
+    assert not result['ok']
+    assert not any(operation == 'create' for _, operation, _ in service.calls)
+
+
+@pytest.mark.parametrize('label', ['SENT', 'DRAFT'])
+def test_reply_draft_rejects_outbound_and_draft_sources(tmp_path, label):
+    _, service, gmail, _ = make_tools(tmp_path)
+    service.raw = reply_source()
+    original_get = service.get
+    def labeled_get(**kwargs):
+        result = original_get(**kwargs)
+        def execute():
+            return result.execute() | {'labelIds': [label]}
+        return SimpleNamespace(execute=execute)
+    service.get = labeled_get
+    with pytest.raises(GmailError, match='received email'):
+        gmail.call('reply_draft', message_id='message-1', body='Following up.')
+    assert not any(operation == 'create' for _, operation, _ in service.calls)
+
+
+def test_reply_draft_rejects_own_account_as_reply_recipient(tmp_path):
+    _, service, gmail, _ = make_tools(tmp_path)
+    message = EmailMessage()
+    message['From'] = 'Me <me@example.test>'
+    message['To'] = 'landlord@example.test'
+    message['Subject'] = 'Lease question'
+    message['Message-ID'] = '<lease@example.test>'
+    message.set_content('A question about my lease.')
+    service.raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
+    with pytest.raises(GmailError, match='own account'):
+        gmail.call('reply_draft', message_id='message-1', body='Following up.')
+    assert not any(operation == 'create' for _, operation, _ in service.calls)
+
+
+@pytest.mark.asyncio
+async def test_reply_validation_failure_reports_definite_non_creation(tmp_path):
+    _, service, gmail, tools = make_tools(tmp_path)
+    service.raw = reply_source(reply_to='a@example.test, b@example.test')
+    result = await tools.create_reply_draft('local-agent', 'message-1', 'Friday works.')
+    assert result['code'] == 'draft_not_created' and 'unambiguous reply address' in result['reason']
+    assert not any(operation == 'create' for _, operation, _ in service.calls)

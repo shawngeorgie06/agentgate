@@ -71,7 +71,7 @@ export async function renderIMessage(container, api) {
   const heading = element('div', undefined, 'section-heading');
   const refreshButton = button('↻ Refresh', '', () => load());
   heading.append(element('h2', 'iMessage'), refreshButton);
-  const intro = element('p', 'Message yourself in Messages to ask an enrolled agent for help. Commands must start with "/agent ". The iMessage agent is read-only: sending email or creating GitHub issues still requires your approval in AgentGate.', 'hint');
+  const intro = element('p', 'Message yourself in Messages to ask an enrolled agent for help. Commands must start with "/agent ". The assistant can read email and GitHub, and create email reply drafts. Review drafts and initiate sending in AgentGate; sending always requires explicit approval.', 'hint');
   const message = element('p', '', 'imessage-message');
   message.setAttribute('role', 'status');
   message.hidden = true;

@@ -10,7 +10,7 @@ import subprocess
 from broker.helper_env import minimal_helper_env
 
 ACTIONS = frozenset({'chat', 'unsupported', 'gmail_unread', 'gmail_search', 'gmail_read',
-                     'github_repos', 'github_issues', 'github_file'})
+                     'github_repos', 'github_issues', 'github_file', 'gmail_reply_draft'})
 PLAN_FIELDS = frozenset({'action', 'query', 'message_id', 'owner', 'repo', 'path', 'ref'})
 ERRORS = {
     'model_unavailable': 'Apple Intelligence is unavailable. Enable it in System Settings.',
@@ -38,6 +38,9 @@ class AppleModel:
     def answer(self, prompt, context, history='', style=''):
         return self._call({'mode': 'answer', 'prompt': prompt, 'context': context, 'history': history,
                            'style': style})
+
+    def draft_reply(self, prompt, context):
+        return self._call({'mode': 'draft_reply', 'prompt': prompt, 'context': context})
 
     def _call(self, request):
         mode = request['mode']
@@ -78,6 +81,13 @@ class AppleModel:
                 text = data.get('text')
                 if (set(data) != {'text'} or not isinstance(text, str) or not 0 < len(text) <= 1200
                         or '\x00' in text or text.lstrip().lower().startswith('/agent')):
+                    return _error('model_failed')
+            elif mode == 'draft_reply':
+                if (set(data) != {'body', 'clarification'}
+                        or not all(isinstance(data[k], str) for k in ('body', 'clarification'))
+                        or len(data['body']) > 1000 or len(data['clarification']) > 300
+                        or '\x00' in data['body'] + data['clarification']
+                        or bool(data['body'].strip()) == bool(data['clarification'].strip())):
                     return _error('model_failed')
             elif (set(data) != {'available', 'reason'} or type(data.get('available')) is not bool
                   or not isinstance(data.get('reason'), str) or len(data['reason']) > 200):

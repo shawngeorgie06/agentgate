@@ -1,6 +1,6 @@
 # iMessage assistant
 
-AgentGate can answer questions over iMessage and ask you to approve agent requests by text. You talk to it in a Messages conversation with yourself. The assistant can check and read Gmail and GitHub, and create reply drafts in Gmail when explicitly requested. It cannot send email from an assistant command, create issues, edit existing drafts, or delete data. Sending email and creating GitHub issues still require approval in AgentGate, and that approval can happen by text.
+AgentGate can answer questions over iMessage and ask you to approve agent requests by text. You talk to it in a Messages conversation with yourself. The assistant can check and read Gmail and GitHub, and create reply drafts in Gmail when explicitly requested. It cannot send email from an assistant command, create issues, edit existing drafts, or delete data. Sending email and creating GitHub issues still require approval in AgentGate. Eligible requests can be approved by text; sending a threaded reply draft requires dashboard approval.
 
 ## Requirements
 
@@ -74,7 +74,7 @@ The reply goes to the source email's single Reply-To address, or its From addres
 
 The text response confirms that a draft was saved, shows the recipient, subject, and a bounded body preview, and directs you to **AgentGate → Drafts** to review the full message. If the model asks for missing information, no draft is created. Replies containing numbers absent from both your request and the source body are rejected before saving. Generated prose still needs your review; these checks do not prove every statement is correct. Validation and permission rejections explain that no draft was created. If creation cannot be confirmed, check Gmail Drafts before repeating the command; AgentGate never retries creation automatically.
 
-Open the dashboard to initiate sending. The existing exact-message preview and explicit approval still apply, including approval by text when enabled. An assistant command such as “send it” never sends a draft.
+Open the dashboard to initiate sending. The existing exact-message preview and explicit approval still apply. Reply drafts carry thread headers, so their send approval must be given in the dashboard. An assistant command such as “send it” never sends a draft.
 
 ## Approving requests by text
 

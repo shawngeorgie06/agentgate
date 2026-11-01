@@ -6,7 +6,7 @@ import argparse
 import asyncio
 
 from broker.apple_model import AppleModel
-from broker.imessage_agent import ReadOnlyMessageAgent
+from broker.imessage_agent import MessageAgent
 from broker.imessage_service import AsyncAppleModel
 
 
@@ -69,7 +69,7 @@ async def main(helper):
                 + '<p>Our internship program includes mentoring and team projects.</p>' * 40}]}]),
     ]
     for name, messages in cases:
-        agent = ReadOnlyMessageAgent(None, SampleGmail(messages), None, model)
+        agent = MessageAgent(None, SampleGmail(messages), None, model)
         reply = await agent.reply('sample-reader', lambda: True,
                                   'Check my unread emails and tell me which need a reply', style=style)
         print(f'\n{name}\n{reply}')

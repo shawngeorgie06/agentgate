@@ -1841,3 +1841,40 @@ async def test_issue_text_must_be_plainly_laid_out(tmp_path, registry, field):
     queue.resolve(queue.get_pending(), False)
     await task
     await service.stop()
+
+
+async def test_disabling_assistant_invalidates_draft_guard_in_provider_worker(tmp_path, registry):
+    from tests.test_imessage_drafts import DraftTools
+    started, release, done = threading.Event(), threading.Event(), threading.Event()
+    writes = []
+    class DraftingModel(FakeModel):
+        async def plan(self, prompt, history=''):
+            return {'action': 'gmail_reply_draft', 'query': 'from:taylor@example.test'}
+        async def draft_reply(self, prompt, context):
+            return {'body': 'Friday works.', 'clarification': ''}
+    class WaitingDraftTools(DraftTools):
+        async def create_reply_draft(self, agent, message_id, body, *, identity_guard):
+            def dispatch():
+                started.set()
+                try:
+                    assert release.wait(3)
+                    if identity_guard():
+                        writes.append(body)
+                    return {'ok': True, 'data': {'id': 'draft-1', 'to': 'taylor@example.test', 'subject': 'Interview'}}
+                finally:
+                    done.set()
+            return await asyncio.to_thread(dispatch)
+    world, clock = FakeWorld(), Clock()
+    service = make_service(tmp_path, world, clock, registry=registry, model=DraftingModel(), gmail=WaitingDraftTools())
+    try:
+        await pair(service, world)
+        await service.enable()
+        world.queue.put_nowait(event(clock, 900, '/agent Draft a reply to Taylor saying Friday works', guid='draft-cancel'))
+        await wait_until(started.is_set)
+        await service.disable()
+        release.set()
+        await wait_until(done.is_set)
+        assert not writes
+    finally:
+        release.set()
+        await service.stop()

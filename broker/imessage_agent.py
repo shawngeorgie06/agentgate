@@ -1,4 +1,4 @@
-"""Read-only iMessage agent: plan with a local model, read through AgentGate tools, reply briefly."""
+"""iMessage assistant using policy-checked reads and explicitly requested reply drafts."""
 from __future__ import annotations
 
 import re
@@ -26,6 +26,9 @@ READ_ACTIONS = frozenset({
     'chat', 'unsupported', 'gmail_unread', 'gmail_search', 'gmail_read',
     'github_repos', 'github_issues', 'github_file',
 })
+ACTIONS = READ_ACTIONS | {'gmail_reply_draft'}
+DRAFT_COMMAND = re.compile(r'^(?:please\s+)?(?:draft|compose|write)\s+(?:me\s+)?(?:a\s+)?(?:reply|response)\b', re.IGNORECASE)
+
 PLAN_FIELDS = frozenset({'action', 'query', 'message_id', 'owner', 'repo', 'path', 'ref'})
 
 _OWNER = re.compile(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})')
@@ -35,10 +38,8 @@ _CONTROL = re.compile(r'[\x00-\x1f\x7f]')
 # 'approve <code>' or 'deny <code>' typed in the paired self-chat. Shared with the approval reply handler.
 APPROVAL_REPLY = re.compile(r'\s*(approve|deny)\s+([0-9a-fA-F]{6})\s*', re.IGNORECASE)
 
-READ_ONLY_MESSAGE = ('I can only do read-only requests, such as checking unread email, '
-                     'searching email, or reading GitHub repos, issues, and files.')
-UNSUPPORTED_MESSAGE = ('I can\'t do that yet. I can check and read email, and read GitHub '
-                       'repos, issues, and files.')
+CAPABILITIES_MESSAGE = ('I can read accounts and draft email replies, such as checking unread email, '
+                     'searching email, or reading GitHub repos, issues, and files. Sending must be initiated and approved in AgentGate.')
 MALFORMED_MESSAGE = 'I could not understand that request. Please rephrase it with more detail.'
 INACTIVE_MESSAGE = 'This agent identity is inactive, so I can\'t access accounts for this request.'
 UNABLE_MESSAGE = 'I was unable to complete that read request, so there is nothing to summarize.'
@@ -48,10 +49,10 @@ NO_RESULTS = 'No matching items were found.'
 
 # Notes handed to the model in place of result data, so it can word the reply itself.
 # The fixed messages above are used only when the model cannot answer.
-REFUSAL_NOTE = ('AgentGate ran nothing for this request. This iMessage assistant is read-only: '
+REFUSAL_NOTE = ('AgentGate ran nothing for this request. This iMessage assistant can read accounts and create explicitly requested email reply drafts: '
                 'it can check unread Gmail, search and read Gmail messages, list GitHub repos, '
-                'list open issues, and read repository files. It cannot send, draft, create, edit, '
-                'delete, or change anything. Explain this to the user.')
+                'list open issues, and read repository files. It can draft a reply when the user starts with Draft a reply. It cannot send email, create issues, edit, '
+                'delete data, or change permissions. Explain the supported capabilities to the user.')
 MALFORMED_NOTE = ('AgentGate could not tell exactly what to look up from that request. Ask the user '
                   'for the missing detail, such as what to search for or the repository owner and name.')
 FAILURE_NOTE = ('AgentGate tried to look this up but the read did not succeed, so no data was retrieved. '
@@ -111,7 +112,7 @@ def _path(value: str) -> str:
 def _parse_args(action: str, plan: dict) -> dict:
     if set(plan) - PLAN_FIELDS:
         raise _Malformed('unexpected field')
-    if action == 'gmail_search':
+    if action in ('gmail_search', 'gmail_reply_draft'):
         return {'query': _field(plan, 'query', required=True, limit=QUERY_LIMIT)}
     if action == 'gmail_read':
         return {'message_id': _field(plan, 'message_id', required=True, limit=64, pattern=_MESSAGE_ID)}
@@ -230,7 +231,7 @@ def _clean_reply(answer) -> str:
     return text[:REPLY_LIMIT]
 
 
-class ReadOnlyMessageAgent:
+class MessageAgent:
     def __init__(self, audit, gmail_tools, github_tools, model):
         self._audit = audit
         self._gmail = gmail_tools
@@ -241,9 +242,9 @@ class ReadOnlyMessageAgent:
                     style: str = '') -> str:
         text, decision, action = await self._run(agent_name, identity_guard, prompt, history, style)
         if self._audit is not None:
-            label = action if action in READ_ACTIONS else 'invalid'
+            label = action if action in ACTIONS else 'invalid'
             self._audit.log(agent=agent_name, credential_requested=f'imessage:{label}',
-                            policy_matched='read-only', decision=decision, mode='read-only',
+                            policy_matched='message-assistant', decision=decision, mode='message-assistant',
                             token_expiry=None)
         return text
 
@@ -260,14 +261,19 @@ class ReadOnlyMessageAgent:
         if not isinstance(plan, dict) or not isinstance(plan.get('action'), str):
             return MALFORMED_MESSAGE, 'denied', None
         action = plan['action']
-        if action not in READ_ACTIONS:
-            return await self._say(prompt, REFUSAL_NOTE, history, style, READ_ONLY_MESSAGE), 'denied', None
+        if action not in ACTIONS:
+            return await self._say(prompt, REFUSAL_NOTE, history, style, CAPABILITIES_MESSAGE), 'denied', None
         try:
             args = _parse_args(action, plan)
         except _Malformed:
             return await self._say(prompt, MALFORMED_NOTE, history, style, MALFORMED_MESSAGE), 'denied', action
+        if action == 'gmail_reply_draft':
+            if not DRAFT_COMMAND.match(prompt.strip()):
+                return 'To create a draft, start with “Draft a reply” and identify the email and what to say.', 'denied', action
+            text, decision = await self._draft_reply(agent_name, identity_guard, prompt, args['query'])
+            return text, decision, action
         if action == 'unsupported':
-            return await self._say(prompt, REFUSAL_NOTE, history, style, UNSUPPORTED_MESSAGE), 'completed', action
+            return await self._say(prompt, REFUSAL_NOTE, history, style, CAPABILITIES_MESSAGE), 'completed', action
 
         try:
             context = await self._gather(action, args, agent_name, identity_guard)
@@ -285,6 +291,65 @@ class ReadOnlyMessageAgent:
         except Exception:
             return MODEL_FAILED_MESSAGE, 'failed', action
         return _clean_reply(answer), 'completed', action
+
+    async def _draft_reply(self, agent, guard, prompt, query):
+        try:
+            listing = await self._call(self._gmail, agent, 'gmail:read', 'search', guard, query=f'({query}) -in:sent -in:drafts', limit=2)
+            matches = listing.get('messages', []) if isinstance(listing, dict) else []
+            if not matches:
+                return 'No matching email found. Include the sender and subject in your draft request.', 'completed'
+            if len(matches) != 1 or listing.get('nextPageToken'):
+                return 'More than one email matches. Narrow the sender, subject, or date so I can draft for one email.', 'completed'
+            message_id = matches[0].get('id') if isinstance(matches[0], dict) else None
+            if not isinstance(message_id, str) or not _MESSAGE_ID.fullmatch(message_id):
+                raise _Malformed('message_id')
+            source = await self._call(self._gmail, agent, 'gmail:read', 'read', guard, message_id=message_id)
+            message = _message_data(source)
+            if message is None or not message['body']:
+                return 'I could not read the email body, so I did not create a draft.', 'failed'
+            context = json.dumps({'kind': 'email_reply_draft', 'email': message}, ensure_ascii=False)
+            if len(context) > CONTEXT_LIMIT:
+                return 'This email exceeds the drafting context limit. No draft was created.', 'failed'
+            result = await self._model.draft_reply(prompt, context)
+            if not isinstance(result, dict) or set(result) != {'body', 'clarification'}:
+                raise _Malformed('draft')
+            body, clarification = result['body'], result['clarification']
+            if (not isinstance(body, str) or not isinstance(clarification, str)
+                    or len(body) > 1000 or len(clarification) > 300 or '\x00' in body + clarification
+                    or bool(body.strip()) == bool(clarification.strip())):
+                raise _Malformed('draft')
+            if clarification.strip():
+                return 'No draft created. ' + clarification.strip(), 'completed'
+            supplied_numbers = set(re.findall(r'\d+', prompt + '\n' + message['body']))
+            if not set(re.findall(r'\d+', body)).issubset(supplied_numbers):
+                return 'No draft created. Please provide the exact numbers or dates to include; the generated reply added details not in your request or the email.', 'completed'
+            if not _active(guard):
+                return INACTIVE_MESSAGE, 'denied'
+        except _Inactive:
+            return INACTIVE_MESSAGE, 'denied'
+        except Exception:
+            return 'I could not prepare the reply. No draft was created. Check read access and try a more specific request.', 'failed'
+        try:
+            result = await self._gmail.create_reply_draft(agent, message_id, body.strip(), identity_guard=guard)
+        except Exception:
+            return 'Draft creation could not be confirmed. Check Gmail Drafts before asking again; nothing was sent.', 'failed'
+        if isinstance(result, dict) and result.get('code') == 'draft_not_created':
+            reason = _CONTROL.sub(' ', _text(result.get('reason'), 300))
+            return 'No draft was created: ' + reason, 'failed'
+        if not isinstance(result, dict) or result.get('ok') is not True:
+            return 'Draft creation was denied or could not be confirmed. Check draft permissions and Gmail Drafts before asking again. Nothing was sent.', 'failed'
+        data = result.get('data', {})
+        if not isinstance(data, dict) or not isinstance(data.get('id'), str):
+            return 'Draft creation could not be confirmed. Check Gmail Drafts before asking again; nothing was sent.', 'failed'
+        recipient = _CONTROL.sub(' ', _text(data.get('to'), 320))
+        subject = _CONTROL.sub(' ', _text(data.get('subject'), 180))
+        header = f'Draft saved in Gmail, not sent.\nTo: {recipient}\nSubject: {subject}\n\n'
+        footer = '\n\nReview in AgentGate → Drafts. Sending requires a separate request and explicit approval in AgentGate.'
+        available = REPLY_LIMIT - len(header) - len(footer)
+        preview = body.strip()
+        if len(preview) > available:
+            preview = preview[:available - 1] + '…'
+        return header + preview + footer, 'completed'
 
     async def _say(self, prompt, note, history, style, fallback):
         """Let the model word a reply from a fixed AgentGate note; use the fixed text if it can't."""

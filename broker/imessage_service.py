@@ -20,7 +20,7 @@ from collections import deque
 from pathlib import Path
 
 from broker.apple_model import AppleModel
-from broker.imessage_agent import APPROVAL_REPLY, ReadOnlyMessageAgent
+from broker.imessage_agent import APPROVAL_REPLY, MessageAgent
 from broker.imessage_approval_text import announcement
 from broker.imessage_bridge import MessagesBridge, MessagesBridgeError, is_self_chat, verify_helper
 from broker.imessage_state import MessageLedger, MessageLedgerError
@@ -159,6 +159,9 @@ class AsyncAppleModel:
 
     async def plan(self, prompt, history=''):
         return _data(await asyncio.to_thread(self._apple.plan, prompt, history))
+
+    async def draft_reply(self, prompt, context):
+        return _data(await asyncio.to_thread(self._apple.draft_reply, prompt, context))
 
     async def answer(self, prompt, context, history='', style=''):
         data = _data(await asyncio.to_thread(self._apple.answer, prompt, context, history, style))
@@ -394,7 +397,7 @@ class IMessageService:
         if model is None:
             model = AsyncAppleModel(AppleModel(self._model_helper_path))
         self._model = model
-        self._agent = ReadOnlyMessageAgent(audit, gmail_tools, github_tools, model)
+        self._agent = MessageAgent(audit, gmail_tools, github_tools, model)
         self._audit = audit
         self._approvals = approvals
         self._forget_requests()
@@ -843,8 +846,10 @@ class IMessageService:
         self._ledger.mark_attempted(message_id)
         self._style.observe(request)
         history = self._conversation.text(self._clock())
-        reply = await self._agent.reply(agent_id, lambda: self._agent_active(agent_id), request, history,
-                                        self._style.notes())
+        command_task = asyncio.current_task()
+        def command_active():
+            return command_task is not None and not command_task.cancelling() and self._agent_active(agent_id)
+        reply = await self._agent.reply(agent_id, command_active, request, history, self._style.notes())
         try:
             await bridge.send_text(reply)
         except MessagesBridgeError as error:

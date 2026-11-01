@@ -1,6 +1,6 @@
 # iMessage assistant
 
-AgentGate can answer questions over iMessage and ask you to approve agent requests by text. You talk to it in a Messages conversation with yourself. The assistant is read-only: it can check and read Gmail and GitHub, but it cannot send, draft, create, edit, delete, or change anything. Sending email and creating GitHub issues still require approval in AgentGate, and that approval can happen by text.
+AgentGate can answer questions over iMessage and ask you to approve agent requests by text. You talk to it in a Messages conversation with yourself. The assistant can check and read Gmail and GitHub, and create reply drafts in Gmail when explicitly requested. It cannot send email from an assistant command, create issues, edit existing drafts, or delete data. Sending email and creating GitHub issues still require approval in AgentGate, and that approval can happen by text.
 
 ## Requirements
 
@@ -36,18 +36,19 @@ Send a message to yourself that starts with `/agent `:
 /agent show README.md from OWNER/REPO
 ```
 
-The assistant plans one read-only action for each request:
+The assistant plans one action for each request:
 
 | Action | What it reads |
 | --- | --- |
 | Unread email | Up to 3 unread Gmail messages |
 | Email search | Up to 3 Gmail messages matching a Gmail query |
 | Read one email | A single Gmail message by ID |
+| Draft an email reply | One uniquely matched email; saves a new reply draft without sending |
 | GitHub repos | Up to 20 repositories, with names and descriptions |
 | GitHub issues | Up to 10 open issues in one repository |
 | GitHub file | One file from a repository, optionally at a ref |
 
-Other questions get a plain chat reply. Requests for anything else get a short explanation that the assistant is read-only. Replies are capped at 1,200 characters. The last 6 exchanges are kept in memory and cleared 30 minutes after the last one, so follow-up questions work. At most 2,000 characters of them are sent as context.
+Other questions get a plain chat reply. Requests for unsupported actions get a short explanation of the available capabilities. Replies are capped at 1,200 characters. The last 6 exchanges are kept in memory and cleared 30 minutes after the last one, so follow-up questions work. At most 2,000 characters of them are sent as context.
 
 Email reviews state how many messages were checked and give each sender a separate summary. When you ask about replying or responding, the summary also includes a reply recommendation and reason. A review covers up to three messages from the first search page, not the entire inbox. HTML-only email is converted to text locally without loading external content.
 
@@ -58,6 +59,22 @@ Specific questions use the email to answer the requested detail instead of produ
 Learned texting style applies to casual conversation. Email reviews use normal capitalization and keep names and useful details instead of copying shorthand.
 
 AgentGate accepts at most one message every 5 seconds and 30 per hour. Questions and approval replies share this limit, so an approval sent within 5 seconds of a question is dropped. When you go over, AgentGate sends one notice and drops the rest of that burst.
+
+## Drafting email replies
+
+Start with an explicit draft command and identify the original email and what to say:
+
+```text
+/agent Draft a reply to Taylor about the interview saying I am available Friday afternoon.
+```
+
+The selected agent needs both `gmail:read` and `gmail:draft` permission. Normal ask/deny rules and temporary grants still apply. The assistant excludes Sent and Drafts, searches for up to two matches, and proceeds only when there is exactly one. Sent messages, existing drafts, and replies addressed back to your own account are also rejected at the provider boundary. If the sender has several matching messages, narrow the subject or date. Prior conversation can help the planner form a search, but it never chooses arbitrarily among multiple matches.
+
+The reply goes to the source email's single Reply-To address, or its From address when no Reply-To is present. The model cannot choose recipients or add CC/BCC. The draft uses the source subject, Message-ID, and Gmail thread, following [Gmail’s thread requirements](https://developers.google.com/workspace/gmail/api/guides/threads). Missing or ambiguous reply headers prevent creation. No attachments are copied.
+
+The text response confirms that a draft was saved, shows the recipient, subject, and a bounded body preview, and directs you to **AgentGate → Drafts** to review the full message. If the model asks for missing information, no draft is created. Replies containing numbers absent from both your request and the source body are rejected before saving. Generated prose still needs your review; these checks do not prove every statement is correct. Validation and permission rejections explain that no draft was created. If creation cannot be confirmed, check Gmail Drafts before repeating the command; AgentGate never retries creation automatically.
+
+Open the dashboard to initiate sending. The existing exact-message preview and explicit approval still apply, including approval by text when enabled. An assistant command such as “send it” never sends a draft.
 
 ## Approving requests by text
 

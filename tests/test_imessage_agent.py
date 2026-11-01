@@ -1,6 +1,6 @@
 import json
 import pytest
-from broker.imessage_agent import FALLBACK_MESSAGE, ReadOnlyMessageAgent, _clean_reply, _message_data
+from broker.imessage_agent import FALLBACK_MESSAGE, MessageAgent, _clean_reply, _message_data
 
 class Model:
     def __init__(self, action='gmail_unread', **args):
@@ -23,7 +23,7 @@ class Tools:
 @pytest.mark.asyncio
 async def test_unread_bounded_authorized_tools_and_sanitized_context():
     model, gmail, github = Model(), Tools(), Tools()
-    agent = ReadOnlyMessageAgent(None, gmail, github, model)
+    agent = MessageAgent(None, gmail, github, model)
     assert await agent.reply('reader', lambda: True, 'check emails') == 'Summary'
     assert len(gmail.calls) == 4
     assert all(call[:2] == ('reader', 'gmail:read') for call in gmail.calls)
@@ -40,23 +40,23 @@ class FailingAnswerModel(Model):
 @pytest.mark.parametrize('action', ['send', 'gmail_send', 'draft', 'create_issue', '__import__', 'unsupported'])
 async def test_non_read_plans_cannot_call_tools_and_model_words_the_refusal(action):
     model, tools = Model(action), Tools()
-    reply = await ReadOnlyMessageAgent(None, tools, tools, model).reply('reader', lambda: True, 'do it')
+    reply = await MessageAgent(None, tools, tools, model).reply('reader', lambda: True, 'do it')
     assert reply == 'Summary'
     assert not tools.calls
-    assert len(model.contexts) == 1 and 'ran nothing' in model.contexts[0] and 'read-only' in model.contexts[0]
+    assert len(model.contexts) == 1 and 'ran nothing' in model.contexts[0] and 'cannot send email' in model.contexts[0]
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('action', ['send', 'unsupported'])
 async def test_refusal_falls_back_to_fixed_text_when_model_fails(action):
     model, tools = FailingAnswerModel(action), Tools()
-    reply = await ReadOnlyMessageAgent(None, tools, tools, model).reply('reader', lambda: True, 'do it')
+    reply = await MessageAgent(None, tools, tools, model).reply('reader', lambda: True, 'do it')
     assert 'read' in reply.lower()
     assert not tools.calls
 
 @pytest.mark.asyncio
 async def test_failed_tools_feed_only_a_failure_note_to_model():
     model, tools = Model(), Tools(deny=True)
-    reply = await ReadOnlyMessageAgent(None, tools, tools, model).reply('reader', lambda: True, 'check')
+    reply = await MessageAgent(None, tools, tools, model).reply('reader', lambda: True, 'check')
     assert reply == 'Summary'
     assert len(model.contexts) == 1
     assert 'did not succeed' in model.contexts[0] and 'Subject' not in model.contexts[0]
@@ -64,7 +64,7 @@ async def test_failed_tools_feed_only_a_failure_note_to_model():
 @pytest.mark.asyncio
 async def test_failed_tools_fall_back_to_fixed_text_when_model_fails():
     model, tools = FailingAnswerModel(), Tools(deny=True)
-    reply = await ReadOnlyMessageAgent(None, tools, tools, model).reply('reader', lambda: True, 'check')
+    reply = await MessageAgent(None, tools, tools, model).reply('reader', lambda: True, 'check')
     assert 'unable' in reply.lower()
 
 @pytest.mark.asyncio
@@ -77,7 +77,7 @@ async def test_chat_gets_empty_context_and_conversation_history():
             self.answer_history = history
             return await super().answer(prompt, context, history)
     model, tools = HistoryModel('chat'), Tools()
-    reply = await ReadOnlyMessageAgent(None, tools, tools, model).reply(
+    reply = await MessageAgent(None, tools, tools, model).reply(
         'reader', lambda: True, 'and you?', history='User: hi\nAgentGate: hey!')
     assert reply == 'Summary' and model.contexts == ['']
     assert model.plan_history == model.answer_history == 'User: hi\nAgentGate: hey!'
@@ -91,17 +91,17 @@ async def test_identity_revoked_during_model_prevents_tools():
             active[0] = False
             return await super().plan(prompt, history)
     model, tools = RevokingModel(), Tools()
-    assert 'inactive' in (await ReadOnlyMessageAgent(None, tools, tools, model).reply('reader', lambda: active[0], 'check')).lower()
+    assert 'inactive' in (await MessageAgent(None, tools, tools, model).reply('reader', lambda: active[0], 'check')).lower()
     assert not tools.calls
 
 @pytest.mark.asyncio
 async def test_malformed_arguments_fail_closed():
     model, tools = Model('github_file', owner=[], repo='x', path='../secret'), Tools()
-    assert await ReadOnlyMessageAgent(None, tools, tools, model).reply('reader', lambda: True, 'check') == 'Summary'
+    assert await MessageAgent(None, tools, tools, model).reply('reader', lambda: True, 'check') == 'Summary'
     assert not tools.calls
     assert 'could not tell' in model.contexts[0]
     model = FailingAnswerModel('github_file', owner=[], repo='x', path='../secret')
-    assert 'understand' in (await ReadOnlyMessageAgent(None, tools, tools, model).reply('reader', lambda: True, 'check')).lower()
+    assert 'understand' in (await MessageAgent(None, tools, tools, model).reply('reader', lambda: True, 'check')).lower()
 
 @pytest.mark.asyncio
 async def test_prompt_context_and_reply_bounds():
@@ -111,7 +111,7 @@ async def test_prompt_context_and_reply_bounds():
             assert len(history) <= 2000
             return 'x' * 3000
     model, tools = LongModel('chat'), Tools()
-    reply = await ReadOnlyMessageAgent(None, tools, tools, model).reply('reader', lambda: True, 'x' * 3000, history='y' * 3000)
+    reply = await MessageAgent(None, tools, tools, model).reply('reader', lambda: True, 'x' * 3000, history='y' * 3000)
     assert len(model.plans[0]) <= 2000
     assert len(reply) <= 1200
 
@@ -122,7 +122,7 @@ async def test_gmail_read_without_data_never_reaches_model_as_chat():
             self.calls.append((agent, resource, operation, args))
             return {'ok': True, 'data': None}
     model, tools = Model('gmail_read', message_id='abc123'), EmptyRead()
-    await ReadOnlyMessageAgent(None, tools, tools, model).reply('reader', lambda: True, 'read it')
+    await MessageAgent(None, tools, tools, model).reply('reader', lambda: True, 'read it')
     assert model.contexts and model.contexts[0] != ''
 
 
@@ -135,7 +135,7 @@ async def test_style_notes_reach_every_answer(action):
             self.styles.append(style)
             return 'Summary'
     model, tools = StyleModel(action), Tools()
-    await ReadOnlyMessageAgent(None, tools, tools, model).reply('reader', lambda: True, 'yo', style='writes in all lowercase')
+    await MessageAgent(None, tools, tools, model).reply('reader', lambda: True, 'yo', style='writes in all lowercase')
     assert model.styles == ['writes in all lowercase']
 
 
@@ -207,7 +207,7 @@ def test_invisible_preview_padding_does_not_hide_the_email_request():
 @pytest.mark.asyncio
 async def test_email_summary_context_reports_partial_scope():
     model, tools = Model(), Tools()
-    await ReadOnlyMessageAgent(None, tools, tools, model).reply('reader', lambda: True, 'check email')
+    await MessageAgent(None, tools, tools, model).reply('reader', lambda: True, 'check email')
     context = json.loads(model.contexts[0])
     assert '3 unread messages' in context['scope']
     assert 'not the entire inbox' in context['scope']
@@ -222,7 +222,7 @@ async def test_email_context_budget_preserves_json_and_marks_clipped_bodies():
                 return await super().execute(agent, resource, operation, identity_guard=identity_guard, **args)
             return {'ok': True, 'data': {'from': ['A' * 200], 'subject': 'B' * 200, 'text': '"' * 1200}}
     model, tools = Model(), EscapedBody()
-    await ReadOnlyMessageAgent(None, tools, tools, model).reply('reader', lambda: True, 'check email')
+    await MessageAgent(None, tools, tools, model).reply('reader', lambda: True, 'check email')
     assert len(model.contexts[0]) <= 6000
     context = json.loads(model.contexts[0])
     assert len(context['messages']) == 3

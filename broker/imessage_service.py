@@ -163,6 +163,9 @@ class AsyncAppleModel:
     async def draft_reply(self, prompt, context):
         return _data(await asyncio.to_thread(self._apple.draft_reply, prompt, context))
 
+    async def draft_request(self, prompt):
+        return _data(await asyncio.to_thread(self._apple.draft_request, prompt))
+
     async def answer(self, prompt, context, history='', style=''):
         data = _data(await asyncio.to_thread(self._apple.answer, prompt, context, history, style))
         text = data.get('text')
@@ -397,7 +400,8 @@ class IMessageService:
         if model is None:
             model = AsyncAppleModel(AppleModel(self._model_helper_path))
         self._model = model
-        self._agent = MessageAgent(audit, gmail_tools, github_tools, model)
+        # The agent reads dates such as "yesterday" in the Mac's local time.
+        self._agent = MessageAgent(audit, gmail_tools, github_tools, model, clock=lambda: self._clock().astimezone())
         self._audit = audit
         self._approvals = approvals
         self._forget_requests()
@@ -744,6 +748,7 @@ class IMessageService:
 
     async def _stop_loop(self):
         self._conversation.clear()
+        self._agent.forget()
         task, self._loop_task = self._loop_task, None
         if task is not None:
             if not task.done():
@@ -752,6 +757,7 @@ class IMessageService:
 
     def _halt(self, code):
         self._conversation.clear()
+        self._agent.forget()
         if not self._unreadable:
             self._save(self._settings_with(enabled=False, halted=code))
         self._error = code

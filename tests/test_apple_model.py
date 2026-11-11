@@ -147,3 +147,20 @@ def test_draft_reply_uses_private_transport_and_typed_result(tmp_path):
 def test_draft_reply_rejects_ambiguous_oversized_or_recipient_bearing_result(tmp_path, data):
     with patch('broker.apple_model.subprocess.run', return_value=response({'ok': True, 'data': data})):
         assert not AppleModel(helper(tmp_path)).draft_reply('Draft a reply', '{}')['ok']
+
+
+def test_draft_request_uses_private_transport_and_typed_result(tmp_path):
+    model = AppleModel(helper(tmp_path))
+    for data in ({'reply': 'Friday works'}, {'reply': ''}):
+        with patch('broker.apple_model.subprocess.run', return_value=response({'ok': True, 'data': data})) as run:
+            assert model.draft_request('Draft a reply to Taylor saying Friday works')['data'] == data
+            assert json.loads(run.call_args.kwargs['input']) == {
+                'mode': 'draft_request', 'prompt': 'Draft a reply to Taylor saying Friday works'}
+
+
+@pytest.mark.parametrize('data', [
+    {'reply': 'x' * 1001}, {'reply': None}, {'reply': 'a\x00b'}, {}, {'reply': 'ok', 'query': 'from:someone'},
+])
+def test_draft_request_rejects_malformed_or_extra_fields(tmp_path, data):
+    with patch('broker.apple_model.subprocess.run', return_value=response({'ok': True, 'data': data})):
+        assert not AppleModel(helper(tmp_path)).draft_request('Draft a reply')['ok']

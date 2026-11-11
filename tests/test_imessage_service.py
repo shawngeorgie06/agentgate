@@ -846,6 +846,30 @@ async def test_revocation_clears_conversation_memory(tmp_path, registry):
     await service.stop()
 
 
+async def test_draft_request_continues_across_texts_and_is_forgotten_on_disable(tmp_path, registry):
+    from tests.test_imessage_drafts import DraftModel, DraftTools
+    class Model(DraftModel):
+        def availability(self):
+            return {'available': True, 'reason': 'Available on this Mac.'}
+    world, clock, model, gmail = FakeWorld(), Clock(), Model(), DraftTools()
+    service = make_service(tmp_path, world, clock, registry=registry, model=model, gmail=gmail)
+    await pair(service, world)
+    await service.enable()
+    await command(world, clock, 900, '/agent Draft a reply to Taylor')
+    assert 'What should the reply say?' in world.sent[-1][1]
+    await command(world, clock, 901, '/agent tell them Friday works')
+    assert 'Draft saved' in world.sent[-1][1]
+    assert gmail.created == [('helper', 'email-1', 'Friday works for me.')]
+
+    await command(world, clock, 902, '/agent Draft a reply to Taylor')
+    assert 'What should the reply say?' in world.sent[-1][1]
+    await service.disable()
+    await service.enable()
+    await command(world, clock, 903, '/agent tell them Friday works')
+    assert len(gmail.created) == 1
+    await service.stop()
+
+
 async def test_conversation_memory_is_bounded_and_expires(tmp_path, registry, monkeypatch):
     world, clock, model = FakeWorld(), Clock(), HistoryModel()
     service = make_service(tmp_path, world, clock, registry=registry, model=model)

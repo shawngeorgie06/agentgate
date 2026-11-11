@@ -612,7 +612,7 @@ async def test_draft_request_spread_over_several_texts_with_real_model(local_mod
     from tests.test_imessage_drafts import DraftTools
     tools = DraftTools()
     now = dt.datetime(2026, 11, 11, 10, 0, tzinfo=dt.timezone(dt.timedelta(hours=-5)))
-    agent = MessageAgent(None, tools, None, AsyncAppleModel(local_model), clock=lambda: now)
+    agent = MessageAgent(None, tools, None, AsyncAppleModel(local_model), clock=lambda: now, zone=now.tzinfo)
     reply = await agent.reply('reader', lambda: True, 'Draft a reply')
     assert 'Which email' in reply, reply
     reply = await agent.reply('reader', lambda: True, 'the email from Taylor about the interview, from yesterday')

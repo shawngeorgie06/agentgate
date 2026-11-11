@@ -3,7 +3,9 @@ import json
 
 import pytest
 
-from broker.imessage_agent import DRAFT_TTL, MessageAgent, _day_range, _email_words
+from zoneinfo import ZoneInfo
+
+from broker.imessage_agent import DRAFT_TTL, MessageAgent, _day_range, _day_start, _email_words
 
 EASTERN = dt.timezone(dt.timedelta(hours=-5))
 NOW = dt.datetime(2026, 11, 11, 10, 0, tzinfo=EASTERN)  # a Wednesday
@@ -57,7 +59,7 @@ class DraftTools:
 
 
 def make_agent(tools, model, clock=lambda: NOW):
-    return MessageAgent(None, tools, None, model, clock=clock)
+    return MessageAgent(None, tools, None, model, clock=clock, zone=EASTERN)
 
 
 @pytest.mark.asyncio
@@ -271,7 +273,7 @@ async def test_cancel_and_idle_timeout_forget_the_draft():
 @pytest.mark.asyncio
 async def test_another_lookup_does_not_consume_the_pending_draft():
     tools, model = DraftTools(), DraftModel(action='github_repos')
-    agent = MessageAgent(None, tools, FailingGitHub(), model, clock=lambda: NOW)
+    agent = MessageAgent(None, tools, FailingGitHub(), model, clock=lambda: NOW, zone=EASTERN)
     await agent.reply('reader', lambda: True, 'Draft a reply to Taylor')
     await agent.reply('reader', lambda: True, 'what repos do I have')
     assert not model.prompts and not tools.created
@@ -348,8 +350,63 @@ def test_day_ranges(text, expected):
 
 
 def test_email_words_are_the_users_own_keywords_without_operators():
-    assert _email_words('Draft a reply to the email from Dana Lee about the lease renewal on nov 10') == [
-        'dana', 'lee', 'lease', 'renewal']
-    assert _email_words('from this address aws-cs-noreply@support.aws.com') == ['aws-cs-noreply@support.aws.com']
-    assert _email_words('(from:boss OR in:sent) -in:inbox {label:x}') == ['boss', 'label']
-    assert len(_email_words(' '.join(f'word{n}' for n in range(30)))) == 8
+    assert _email_words('Draft a reply to the email from Dana Lee about the lease renewal on nov 10') == (
+        ['dana', 'lee', 'lease', 'renewal'], True)
+    assert _email_words('from this address aws-cs-noreply@support.aws.com') == (['aws-cs-noreply@support.aws.com'], True)
+    assert _email_words('(from:boss OR in:sent) -in:inbox {label:x}') == (['boss', 'label'], True)
+    words, complete = _email_words(' '.join(f'word{n}' for n in range(30)))
+    assert len(words) == 8 and not complete
+
+
+def test_day_start_follows_the_daylight_saving_rule_of_that_day():
+    new_york = ZoneInfo('America/New_York')
+    assert _day_start(dt.date(2026, 7, 1), new_york) == int(dt.datetime(2026, 7, 1, 4, tzinfo=dt.timezone.utc).timestamp())
+    assert _day_start(dt.date(2026, 11, 10), new_york) == int(dt.datetime(2026, 11, 10, 5, tzinfo=dt.timezone.utc).timestamp())
+    # With no zone the Mac's own rules apply, the same as a naive local midnight.
+    assert _day_start(dt.date(2026, 7, 1), None) == int(dt.datetime(2026, 7, 1).timestamp())
+
+
+@pytest.mark.asyncio
+async def test_summer_date_asked_in_winter_uses_summer_offset_and_utc_clock():
+    tools = DraftTools()
+    utc_now = NOW.astimezone(dt.timezone.utc)
+    agent = MessageAgent(None, tools, None, DraftModel(), clock=lambda: utc_now, zone=ZoneInfo('America/New_York'))
+    await agent.reply('reader', lambda: True, 'Draft a reply to Taylor from july 1 saying thanks')
+    first = int(dt.datetime(2026, 7, 1, 4, tzinfo=dt.timezone.utc).timestamp())
+    assert tools.queries == [f'taylor after:{first - 1} before:{first + 86400} -in:sent -in:drafts']
+
+
+@pytest.mark.asyncio
+async def test_description_longer_than_the_search_limit_needs_confirmation():
+    tools, model = DraftTools(), DraftModel()
+    reply = await make_agent(tools, model).reply(
+        'reader', lambda: True,
+        'Draft a reply about alpha bravo charlie delta echo foxtrot golf hotel approved saying thanks')
+    assert 'did not find an exact match' in reply and not tools.created and not model.prompts
+    assert tools.queries == ['alpha bravo charlie delta echo foxtrot golf hotel -in:sent -in:drafts']
+
+
+@pytest.mark.asyncio
+async def test_wording_the_user_did_not_type_is_never_used_as_reply_content():
+    class InventingModel(DraftModel):
+        async def draft_request(self, prompt):
+            return {'reply': 'Thanks for reaching out.'}
+    tools, model = DraftTools(), InventingModel()
+    reply = await make_agent(tools, model).reply('reader', lambda: True, 'Draft a reply to Taylor about the interview')
+    assert 'What should the reply say?' in reply and not tools.created and not model.prompts
+    assert tools.queries == ['taylor interview -in:sent -in:drafts']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('while_inactive', ['Draft a reply to Dana', 'check my unread email'])
+async def test_any_text_seen_while_inactive_drops_the_pending_draft(while_inactive):
+    active = [True]
+    tools, model = DraftTools(), DraftModel(action='gmail_unread')
+    agent = make_agent(tools, model)
+    await agent.reply('reader', lambda: active[0], 'Draft a reply to Taylor')
+    active[0] = False
+    assert 'inactive' in await agent.reply('reader', lambda: active[0], while_inactive)
+    active[0] = True
+    model.action = 'chat'
+    await agent.reply('reader', lambda: active[0], 'Friday works')
+    assert not tools.created and not model.prompts

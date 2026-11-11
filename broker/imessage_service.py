@@ -400,8 +400,7 @@ class IMessageService:
         if model is None:
             model = AsyncAppleModel(AppleModel(self._model_helper_path))
         self._model = model
-        # The agent reads dates such as "yesterday" in the Mac's local time.
-        self._agent = MessageAgent(audit, gmail_tools, github_tools, model, clock=lambda: self._clock().astimezone())
+        self._agent = MessageAgent(audit, gmail_tools, github_tools, model, clock=lambda: self._clock())
         self._audit = audit
         self._approvals = approvals
         self._forget_requests()

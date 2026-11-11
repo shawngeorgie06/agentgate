@@ -324,7 +324,7 @@ def _day_range(text, today):
 
 
 def _email_words(text):
-    """Lower-case keywords from the user's own words that identify an email. Never Gmail operators."""
+    """(keywords, all kept) from the user's own words that identify an email. Never Gmail operators."""
     for pattern in _DATE_PATTERNS:
         text = pattern.sub(' ', text)
     words = []
@@ -333,7 +333,12 @@ def _email_words(text):
         if len(word) < 2 or word in _FILLER or word in words:
             continue
         words.append(word)
-    return words[:DRAFT_WORD_LIMIT]
+    return words[:DRAFT_WORD_LIMIT], len(words) <= DRAFT_WORD_LIMIT
+
+
+def _day_start(day, zone):
+    """Epoch second at which a local day starts. Without a zone, the Mac's zone and its daylight-saving rules."""
+    return int(dt.datetime.combine(day, dt.time.min, tzinfo=zone).timestamp())
 
 
 def _email_label(message, zone):
@@ -374,13 +379,14 @@ def _clean_reply(answer) -> str:
 
 
 class MessageAgent:
-    def __init__(self, audit, gmail_tools, github_tools, model, clock=None):
+    def __init__(self, audit, gmail_tools, github_tools, model, clock=None, zone=None):
         self._audit = audit
         self._gmail = gmail_tools
         self._github = github_tools
         self._model = model
-        # Local time, so "yesterday" means the user's yesterday.
-        self._clock = clock or (lambda: dt.datetime.now().astimezone())
+        self._clock = clock or (lambda: dt.datetime.now(dt.timezone.utc))
+        # Days such as "yesterday" are the user's days: this zone, or the Mac's own when None.
+        self._zone = zone
         self._draft = None
 
     def forget(self):
@@ -390,6 +396,8 @@ class MessageAgent:
     async def reply(self, agent_name: str, identity_guard, prompt: str, history: str = '',
                     style: str = '') -> str:
         text, decision, action = await self._run(agent_name, identity_guard, prompt, history, style)
+        if not _active(identity_guard):
+            self._draft = None
         if self._audit is not None:
             label = action if action in ACTIONS else 'invalid'
             self._audit.log(agent=agent_name, credential_requested=f'imessage:{label}',
@@ -407,6 +415,7 @@ class MessageAgent:
             draft = self._draft = None
         if DRAFT_COMMAND.match(prompt.strip()):
             if not _active(identity_guard):
+                self._draft = None
                 return INACTIVE_MESSAGE, 'denied', 'gmail_reply_draft'
             self._draft = _PendingDraft(agent_name)
             return (*await self._draft_turn(agent_name, identity_guard, prompt, now), 'gmail_reply_draft')
@@ -471,12 +480,12 @@ class MessageAgent:
             if draft.message_id is None:
                 # Once the wording is known, a follow-up text can only be naming the email.
                 which = prompt if draft.content else await self._split_request(prompt, draft)
-                days = _day_range(which, now.date())
-                words = _email_words(which)
+                days = _day_range(which, now.astimezone(self._zone).date())
+                words, complete = _email_words(which)
                 if not words and days is None:
                     return DRAFT_ASK_EMAIL, 'completed'
                 draft.days = days or draft.days
-                found = await self._find_email(agent, guard, words, draft.days, now.tzinfo)
+                found = await self._find_email(agent, guard, words, draft.days)
                 if found is None:
                     return DRAFT_NO_MATCH, 'completed'
                 message_id, exact, draft.several = found
@@ -484,9 +493,10 @@ class MessageAgent:
                 if message is None:
                     self._draft = None
                     return DRAFT_UNREADABLE, 'failed'
-                if not exact:
+                # A match on only some of the user's words might be a different email.
+                if not exact or not complete:
                     draft.candidate, draft.stage = message_id, 'confirm'
-                    return (f'I did not find an exact match. Closest: {_email_label(message, now.tzinfo)}.\n'
+                    return (f'I did not find an exact match. Closest: {_email_label(message, self._zone)}.\n'
                             'Text “yes” to reply to it, or tell me the sender or subject.'), 'completed'
                 draft.message_id, draft.stage = message_id, 'content'
             if message is None:
@@ -496,7 +506,7 @@ class MessageAgent:
                     return DRAFT_UNREADABLE, 'failed'
             if not draft.content:
                 several = ' It is the newest of several matches.' if draft.several else ''
-                return (f'Replying to {_email_label(message, now.tzinfo)}.{several}\n'
+                return (f'Replying to {_email_label(message, self._zone)}.{several}\n'
                         'What should the reply say? Text “cancel” to stop.'), 'completed'
             body = await self._write_reply(guard, draft, message)
         except _Inactive:
@@ -520,17 +530,17 @@ class MessageAgent:
                 said = reply.strip()
         except Exception:
             pass
+        # Wording the user did not type is the model's invention, not something to reply with.
         index = prompt.lower().find(said.lower()) if said else -1
         if index < 0:
             marker = _SAYING.search(prompt)
-            if marker is not None and prompt[marker.end():].strip():
-                said, index = prompt[marker.end():], marker.start()
-        if not said:
-            return prompt
+            if marker is None or not prompt[marker.end():].strip():
+                return prompt
+            index = marker.start()
         draft.content.append(prompt)
-        return prompt[:index] if index >= 0 else prompt
+        return prompt[:index]
 
-    async def _find_email(self, agent, guard, words, days, zone):
+    async def _find_email(self, agent, guard, words, days):
         """(message id, exact, several) for the newest matching email, else None.
 
         The user's keywords must all match first. If nothing does, trailing keywords and then the date
@@ -543,7 +553,7 @@ class MessageAgent:
         for index, (terms, period) in enumerate(attempts):
             parts = list(terms)
             if period is not None:
-                first, after_last = (int(dt.datetime.combine(day, dt.time.min, tzinfo=zone).timestamp()) for day in period)
+                first, after_last = (_day_start(day, self._zone) for day in period)
                 parts += [f'after:{first - 1}', f'before:{after_last}']
             listing = await self._call(self._gmail, agent, 'gmail:read', 'search', guard,
                                        query=' '.join(parts + ['-in:sent', '-in:drafts']), limit=2)

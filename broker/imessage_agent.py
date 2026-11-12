@@ -117,6 +117,67 @@ class _Malformed(Exception):
     pass
 
 
+# Words too common to show that a sentence of a generated reply came from the user's request.
+_COMMON = frozenset("""
+a about also am an and are as at be been being but by can could did do does draft email for from had has have he
+her here him his how i id if ill im in into is it its ive just let may me might mine must my no not of on or our
+please reply replying said say saying says shall she should so than that the their them then there these they this
+those to too us very was we were what when where which who will with would write you your yours
+tell telling ask asking know
+cannot cant dont doesnt didnt wont wouldnt couldnt shouldnt isnt arent wasnt werent havent hasnt hadnt
+""".split())
+# A sentence ends at a full stop followed by a capital or digit, so "3 p.m. on Friday" stays whole, or at a blank
+# line. A single line break is only wrapping.
+_SENTENCE_END = re.compile(r'((?<=[.!?])\s+(?=[^a-z\s])|\s*\n\s*\n\s*)')
+_GREETING = re.compile(r'(?:hi|hello|hey|dear)(?:\s+[^\s,.!?]+){0,3}[,.!]?', re.IGNORECASE)
+# A sentence that opens with one of these qualifies the sentence before it.
+_CONTINUES = re.compile(r'(?:but|and|or|so|unless|however|otherwise|because|if|except|although|though|also)\b',
+                        re.IGNORECASE)
+
+
+def _forms(word) -> set:
+    """Spellings shared by the forms of a word, so submit, submitted and submitting have one in common."""
+    for suffix, ending in (('ies', 'y'), ('ing', ''), ('ed', ''), ('es', ''), ('s', '')):
+        if word.endswith(suffix) and len(word) - len(suffix) >= 3:
+            stem = word[:-len(suffix)] + ending
+            if len(stem) > 3 and stem[-1] == stem[-2]:
+                stem = stem[:-1]
+            # Closed, closing and closes come from close, not clos.
+            return {stem, stem + 'e'} if suffix in ('ing', 'ed', 'es') else {stem}
+    return {word}
+
+
+def _content_words(text) -> set:
+    words = re.findall(r'[^\W_]+', re.sub(r"['’]", '', text.lower()))
+    return {form for word in words if word not in _COMMON for form in _forms(word)}
+
+
+def _only_requested(body, said) -> str:
+    """`body` without the sentences that carry none of the words in `said`, the reply wording the user gave:
+    thanks, closings and offers nobody asked for.
+
+    A sentence made only of common words, such as "I cannot.", cannot be judged and is kept. One that qualifies a
+    requested sentence before it is kept with it. A reply that carries none of the user's words anywhere is
+    returned whole; the user described the reply instead of wording it.
+    """
+    asked = _content_words(said)
+    pieces = _SENTENCE_END.split(body.strip())
+    units = []      # [text, the gap after it, its content words]
+    for sentence, gap in zip(pieces[::2], pieces[1::2] + ['']):
+        words = _content_words(sentence)
+        # Padding is not carried along by a requested sentence that happens to follow it.
+        if units and words and units[-1][2] & asked and _CONTINUES.match(sentence):
+            units[-1][0] += units[-1][1] + sentence
+            units[-1][1] = gap
+            units[-1][2] |= words
+        else:
+            units.append([sentence, gap, words])
+    if not any(words & asked for _, _, words in units):
+        return body
+    return ''.join(text + gap for index, (text, gap, words) in enumerate(units)
+                   if not words or words & asked or index == 0 and _GREETING.fullmatch(text)).strip()
+
+
 class _Inactive(Exception):
     pass
 
@@ -363,6 +424,7 @@ class _PendingDraft:
         self.agent = agent
         self.stage = 'email'      # 'email': which email; 'confirm': is this the one; 'content': what to say
         self.content = []         # the user's texts that say what the reply should say
+        self.said = []            # only their reply wording, without the part that names the email
         self.days = None
         self.message_id = None
         self.candidate = None
@@ -477,6 +539,7 @@ class MessageAgent:
                     draft.candidate, draft.stage = None, 'email'
             elif draft.stage == 'content':
                 draft.content.append(prompt)
+                draft.said.append(prompt)
             if draft.message_id is None:
                 # Once the wording is known, a follow-up text can only be naming the email.
                 which = prompt if draft.content else await self._split_request(prompt, draft)
@@ -531,13 +594,15 @@ class MessageAgent:
         except Exception:
             pass
         # Wording the user did not type is the model's invention, not something to reply with.
-        index = prompt.lower().find(said.lower()) if said else -1
+        # The same words earlier in the text describe the email; the wording follows the saying marker.
+        marker = _SAYING.search(prompt)
+        index = prompt.lower().find(said.lower(), marker.end() if marker else 0) if said else -1
         if index < 0:
-            marker = _SAYING.search(prompt)
             if marker is None or not prompt[marker.end():].strip():
                 return prompt
             index = marker.start()
         draft.content.append(prompt)
+        draft.said.append(prompt[index:])
         return prompt[:index]
 
     async def _find_email(self, agent, guard, words, days):
@@ -597,6 +662,7 @@ class MessageAgent:
         # The draft stays pending after these two answers, so the user's next text adds the missing detail.
         if clarification.strip():
             return 'No draft created yet. ' + clarification.strip() + DRAFT_OPEN, 'completed'
+        body = _only_requested(body, '\n'.join(draft.said))
         supplied_numbers = set(re.findall(r'\d+', prompt + '\n' + message['body']))
         if not set(re.findall(r'\d+', body)).issubset(supplied_numbers):
             return ('No draft created yet. Please provide the exact numbers or dates to include; '

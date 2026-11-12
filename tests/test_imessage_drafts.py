@@ -146,6 +146,91 @@ async def test_model_cannot_save_invented_numeric_details():
     assert not tools.created
 
 
+@pytest.mark.parametrize('generated, request_text, saved', [
+    ('Thank you for your response. I have already submitted the form. No further action is required at this time.',
+     'Draft a reply to Taylor saying I already submitted the form', 'I have already submitted the form.'),
+    ('Hello,\n\nThank you for your message. I will send the documents tomorrow.\n\nBest regards,',
+     'Draft a reply to Taylor saying I will send the documents tomorrow',
+     'Hello,\n\nI will send the documents tomorrow.'),
+    ('Yes, I want to renew. Rent would go up by 50 dollars.',
+     'Draft a reply to Taylor saying yes I want to renew', 'Yes, I want to renew.'),
+    ('Friday works. Call me at 555-0100.', 'Draft a reply to Taylor saying Friday works', 'Friday works.'),
+    ('See you at 3 p.m. on Friday. Looking forward to it.',
+     'Draft a reply to Taylor saying see you at 3 p.m. on friday', 'See you at 3 p.m. on Friday.'),
+    ('Thanks, I submitted the form.', 'Draft a reply to Taylor saying thanks, I submitted the form',
+     'Thanks, I submitted the form.'),
+    # A qualification stays with the sentence it qualifies.
+    ('Friday works for me. But not if I have to be there. Thank you for your patience.',
+     'Draft a reply to Taylor saying Friday works for me, but not if I have to be there',
+     'Friday works for me. But not if I have to be there.'),
+    ('Thanks. But I cannot. Best regards.', "Draft a reply to Taylor saying thanks, but I can't",
+     'Thanks. But I cannot.'),
+    # A line break inside a sentence is only wrapping.
+    ('I have\nsubmitted the form.\n\nBest regards,\nSam', 'Draft a reply to Taylor saying I have submitted the form',
+     'I have\nsubmitted the form.'),
+    # A refusal made only of common words is kept even after padding.
+    ('Hi Sam,\n\nThank you for the invitation. I cannot. Friday works instead.',
+     "Draft a reply to Taylor saying I can't. Friday works instead.", 'Hi Sam,\n\nI cannot. Friday works instead.'),
+    ('See you at 3 p.m.\n on Friday. Thank you for your time.',
+     'Draft a reply to Taylor saying see you at 3 p.m. on friday', 'See you at 3 p.m.\n on Friday.'),
+    ('I will take care of it. I will bring my car.', 'Draft a reply to Taylor saying I will take care of it',
+     'I will take care of it.'),
+    ('I am closing the account.', 'Draft a reply to Taylor saying I will close the account',
+     'I am closing the account.'),
+    ('Friday works. She refuses.', 'Draft a reply to Taylor saying Friday works. She will refuse.',
+     'Friday works. She refuses.'),
+    ('Thank you for your email. But I submitted the form.', 'Draft a reply to Taylor saying I submitted the form',
+     'But I submitted the form.'),
+    # Form and format are different words.
+    ('I submitted the form. The format is correct.', 'Draft a reply to Taylor saying I submitted the form',
+     'I submitted the form.'),
+])
+@pytest.mark.asyncio
+async def test_sentences_the_user_did_not_ask_for_are_left_out_of_the_draft(generated, request_text, saved):
+    tools = DraftTools()
+    reply = await MessageAgent(None, tools, None, DraftModel(generated)).reply('reader', lambda: True, request_text)
+    assert tools.created == [('reader', 'email-1', saved)]
+    assert saved in reply and 'Draft saved' in reply
+
+
+@pytest.mark.asyncio
+async def test_reply_the_user_described_rather_than_worded_is_saved_whole():
+    tools = DraftTools()
+    body = 'Thank you for the invitation. I am not available this week.'
+    await MessageAgent(None, tools, None, DraftModel(body)).reply(
+        'reader', lambda: True, 'Draft a reply to Taylor saying decline politely')
+    assert tools.created == [('reader', 'email-1', body)]
+
+
+@pytest.mark.asyncio
+async def test_words_that_only_name_the_email_do_not_count_as_reply_wording():
+    tools = DraftTools()
+    body = 'Thank you for the invitation. Unfortunately, I am unavailable.'
+    await MessageAgent(None, tools, None, DraftModel(body)).reply(
+        'reader', lambda: True, 'Draft a reply to Taylor about the invitation saying decline politely')
+    assert tools.created == [('reader', 'email-1', body)]
+
+
+@pytest.mark.asyncio
+async def test_reply_wording_repeated_in_the_email_description_is_taken_after_the_saying_marker():
+    class EchoModel(DraftModel):
+        async def draft_request(self, prompt):
+            return {'reply': 'Friday'}
+    tools = DraftTools()
+    await MessageAgent(None, tools, None, EchoModel('Friday. The interview sounds great.')).reply(
+        'reader', lambda: True, 'Draft a reply to Taylor about the Friday interview saying Friday')
+    assert tools.created == [('reader', 'email-1', 'Friday.')]
+
+
+@pytest.mark.asyncio
+async def test_wording_sent_as_a_later_text_decides_what_is_left_out():
+    tools, model = DraftTools(), DraftModel('Thank you. I already submitted the form. Let me know if you need more.')
+    agent = make_agent(tools, model)
+    await agent.reply('reader', lambda: True, 'Draft a reply to Taylor about the interview')
+    await agent.reply('reader', lambda: True, 'tell them I already submitted the form')
+    assert tools.created == [('reader', 'email-1', 'I already submitted the form.')]
+
+
 @pytest.mark.asyncio
 async def test_explicitly_supplied_number_can_be_used_in_draft():
     tools = DraftTools()

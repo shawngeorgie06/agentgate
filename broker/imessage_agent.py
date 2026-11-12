@@ -156,8 +156,8 @@ def _only_requested(body, said) -> str:
     """`body` without the sentences that carry none of the words in `said`, the reply wording the user gave:
     thanks, closings and offers nobody asked for.
 
-    A sentence made only of common words, such as "I cannot.", cannot be judged and is kept. One that qualifies the
-    sentence before it is judged together with it. A reply that carries none of the user's words anywhere is
+    A sentence made only of common words, such as "I cannot.", cannot be judged and is kept. One that qualifies a
+    requested sentence before it is kept with it. A reply that carries none of the user's words anywhere is
     returned whole; the user described the reply instead of wording it.
     """
     asked = _content_words(said)
@@ -165,7 +165,8 @@ def _only_requested(body, said) -> str:
     units = []      # [text, the gap after it, its content words]
     for sentence, gap in zip(pieces[::2], pieces[1::2] + ['']):
         words = _content_words(sentence)
-        if units and words and units[-1][2] and _CONTINUES.match(sentence):
+        # Padding is not carried along by a requested sentence that happens to follow it.
+        if units and words and units[-1][2] & asked and _CONTINUES.match(sentence):
             units[-1][0] += units[-1][1] + sentence
             units[-1][1] = gap
             units[-1][2] |= words
@@ -593,9 +594,10 @@ class MessageAgent:
         except Exception:
             pass
         # Wording the user did not type is the model's invention, not something to reply with.
-        index = prompt.lower().find(said.lower()) if said else -1
+        # The same words earlier in the text describe the email; the wording follows the saying marker.
+        marker = _SAYING.search(prompt)
+        index = prompt.lower().find(said.lower(), marker.end() if marker else 0) if said else -1
         if index < 0:
-            marker = _SAYING.search(prompt)
             if marker is None or not prompt[marker.end():].strip():
                 return prompt
             index = marker.start()

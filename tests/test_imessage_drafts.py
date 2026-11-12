@@ -179,6 +179,8 @@ async def test_model_cannot_save_invented_numeric_details():
      'I am closing the account.'),
     ('Friday works. She refuses.', 'Draft a reply to Taylor saying Friday works. She will refuse.',
      'Friday works. She refuses.'),
+    ('Thank you for your email. But I submitted the form.', 'Draft a reply to Taylor saying I submitted the form',
+     'But I submitted the form.'),
     # Form and format are different words.
     ('I submitted the form. The format is correct.', 'Draft a reply to Taylor saying I submitted the form',
      'I submitted the form.'),
@@ -207,6 +209,17 @@ async def test_words_that_only_name_the_email_do_not_count_as_reply_wording():
     await MessageAgent(None, tools, None, DraftModel(body)).reply(
         'reader', lambda: True, 'Draft a reply to Taylor about the invitation saying decline politely')
     assert tools.created == [('reader', 'email-1', body)]
+
+
+@pytest.mark.asyncio
+async def test_reply_wording_repeated_in_the_email_description_is_taken_after_the_saying_marker():
+    class EchoModel(DraftModel):
+        async def draft_request(self, prompt):
+            return {'reply': 'Friday'}
+    tools = DraftTools()
+    await MessageAgent(None, tools, None, EchoModel('Friday. The interview sounds great.')).reply(
+        'reader', lambda: True, 'Draft a reply to Taylor about the Friday interview saying Friday')
+    assert tools.created == [('reader', 'email-1', 'Friday.')]
 
 
 @pytest.mark.asyncio

@@ -90,6 +90,7 @@ DRAFT_ASK_EMAIL = ('Which email should I reply to? Tell me the sender or subject
 DRAFT_NO_MATCH = ('No matching email found. Tell me the sender or subject, and a date if it helps. '
                   'Text “cancel” to stop.')
 DRAFT_OPEN = '\nYour next text continues this draft. Text “cancel” to stop.'
+DRAFT_WAITING = '\n\nYour reply draft is still open. Your next text continues it. Text “cancel” to stop.'
 DRAFT_CANCELLED = 'Okay, I stopped that draft. Nothing was created.'
 DRAFT_UNREADABLE = 'I could not read the email body, so I did not create a draft.'
 DRAFT_FAILED = 'I could not prepare the reply. No draft was created. Check read access and try a more specific request.'
@@ -111,6 +112,26 @@ FAILURE_NOTE = ('AgentGate tried to look this up but the read did not succeed, s
 _OTHER_LOOKUPS = frozenset({'gmail_unread', 'gmail_read', 'github_repos', 'github_issues', 'github_file'})
 _OTHER_REQUESTS = {'email': _OTHER_LOOKUPS, 'confirm': _OTHER_LOOKUPS | {'gmail_search'},
                    'content': _OTHER_LOOKUPS | {'gmail_search'}}
+# Texts that address the assistant about the user's own accounts, or about itself, whatever the model plans for
+# them. Reply wording speaks to the recipient, so it does not open with a lookup of "my" email or repos.
+_ASIDE_LEAD = (r'\s*(?:(?:ok(?:ay)?|actually|never\s?mind|wait|hold on|first|also|and|hey|please)[,.!]?\s+)*'
+               r'(?:(?:can|could|would|will) you\s+)?(?:please\s+)?')
+_ASIDE_VERB = r'(?:list|show(?: me)?|check|search|read|open|find|get(?! back)|give me|look (?:up|at|in|through)|summari[sz]e|count)'
+_ASIDE_MAIL = r'(?:e-?mails?|inbox|mail|gmail|messages)'
+_ASIDE_CODE = r'(?:github|repos?|repositor(?:y|ies)|issues|pull requests|prs)'
+_OTHER_REQUEST = re.compile(_ASIDE_LEAD + '(?:' + '|'.join((
+    # "check my unread email", "list my GitHub repos"
+    rf'{_ASIDE_VERB}\b[^.!?\n]*\bmy\s+(?:[\w-]+\s+){{0,2}}(?:{_ASIDE_MAIL}|{_ASIDE_CODE})\b',
+    # "read the README in owner/repo", "list open issues in owner/repo"
+    rf'{_ASIDE_VERB}\b[^.!?\n]*\b(?:readme|issues|repo|repository|file|prs|pull requests)\b[^.!?\n]*'
+    r'(?<![\w/.-])[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]*[A-Za-z0-9](?![\w/-])',
+    rf'how many\b[^.!?\n]*\b(?:{_ASIDE_MAIL}|{_ASIDE_CODE})\b[^.!?\n]*\b(?:do|have) i\b',
+    rf'how many (?:unread|new)\s+{_ASIDE_MAIL}\b',
+    rf'(?:do i have|have i got)\b[^.!?\n]*\b(?:unread|{_ASIDE_MAIL}|repos?|repositories)\b',
+    rf'any (?:new|unread)\s+{_ASIDE_MAIL}\b',
+    rf'(?:what|which)(?: is|\'s|’s| are)\b[^.!?\n]*\bmy\s+(?:[\w-]+\s+){{0,2}}(?:{_ASIDE_MAIL}|{_ASIDE_CODE})\b',
+    r'(?:what can you do|what are your (?:commands|capabilities)|help)\s*[.!?]*\s*$',
+)) + ')', re.IGNORECASE)
 
 
 class _Malformed(Exception):
@@ -494,9 +515,19 @@ class MessageAgent:
         if not isinstance(plan, dict) or not isinstance(plan.get('action'), str):
             return MALFORMED_MESSAGE, 'denied', None
         action = plan['action']
-        # While a draft is being gathered, the next text continues it unless it is clearly another lookup.
-        if draft is not None and action not in _OTHER_REQUESTS[draft.stage]:
-            return (*await self._draft_turn(agent_name, identity_guard, prompt, now), 'gmail_reply_draft')
+        # While a draft is being gathered, the next text continues it unless it is clearly another request.
+        if draft is not None:
+            if action not in _OTHER_REQUESTS[draft.stage] and not _OTHER_REQUEST.match(prompt):
+                return (*await self._draft_turn(agent_name, identity_guard, prompt, now), 'gmail_reply_draft')
+            text, decision, action = await self._answer(agent_name, identity_guard, prompt, history, style, plan)
+            # The draft stepped aside for this text, so say that it is still waiting.
+            waiting = self._draft is draft and _active(identity_guard)
+            return text + DRAFT_WAITING if waiting else text, decision, action
+        return await self._answer(agent_name, identity_guard, prompt, history, style, plan)
+
+    async def _answer(self, agent_name, identity_guard, prompt, history, style, plan):
+        """Answer a request that is not part of a draft."""
+        action = plan['action']
         if action not in ACTIONS:
             return await self._say(prompt, REFUSAL_NOTE, history, style, CAPABILITIES_MESSAGE), 'denied', None
         try:

@@ -120,47 +120,60 @@ class _Malformed(Exception):
 # Words too common to show that a sentence of a generated reply came from the user's request.
 _COMMON = frozenset("""
 a about also am an and are as at be been being but by can could did do does draft email for from had has have he
-her here him his how i id if ill im in into is it its ive just let may me might mine must my not of on or our
+her here him his how i id if ill im in into is it its ive just let may me might mine must my no not of on or our
 please reply replying said say saying says shall she should so than that the their them then there these they this
 those to too us very was we were what when where which who will with would write you your yours
 tell telling ask asking know
+cannot cant dont doesnt didnt wont wouldnt couldnt shouldnt isnt arent wasnt werent havent hasnt hadnt
 """.split())
-# After a full stop only a capital or a digit starts a new sentence, so "3 p.m. on Friday" stays whole.
-_SENTENCE_END = re.compile(r'((?<=[.!?])[ \t]+(?=[^a-z])|\s*\n\s*)')
+# A sentence ends at a full stop followed by a capital or digit, so "3 p.m. on Friday" stays whole, or at a blank
+# line. A single line break is only wrapping.
+_SENTENCE_END = re.compile(r'((?<=[.!?])\s+(?=[^a-z])|\s*\n\s*\n\s*)')
 _GREETING = re.compile(r'(?:hi|hello|hey|dear)(?:\s+[^\s,.!?]+){0,3}[,.!]?', re.IGNORECASE)
+# A sentence that opens with one of these qualifies the sentence before it.
+_CONTINUES = re.compile(r'(?:but|and|or|so|unless|however|otherwise|because|if|except|although|though|also)\b',
+                        re.IGNORECASE)
+
+
+def _stem(word) -> str:
+    """One spelling for the forms of a word, so submit, submitted and submitting compare equal."""
+    for suffix, ending in (('ies', 'y'), ('ing', ''), ('ed', ''), ('es', ''), ('s', '')):
+        if word.endswith(suffix) and len(word) - len(suffix) >= 3:
+            word = word[:-len(suffix)] + ending
+            break
+    if len(word) > 3 and word[-1] == word[-2]:
+        word = word[:-1]
+    return word[:-1] if len(word) > 3 and word.endswith('e') else word
 
 
 def _content_words(text) -> set:
     words = re.findall(r'[^\W_]+', re.sub(r"['’]", '', text.lower()))
-    return {word for word in words if word not in _COMMON}
+    return {_stem(word) for word in words if word not in _COMMON}
 
 
-def _same_word(first, second) -> bool:
-    """Whether two words are one word in different forms, such as submit and submitted."""
-    if first.rstrip('s') == second.rstrip('s'):
-        return True
-    shared = 0
-    for one, other in zip(first, second):
-        if one != other:
-            break
-        shared += 1
-    return shared >= max(4, min(len(first), len(second)) - 2)
+def _only_requested(body, said) -> str:
+    """`body` without the sentences that carry none of the words in `said`, the reply wording the user gave:
+    thanks, closings and offers nobody asked for.
 
-
-def _only_requested(body, request) -> str:
-    """`body` without the sentences that carry none of the user's words: thanks, closings and offers nobody asked for.
-
-    A reply that carries none of them anywhere is returned whole; the user described the reply instead of wording it.
+    A sentence made only of common words, or one that qualifies the sentence before it, cannot be judged alone and
+    stays with that sentence. A reply that carries none of the user's words anywhere is returned whole; the user
+    described the reply instead of wording it.
     """
-    asked = _content_words(request)
+    asked = _content_words(said)
     pieces = _SENTENCE_END.split(body.strip())
-    sentences = list(zip(pieces[::2], pieces[1::2] + ['']))
-    requested = [any(_same_word(word, other) for word in _content_words(sentence) for other in asked)
-                 for sentence, _ in sentences]
-    if not any(requested):
+    units = []      # [text, the gap after it, its content words]
+    for sentence, gap in zip(pieces[::2], pieces[1::2] + ['']):
+        words = _content_words(sentence)
+        if units and (not words or _CONTINUES.match(sentence)):
+            units[-1][0] += units[-1][1] + sentence
+            units[-1][1] = gap
+            units[-1][2] |= words
+        else:
+            units.append([sentence, gap, words])
+    if not any(words & asked for _, _, words in units):
         return body
-    return ''.join(sentence + gap for index, ((sentence, gap), keep) in enumerate(zip(sentences, requested))
-                   if keep or index == 0 and _GREETING.fullmatch(sentence)).strip()
+    return ''.join(text + gap for index, (text, gap, words) in enumerate(units)
+                   if not words or words & asked or index == 0 and _GREETING.fullmatch(text)).strip()
 
 
 class _Inactive(Exception):
@@ -409,6 +422,7 @@ class _PendingDraft:
         self.agent = agent
         self.stage = 'email'      # 'email': which email; 'confirm': is this the one; 'content': what to say
         self.content = []         # the user's texts that say what the reply should say
+        self.said = []            # only their reply wording, without the part that names the email
         self.days = None
         self.message_id = None
         self.candidate = None
@@ -523,6 +537,7 @@ class MessageAgent:
                     draft.candidate, draft.stage = None, 'email'
             elif draft.stage == 'content':
                 draft.content.append(prompt)
+                draft.said.append(prompt)
             if draft.message_id is None:
                 # Once the wording is known, a follow-up text can only be naming the email.
                 which = prompt if draft.content else await self._split_request(prompt, draft)
@@ -584,6 +599,7 @@ class MessageAgent:
                 return prompt
             index = marker.start()
         draft.content.append(prompt)
+        draft.said.append(prompt[index:])
         return prompt[:index]
 
     async def _find_email(self, agent, guard, words, days):
@@ -643,7 +659,7 @@ class MessageAgent:
         # The draft stays pending after these two answers, so the user's next text adds the missing detail.
         if clarification.strip():
             return 'No draft created yet. ' + clarification.strip() + DRAFT_OPEN, 'completed'
-        body = _only_requested(body, prompt)
+        body = _only_requested(body, '\n'.join(draft.said))
         supplied_numbers = set(re.findall(r'\d+', prompt + '\n' + message['body']))
         if not set(re.findall(r'\d+', body)).issubset(supplied_numbers):
             return ('No draft created yet. Please provide the exact numbers or dates to include; '

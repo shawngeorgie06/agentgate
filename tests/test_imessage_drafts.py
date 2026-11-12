@@ -159,6 +159,18 @@ async def test_model_cannot_save_invented_numeric_details():
      'Draft a reply to Taylor saying see you at 3 p.m. on friday', 'See you at 3 p.m. on Friday.'),
     ('Thanks, I submitted the form.', 'Draft a reply to Taylor saying thanks, I submitted the form',
      'Thanks, I submitted the form.'),
+    # A qualification stays with the sentence it qualifies.
+    ('Friday works for me. But not if I have to be there. Thank you for your patience.',
+     'Draft a reply to Taylor saying Friday works for me, but not if I have to be there',
+     'Friday works for me. But not if I have to be there.'),
+    ('Thanks. But I cannot. Best regards.', "Draft a reply to Taylor saying thanks, but I can't",
+     'Thanks. But I cannot.'),
+    # A line break inside a sentence is only wrapping.
+    ('I have\nsubmitted the form.\n\nBest regards,\nSam', 'Draft a reply to Taylor saying I have submitted the form',
+     'I have\nsubmitted the form.'),
+    # Form and format are different words.
+    ('I submitted the form. The format is correct.', 'Draft a reply to Taylor saying I submitted the form',
+     'I submitted the form.'),
 ])
 @pytest.mark.asyncio
 async def test_sentences_the_user_did_not_ask_for_are_left_out_of_the_draft(generated, request_text, saved):
@@ -175,6 +187,24 @@ async def test_reply_the_user_described_rather_than_worded_is_saved_whole():
     await MessageAgent(None, tools, None, DraftModel(body)).reply(
         'reader', lambda: True, 'Draft a reply to Taylor saying decline politely')
     assert tools.created == [('reader', 'email-1', body)]
+
+
+@pytest.mark.asyncio
+async def test_words_that_only_name_the_email_do_not_count_as_reply_wording():
+    tools = DraftTools()
+    body = 'Thank you for the invitation. Unfortunately, I am unavailable.'
+    await MessageAgent(None, tools, None, DraftModel(body)).reply(
+        'reader', lambda: True, 'Draft a reply to Taylor about the invitation saying decline politely')
+    assert tools.created == [('reader', 'email-1', body)]
+
+
+@pytest.mark.asyncio
+async def test_wording_sent_as_a_later_text_decides_what_is_left_out():
+    tools, model = DraftTools(), DraftModel('Thank you. I already submitted the form. Let me know if you need more.')
+    agent = make_agent(tools, model)
+    await agent.reply('reader', lambda: True, 'Draft a reply to Taylor about the interview')
+    await agent.reply('reader', lambda: True, 'tell them I already submitted the form')
+    assert tools.created == [('reader', 'email-1', 'I already submitted the form.')]
 
 
 @pytest.mark.asyncio

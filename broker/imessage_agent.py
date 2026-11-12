@@ -121,16 +121,18 @@ _ASIDE_MAIL = r'(?:e-?mails?|inbox|mail|gmail|messages)'
 _ASIDE_CODE = r'(?:github|repos?|repositor(?:y|ies)|issues|pull requests|prs)'
 _OTHER_REQUEST = re.compile(_ASIDE_LEAD + '(?:' + '|'.join((
     # "check my unread email", "list my GitHub repos"
-    rf'{_ASIDE_VERB}\b[^.!?\n]*\bmy\s+(?:[\w-]+\s+){{0,2}}(?:{_ASIDE_MAIL}|{_ASIDE_CODE})\b',
+    # A verb aimed at one email describes the email to reply to: "find the email from GitHub about my repos".
+    rf'{_ASIDE_VERB}\b(?!\s+(?:for\s+)?(?:the|that|this|an?)\s+(?:e-?mail|message|one|thread)\b)[^.!?\n]*\bmy\s+(?:[\w-]+\s+){{0,2}}(?:{_ASIDE_MAIL}|{_ASIDE_CODE})\b',
     # "read the README in owner/repo", "list open issues in owner/repo"
-    rf'{_ASIDE_VERB}\b[^.!?\n]*\b(?:readme|issues|repo|repository|file|prs|pull requests)\b[^.!?\n]*'
+    rf'{_ASIDE_VERB}\b[^.!?\n]*\b(?:readme|issues|repo|repository|file|prs|pull requests)\b[^!?\n]*'
     r'(?<![\w/.-])[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]*[A-Za-z0-9](?![\w/-])',
-    rf'how many\b[^.!?\n]*\b(?:{_ASIDE_MAIL}|{_ASIDE_CODE})\b[^.!?\n]*\b(?:do|have) i\b',
+    rf'(?:how many|what|which)\b[^.!?\n]*\b(?:{_ASIDE_MAIL}|{_ASIDE_CODE})\b[^.!?\n]*'
+    r'\b(?:do i (?:have|own)|have i got)\b(?!\s+to\b)',
     rf'how many (?:unread|new)\s+{_ASIDE_MAIL}\b',
     rf'(?:do i have|have i got)\b[^.!?\n]*\b(?:unread|{_ASIDE_MAIL}|repos?|repositories)\b',
     rf'any (?:new|unread)\s+{_ASIDE_MAIL}\b',
     rf'(?:what|which)(?: is|\'s|’s| are)\b[^.!?\n]*\bmy\s+(?:[\w-]+\s+){{0,2}}(?:{_ASIDE_MAIL}|{_ASIDE_CODE})\b',
-    r'(?:what can you do|what are your (?:commands|capabilities)|help)\s*[.!?]*\s*$',
+    r'(?:what can you do(?: for me)?|what are your (?:commands|capabilities)|help)\s*[.!?]*\s*$',
 )) + ')', re.IGNORECASE)
 
 
@@ -521,7 +523,7 @@ class MessageAgent:
                 return (*await self._draft_turn(agent_name, identity_guard, prompt, now), 'gmail_reply_draft')
             text, decision, action = await self._answer(agent_name, identity_guard, prompt, history, style, plan)
             # The draft stepped aside for this text, so say that it is still waiting.
-            waiting = self._draft is draft and _active(identity_guard)
+            waiting = self._draft is draft and self._clock() < draft.expires and _active(identity_guard)
             return text + DRAFT_WAITING if waiting else text, decision, action
         return await self._answer(agent_name, identity_guard, prompt, history, style, plan)
 

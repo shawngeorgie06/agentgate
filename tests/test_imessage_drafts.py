@@ -563,7 +563,9 @@ async def test_more_pages_of_results_count_as_several_matches():
     'please search my email for invoices', 'summarize my unread emails', 'how many unread emails do I have',
     'How many repos do I have?', 'do I have any new email', 'any new emails?', 'what is in my inbox',
     "what's in my inbox?", 'what are my repos', 'read the README in shawngeorgie06/agentgate',
-    'list open issues in shawngeorgie06/agentgate', 'what can you do', 'What can you do?', 'help',
+    'list open issues in shawngeorgie06/agentgate', 'what can you do',
+    'read the README.md in shawngeorgie06/agentgate', 'what repos do I have?', 'which repos do I own',
+    'what can you do for me?', 'what unread email do I have', 'What can you do?', 'help',
 ])
 def test_texts_addressed_to_the_assistant_are_recognised_as_other_requests(text):
     assert _OTHER_REQUEST.match(text)
@@ -577,7 +579,8 @@ def test_texts_addressed_to_the_assistant_are_recognised_as_other_requests(text)
     'Are there any issues with the invoice?', 'Do I have to pay by Friday?', 'Can you help me with this?',
     'find the email from Taylor about the interview', 'the one from Taylor', 'Taylor, yesterday',
     'Please check and/or confirm the file', 'I read your email. My repo is public.', 'Thanks for your help.',
-    'How many emails did you send?', 'Any news?', 'Get back to me about my email', 'I will get my email sorted', 'show me the invoice',
+    'How many emails did you send?', 'Any news?', 'find the email from GitHub about my repositories',
+    'search for the one about my repo', 'What issues do I have to fix?', 'read that email about my inbox', 'Get back to me about my email', 'I will get my email sorted', 'show me the invoice',
 ])
 def test_reply_wording_and_email_descriptions_are_not_other_requests(text):
     assert not _OTHER_REQUEST.match(text)
@@ -640,3 +643,19 @@ async def test_other_request_after_the_draft_expired_gets_no_reminder():
     await agent.reply('reader', lambda: True, 'Draft a reply to Taylor')
     moment[0] = NOW + DRAFT_TTL
     assert DRAFT_WAITING not in await agent.reply('reader', lambda: True, 'list my github repos')
+
+
+@pytest.mark.asyncio
+async def test_draft_that_expires_while_another_request_is_answered_gets_no_reminder():
+    moment = [NOW]
+
+    class SlowModel(DraftModel):
+        async def answer(self, prompt, context, history='', style=''):
+            moment[0] = NOW + DRAFT_TTL
+            return 'I can read accounts.'
+
+    tools, model = DraftTools(), SlowModel(action='unsupported')
+    agent = make_agent(tools, model, clock=lambda: moment[0])
+    await agent.reply('reader', lambda: True, 'Draft a reply to Taylor')
+    reply = await agent.reply('reader', lambda: True, 'list my github repos')
+    assert reply == 'I can read accounts.'

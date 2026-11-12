@@ -168,6 +168,15 @@ async def test_model_cannot_save_invented_numeric_details():
     # A line break inside a sentence is only wrapping.
     ('I have\nsubmitted the form.\n\nBest regards,\nSam', 'Draft a reply to Taylor saying I have submitted the form',
      'I have\nsubmitted the form.'),
+    # A refusal made only of common words is kept even after padding.
+    ('Hi Sam,\n\nThank you for the invitation. I cannot. Friday works instead.',
+     "Draft a reply to Taylor saying I can't. Friday works instead.", 'Hi Sam,\n\nI cannot. Friday works instead.'),
+    ('See you at 3 p.m.\n on Friday. Thank you for your time.',
+     'Draft a reply to Taylor saying see you at 3 p.m. on friday', 'See you at 3 p.m.\n on Friday.'),
+    ('I will take care of it. I will bring my car.', 'Draft a reply to Taylor saying I will take care of it',
+     'I will take care of it.'),
+    ('I am closing the account.', 'Draft a reply to Taylor saying I will close the account',
+     'I am closing the account.'),
     # Form and format are different words.
     ('I submitted the form. The format is correct.', 'Draft a reply to Taylor saying I submitted the form',
      'I submitted the form.'),

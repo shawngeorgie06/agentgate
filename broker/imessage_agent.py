@@ -128,43 +128,44 @@ cannot cant dont doesnt didnt wont wouldnt couldnt shouldnt isnt arent wasnt wer
 """.split())
 # A sentence ends at a full stop followed by a capital or digit, so "3 p.m. on Friday" stays whole, or at a blank
 # line. A single line break is only wrapping.
-_SENTENCE_END = re.compile(r'((?<=[.!?])\s+(?=[^a-z])|\s*\n\s*\n\s*)')
+_SENTENCE_END = re.compile(r'((?<=[.!?])\s+(?=[^a-z\s])|\s*\n\s*\n\s*)')
 _GREETING = re.compile(r'(?:hi|hello|hey|dear)(?:\s+[^\s,.!?]+){0,3}[,.!]?', re.IGNORECASE)
 # A sentence that opens with one of these qualifies the sentence before it.
 _CONTINUES = re.compile(r'(?:but|and|or|so|unless|however|otherwise|because|if|except|although|though|also)\b',
                         re.IGNORECASE)
 
 
-def _stem(word) -> str:
-    """One spelling for the forms of a word, so submit, submitted and submitting compare equal."""
+def _forms(word) -> set:
+    """Spellings shared by the forms of a word, so submit, submitted and submitting have one in common."""
     for suffix, ending in (('ies', 'y'), ('ing', ''), ('ed', ''), ('es', ''), ('s', '')):
         if word.endswith(suffix) and len(word) - len(suffix) >= 3:
-            word = word[:-len(suffix)] + ending
-            break
-    if len(word) > 3 and word[-1] == word[-2]:
-        word = word[:-1]
-    return word[:-1] if len(word) > 3 and word.endswith('e') else word
+            stem = word[:-len(suffix)] + ending
+            if len(stem) > 3 and stem[-1] == stem[-2]:
+                stem = stem[:-1]
+            # Closed and closing come from close, not clos.
+            return {stem, stem + 'e'} if suffix in ('ing', 'ed') else {stem}
+    return {word}
 
 
 def _content_words(text) -> set:
     words = re.findall(r'[^\W_]+', re.sub(r"['’]", '', text.lower()))
-    return {_stem(word) for word in words if word not in _COMMON}
+    return {form for word in words if word not in _COMMON for form in _forms(word)}
 
 
 def _only_requested(body, said) -> str:
     """`body` without the sentences that carry none of the words in `said`, the reply wording the user gave:
     thanks, closings and offers nobody asked for.
 
-    A sentence made only of common words, or one that qualifies the sentence before it, cannot be judged alone and
-    stays with that sentence. A reply that carries none of the user's words anywhere is returned whole; the user
-    described the reply instead of wording it.
+    A sentence made only of common words, such as "I cannot.", cannot be judged and is kept. One that qualifies the
+    sentence before it is judged together with it. A reply that carries none of the user's words anywhere is
+    returned whole; the user described the reply instead of wording it.
     """
     asked = _content_words(said)
     pieces = _SENTENCE_END.split(body.strip())
     units = []      # [text, the gap after it, its content words]
     for sentence, gap in zip(pieces[::2], pieces[1::2] + ['']):
         words = _content_words(sentence)
-        if units and (not words or _CONTINUES.match(sentence)):
+        if units and words and units[-1][2] and _CONTINUES.match(sentence):
             units[-1][0] += units[-1][1] + sentence
             units[-1][1] = gap
             units[-1][2] |= words

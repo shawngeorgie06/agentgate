@@ -117,6 +117,52 @@ class _Malformed(Exception):
     pass
 
 
+# Words too common to show that a sentence of a generated reply came from the user's request.
+_COMMON = frozenset("""
+a about also am an and are as at be been being but by can could did do does draft email for from had has have he
+her here him his how i id if ill im in into is it its ive just let may me might mine must my not of on or our
+please reply replying said say saying says shall she should so than that the their them then there these they this
+those to too us very was we were what when where which who will with would write you your yours
+tell telling ask asking know
+""".split())
+# After a full stop only a capital or a digit starts a new sentence, so "3 p.m. on Friday" stays whole.
+_SENTENCE_END = re.compile(r'((?<=[.!?])[ \t]+(?=[^a-z])|\s*\n\s*)')
+_GREETING = re.compile(r'(?:hi|hello|hey|dear)(?:\s+[^\s,.!?]+){0,3}[,.!]?', re.IGNORECASE)
+
+
+def _content_words(text) -> set:
+    words = re.findall(r'[^\W_]+', re.sub(r"['’]", '', text.lower()))
+    return {word for word in words if word not in _COMMON}
+
+
+def _same_word(first, second) -> bool:
+    """Whether two words are one word in different forms, such as submit and submitted."""
+    if first.rstrip('s') == second.rstrip('s'):
+        return True
+    shared = 0
+    for one, other in zip(first, second):
+        if one != other:
+            break
+        shared += 1
+    return shared >= max(4, min(len(first), len(second)) - 2)
+
+
+def _only_requested(body, request) -> str:
+    """`body` without the sentences that carry none of the user's words: thanks, closings and offers nobody asked for.
+
+    A reply that carries none of them anywhere is returned whole; the user described the reply instead of wording it.
+    """
+    asked = _content_words(request)
+    pieces = _SENTENCE_END.split(body.strip())
+    sentences = list(zip(pieces[::2], pieces[1::2] + ['']))
+    requested = [any(_same_word(word, other) for word in _content_words(sentence) for other in asked)
+                 for sentence, _ in sentences]
+    if not any(requested):
+        return body
+    return ''.join(sentence + gap for index, ((sentence, gap), keep) in enumerate(zip(sentences, requested))
+                   if keep or index == 0 and _GREETING.fullmatch(sentence)).strip()
+
+
 class _Inactive(Exception):
     pass
 
@@ -597,6 +643,7 @@ class MessageAgent:
         # The draft stays pending after these two answers, so the user's next text adds the missing detail.
         if clarification.strip():
             return 'No draft created yet. ' + clarification.strip() + DRAFT_OPEN, 'completed'
+        body = _only_requested(body, prompt)
         supplied_numbers = set(re.findall(r'\d+', prompt + '\n' + message['body']))
         if not set(re.findall(r'\d+', body)).issubset(supplied_numbers):
             return ('No draft created yet. Please provide the exact numbers or dates to include; '

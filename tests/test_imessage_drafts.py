@@ -146,6 +146,37 @@ async def test_model_cannot_save_invented_numeric_details():
     assert not tools.created
 
 
+@pytest.mark.parametrize('generated, request_text, saved', [
+    ('Thank you for your response. I have already submitted the form. No further action is required at this time.',
+     'Draft a reply to Taylor saying I already submitted the form', 'I have already submitted the form.'),
+    ('Hello,\n\nThank you for your message. I will send the documents tomorrow.\n\nBest regards,',
+     'Draft a reply to Taylor saying I will send the documents tomorrow',
+     'Hello,\n\nI will send the documents tomorrow.'),
+    ('Yes, I want to renew. Rent would go up by 50 dollars.',
+     'Draft a reply to Taylor saying yes I want to renew', 'Yes, I want to renew.'),
+    ('Friday works. Call me at 555-0100.', 'Draft a reply to Taylor saying Friday works', 'Friday works.'),
+    ('See you at 3 p.m. on Friday. Looking forward to it.',
+     'Draft a reply to Taylor saying see you at 3 p.m. on friday', 'See you at 3 p.m. on Friday.'),
+    ('Thanks, I submitted the form.', 'Draft a reply to Taylor saying thanks, I submitted the form',
+     'Thanks, I submitted the form.'),
+])
+@pytest.mark.asyncio
+async def test_sentences_the_user_did_not_ask_for_are_left_out_of_the_draft(generated, request_text, saved):
+    tools = DraftTools()
+    reply = await MessageAgent(None, tools, None, DraftModel(generated)).reply('reader', lambda: True, request_text)
+    assert tools.created == [('reader', 'email-1', saved)]
+    assert saved in reply and 'Draft saved' in reply
+
+
+@pytest.mark.asyncio
+async def test_reply_the_user_described_rather_than_worded_is_saved_whole():
+    tools = DraftTools()
+    body = 'Thank you for the invitation. I am not available this week.'
+    await MessageAgent(None, tools, None, DraftModel(body)).reply(
+        'reader', lambda: True, 'Draft a reply to Taylor saying decline politely')
+    assert tools.created == [('reader', 'email-1', body)]
+
+
 @pytest.mark.asyncio
 async def test_explicitly_supplied_number_can_be_used_in_draft():
     tools = DraftTools()

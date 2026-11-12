@@ -592,6 +592,29 @@ def test_native_model_plans_and_composes_reply_draft(local_model):
     assert 'To:' not in body and 'Subject:' not in body and 'sent' not in body.lower(), body
 
 
+@pytest.mark.parametrize('prompt, required, padding', [
+    ('Draft a reply\nthe AWS email from yesterday\ntell them I already submitted the form',
+     'I already submitted the form', ('thank', 'further', 'regards', 'requested')),
+    ('say thanks, I submitted the form', 'I submitted the form', ('for submitting', 'further', 'regards')),
+    ('tell them yes I will complete it', 'I will complete it', ('thank', 'previous message', 'regards')),
+])
+def test_native_model_reply_keeps_the_user_as_author_and_adds_nothing(local_model, prompt, required, padding):
+    from broker.imessage_agent import _only_requested
+    context = json.dumps({'kind': 'email_reply_draft', 'email': {
+        'sender': 'Amazon Web Services', 'subject': 'RE: [CASE 1] Certification Support Form Submission', 'date': '',
+        'body': 'Hello,\n\nThank you for contacting AWS Training and Certification. To proceed with your request, '
+                'please complete the support form linked in our previous message and reply to this case once it is '
+                'submitted.\n\nBest regards,\nAWS Training and Certification',
+        'complete': True,
+    }})
+    result = local_model.draft_reply(prompt, context)
+    assert result.get('ok'), result
+    # What gets saved: the model's reply after the agent drops sentences the user did not ask for.
+    body = _only_requested(result['data']['body'], prompt)
+    assert required.lower() in body.lower(), result
+    assert not any(phrase in body.lower() for phrase in padding), result
+
+
 @pytest.mark.parametrize('prompt, expected', [
     ('Draft a reply to the email from Taylor saying Thursday at 2pm works', 'Thursday at 2pm works'),
     ('Draft a reply', ''),

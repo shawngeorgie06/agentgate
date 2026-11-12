@@ -5,7 +5,8 @@ import pytest
 
 from zoneinfo import ZoneInfo
 
-from broker.imessage_agent import DRAFT_TTL, MessageAgent, _day_range, _day_start, _email_words
+from broker.imessage_agent import (DRAFT_TTL, DRAFT_WAITING, MessageAgent, _OTHER_REQUEST,
+                                    _day_range, _day_start, _email_words)
 
 EASTERN = dt.timezone(dt.timedelta(hours=-5))
 NOW = dt.datetime(2026, 11, 11, 10, 0, tzinfo=EASTERN)  # a Wednesday
@@ -554,3 +555,107 @@ async def test_more_pages_of_results_count_as_several_matches():
             return result
     reply = await make_agent(Paged(), DraftModel()).reply('paired-agent', lambda: True, 'Draft a reply to Taylor')
     assert 'newest of several matches' in reply
+
+
+@pytest.mark.parametrize('text', [
+    'list my github repos', 'List my GitHub repos.', 'show my repos', 'Show me my open issues',
+    'check my unread email', 'never mind, check my unread email', 'Actually, can you check my inbox?',
+    'please search my email for invoices', 'summarize my unread emails', 'how many unread emails do I have',
+    'How many repos do I have?', 'do I have any new email', 'any new emails?', 'what is in my inbox',
+    "what's in my inbox?", 'what are my repos', 'read the README in shawngeorgie06/agentgate',
+    'list open issues in shawngeorgie06/agentgate', 'what can you do',
+    'read the README.md in shawngeorgie06/agentgate', 'what repos do I have?', 'which repos do I own',
+    'what can you do for me?', 'what unread email do I have', 'What can you do?', 'help',
+])
+def test_texts_addressed_to_the_assistant_are_recognised_as_other_requests(text):
+    assert _OTHER_REQUEST.match(text)
+
+
+@pytest.mark.parametrize('text', [
+    'Friday works', 'I submitted the form yesterday', 'tell them thanks, I will pay by Friday', 'no thanks',
+    'What time works for you?', 'Can I get an extension?', 'decline politely', 'Please send me the invoice again',
+    'I can check my email tomorrow', 'ask them to list the charges', 'say I will search for the receipt',
+    'I will look at the repo and get back to you', 'Please check your email for the invoice',
+    'Are there any issues with the invoice?', 'Do I have to pay by Friday?', 'Can you help me with this?',
+    'find the email from Taylor about the interview', 'the one from Taylor', 'Taylor, yesterday',
+    'Please check and/or confirm the file', 'I read your email. My repo is public.', 'Thanks for your help.',
+    'How many emails did you send?', 'Any news?', 'find the email from GitHub about my repositories',
+    'search for the one about my repo', 'What issues do I have to fix?', 'read that email about my inbox', 'Get back to me about my email', 'I will get my email sorted', 'show me the invoice',
+])
+def test_reply_wording_and_email_descriptions_are_not_other_requests(text):
+    assert not _OTHER_REQUEST.match(text)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('action', ['unsupported', 'chat', 'gmail_reply_draft'])
+async def test_request_the_model_did_not_recognise_does_not_become_the_reply(action):
+    tools, model = DraftTools(), DraftModel(action=action)
+    agent = make_agent(tools, model)
+    await agent.reply('reader', lambda: True, 'Draft a reply to Taylor')
+    reply = await agent.reply('reader', lambda: True, 'list my github repos')
+    assert not model.prompts and not tools.created
+    assert reply.endswith(DRAFT_WAITING)
+    model.action = 'chat'
+    assert 'Draft saved' in await agent.reply('reader', lambda: True, 'Friday works')
+    assert model.prompts == ['Friday works']
+
+
+@pytest.mark.asyncio
+async def test_search_request_while_naming_the_email_is_answered_instead_of_matched():
+    tools, model = DraftTools(matches=[]), DraftModel(action='gmail_search')
+    agent = make_agent(tools, model)
+    await agent.reply('reader', lambda: True, 'Draft a reply')
+    reply = await agent.reply('reader', lambda: True, 'search my email for invoices')
+    assert tools.queries == ['from:taylor@example.test subject:interview']
+    assert reply.endswith(DRAFT_WAITING)
+    tools.matches = [{'id': 'email-1'}]
+    assert 'What should the reply say?' in await agent.reply('reader', lambda: True, 'the one from Taylor')
+
+
+@pytest.mark.asyncio
+async def test_lookup_answered_beside_an_open_draft_says_the_draft_is_waiting():
+    tools, model = DraftTools(), DraftModel(action='github_repos')
+    agent = MessageAgent(None, tools, FailingGitHub(), model, clock=lambda: NOW, zone=EASTERN)
+    assert DRAFT_WAITING not in await agent.reply('reader', lambda: True, 'what repos do I have')
+    await agent.reply('reader', lambda: True, 'Draft a reply to Taylor')
+    assert (await agent.reply('reader', lambda: True, 'what repos do I have')).endswith(DRAFT_WAITING)
+
+
+@pytest.mark.asyncio
+async def test_other_request_from_a_revoked_identity_drops_the_draft_without_a_reminder():
+    active = [True]
+    tools, model = DraftTools(), DraftModel()
+    agent = make_agent(tools, model)
+    await agent.reply('reader', lambda: active[0], 'Draft a reply to Taylor')
+    active[0] = False
+    reply = await agent.reply('reader', lambda: active[0], 'list my github repos')
+    assert 'inactive' in reply and DRAFT_WAITING not in reply
+    active[0] = True
+    await agent.reply('reader', lambda: active[0], 'Friday works')
+    assert not tools.created and not model.prompts
+
+
+@pytest.mark.asyncio
+async def test_other_request_after_the_draft_expired_gets_no_reminder():
+    moment = [NOW]
+    tools, model = DraftTools(), DraftModel(action='unsupported')
+    agent = make_agent(tools, model, clock=lambda: moment[0])
+    await agent.reply('reader', lambda: True, 'Draft a reply to Taylor')
+    moment[0] = NOW + DRAFT_TTL
+    assert DRAFT_WAITING not in await agent.reply('reader', lambda: True, 'list my github repos')
+
+
+@pytest.mark.asyncio
+async def test_draft_that_expires_while_another_request_is_answered_gets_no_reminder():
+    moment = [NOW]
+
+    class SlowModel(DraftModel):
+        async def answer(self, prompt, context, history='', style=''):
+            moment[0] = NOW + DRAFT_TTL
+            return 'I can read accounts.'
+
+    tools, model = DraftTools(), SlowModel(action='unsupported')
+    agent = make_agent(tools, model, clock=lambda: moment[0])
+    await agent.reply('reader', lambda: True, 'Draft a reply to Taylor')
+    reply = await agent.reply('reader', lambda: True, 'list my github repos')
+    assert reply == 'I can read accounts.'

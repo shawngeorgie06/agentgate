@@ -142,8 +142,8 @@ def _forms(word) -> set:
             stem = word[:-len(suffix)] + ending
             if len(stem) > 3 and stem[-1] == stem[-2]:
                 stem = stem[:-1]
-            # Closed and closing come from close, not clos.
-            return {stem, stem + 'e'} if suffix in ('ing', 'ed') else {stem}
+            # Closed, closing and closes come from close, not clos.
+            return {stem, stem + 'e'} if suffix in ('ing', 'ed', 'es') else {stem}
     return {word}
 
 

@@ -177,6 +177,8 @@ async def test_model_cannot_save_invented_numeric_details():
      'I will take care of it.'),
     ('I am closing the account.', 'Draft a reply to Taylor saying I will close the account',
      'I am closing the account.'),
+    ('Friday works. She refuses.', 'Draft a reply to Taylor saying Friday works. She will refuse.',
+     'Friday works. She refuses.'),
     # Form and format are different words.
     ('I submitted the form. The format is correct.', 'Draft a reply to Taylor saying I submitted the form',
      'I submitted the form.'),

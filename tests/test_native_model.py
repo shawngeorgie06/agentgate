@@ -617,7 +617,7 @@ async def test_draft_request_spread_over_several_texts_with_real_model(local_mod
     assert 'Which email' in reply, reply
     reply = await agent.reply('reader', lambda: True, 'the email from Taylor about the interview, from yesterday')
     assert 'Replying to Taylor' in reply and 'What should the reply say?' in reply, reply
-    assert tools.queries and tools.queries[0].startswith('taylor interview after:'), tools.queries
+    assert tools.queries and tools.queries[0].startswith('{from:taylor subject:taylor} {from:interview subject:interview} after:'), tools.queries
     reply = await agent.reply('reader', lambda: True, 'I am available Friday afternoon')
     assert 'Draft saved in Gmail, not sent' in reply and 'Friday' in reply, reply
     assert len(tools.created) == 1

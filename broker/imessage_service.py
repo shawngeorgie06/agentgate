@@ -12,6 +12,7 @@ import functools
 import hmac
 import json
 import os
+import re
 import secrets
 import stat
 import tempfile
@@ -50,6 +51,8 @@ PAIRED_CONFIRMATION = 'AgentGate paired.'
 RATE_NOTICE = 'AgentGate is handling recent requests. Please wait a moment before sending another.'
 CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
 COMMAND_PREFIX = '/agent '
+# One text can repeat the prefix on each of its lines; only the first starts the request.
+_REPEATED_PREFIX = re.compile(r'\n[ \t]*/agent[ \t]+')
 NO_MATCH_REPLY = 'No pending approval matches that code.'
 APPROVED_REPLY = 'Approved.'
 DENIED_REPLY = 'Denied.'
@@ -297,7 +300,7 @@ def _parse_command(event, chat_id):
     message_id, rowid, date, text = parsed
     if not text.startswith(COMMAND_PREFIX):
         return None
-    request = text[len(COMMAND_PREFIX):].strip()
+    request = _REPEATED_PREFIX.sub('\n', text[len(COMMAND_PREFIX):]).strip()
     if not request or APPROVAL_REPLY.fullmatch(request):
         return None
     return message_id, rowid, date, request

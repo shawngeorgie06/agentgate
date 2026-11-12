@@ -58,6 +58,11 @@ class DraftTools:
         return {'ok': True, 'data': {'id': 'draft-1', 'to': 'taylor@example.test', 'subject': 'Re: Interview'}}
 
 
+def headed(*words):
+    """The sender-or-subject search for these words."""
+    return ' '.join(f'{{from:{word} subject:{word}}}' for word in words)
+
+
 def make_agent(tools, model, clock=lambda: NOW):
     return MessageAgent(None, tools, None, model, clock=clock, zone=EASTERN)
 
@@ -69,7 +74,7 @@ async def test_explicit_reply_draft_uses_unique_email_and_previews_without_sendi
         'paired-agent', lambda: True, 'Draft a reply to Taylor about the interview saying Friday works.')
     assert tools.created == [('paired-agent', 'email-1', 'Friday works for me.')]
     assert tools.calls[0][3]['limit'] == 2
-    assert tools.queries == ['taylor interview -in:sent -in:drafts']
+    assert tools.queries == [headed('taylor', 'interview') + ' -in:sent -in:drafts']
     assert all(call[1] == 'gmail:read' for call in tools.calls)
     assert 'PRIVATE_RAW' not in json.dumps(model.contexts)
     assert 'taylor@example.test' in reply and 'Friday works for me.' in reply
@@ -181,7 +186,7 @@ async def test_request_can_be_finished_over_several_texts():
     third = await agent.reply('reader', lambda: True, 'tell them Friday works')
     assert 'Draft saved' in third and tools.created == [('reader', 'email-1', 'Friday works for me.')]
     assert model.prompts == ['tell them Friday works']
-    assert tools.queries == ['taylor interview -in:sent -in:drafts']
+    assert tools.queries == [headed('taylor', 'interview') + ' -in:sent -in:drafts']
 
 
 @pytest.mark.asyncio
@@ -213,7 +218,7 @@ async def test_dates_become_local_day_filters_and_never_search_words():
     await make_agent(tools, DraftModel()).reply(
         'reader', lambda: True, 'draft a reply for the AWS email I received yesterday nov 10 saying thanks')
     first = int(dt.datetime(2026, 11, 10, tzinfo=EASTERN).timestamp())
-    assert tools.queries == [f'aws after:{first - 1} before:{first + 86400} -in:sent -in:drafts']
+    assert tools.queries == [f'{headed("aws")} after:{first - 1} before:{first + 86400} -in:sent -in:drafts']
 
 
 @pytest.mark.asyncio
@@ -223,8 +228,10 @@ async def test_looser_match_needs_confirmation_before_drafting():
     agent = make_agent(tools, model)
     reply = await agent.reply('reader', lambda: True, 'Draft a reply to aws certification support saying thanks')
     assert 'did not find an exact match' in reply and 'Text “yes”' in reply
-    assert tools.queries == ['aws certification support -in:sent -in:drafts', 'aws certification -in:sent -in:drafts',
-                             'aws -in:sent -in:drafts']
+    tail = ' -in:sent -in:drafts'
+    assert tools.queries == [headed('aws', 'certification', 'support') + tail, 'aws certification support' + tail,
+                             headed('aws', 'certification') + tail, 'aws certification' + tail,
+                             headed('aws') + tail, 'aws' + tail]
     assert not tools.created and not model.prompts
     reply = await agent.reply('reader', lambda: True, 'Yes')
     assert 'Draft saved' in reply and tools.created == [('reader', 'email-1', 'Friday works for me.')]
@@ -245,7 +252,7 @@ async def test_date_is_dropped_only_as_a_last_resort():
     tools = DraftTools(lambda query: [] if 'after:' in query else [{'id': 'email-1'}])
     reply = await make_agent(tools, DraftModel()).reply('reader', lambda: True, 'Draft a reply to Taylor from yesterday')
     assert 'did not find an exact match' in reply
-    assert tools.queries[-1] == 'taylor -in:sent -in:drafts' and len(tools.queries) == 2
+    assert tools.queries[-1] == headed('taylor') + ' -in:sent -in:drafts' and len(tools.queries) == 3
 
 
 @pytest.mark.asyncio
@@ -312,7 +319,7 @@ async def test_a_topic_is_never_mistaken_for_the_reply_wording():
     reply = await make_agent(tools, model).reply(
         'reader', lambda: True, 'Draft a reply for the email regarding AWS certification support')
     assert 'What should the reply say?' in reply and not model.prompts
-    assert tools.queries == ['aws certification support -in:sent -in:drafts']
+    assert tools.queries == [headed('aws', 'certification', 'support') + ' -in:sent -in:drafts']
 
 
 @pytest.mark.asyncio
@@ -322,7 +329,7 @@ async def test_split_falls_back_to_the_users_wording_when_the_model_fails():
             raise RuntimeError('helper failed')
     tools, model = DraftTools(), BrokenModel()
     reply = await make_agent(tools, model).reply('reader', lambda: True, 'Draft a reply to Taylor saying Friday works')
-    assert 'Draft saved' in reply and tools.queries == ['taylor -in:sent -in:drafts']
+    assert 'Draft saved' in reply and tools.queries == [headed('taylor') + ' -in:sent -in:drafts']
 
 
 class FailingGitHub:
@@ -373,7 +380,7 @@ async def test_summer_date_asked_in_winter_uses_summer_offset_and_utc_clock():
     agent = MessageAgent(None, tools, None, DraftModel(), clock=lambda: utc_now, zone=ZoneInfo('America/New_York'))
     await agent.reply('reader', lambda: True, 'Draft a reply to Taylor from july 1 saying thanks')
     first = int(dt.datetime(2026, 7, 1, 4, tzinfo=dt.timezone.utc).timestamp())
-    assert tools.queries == [f'taylor after:{first - 1} before:{first + 86400} -in:sent -in:drafts']
+    assert tools.queries == [f'{headed("taylor")} after:{first - 1} before:{first + 86400} -in:sent -in:drafts']
 
 
 @pytest.mark.asyncio
@@ -383,7 +390,7 @@ async def test_description_longer_than_the_search_limit_needs_confirmation():
         'reader', lambda: True,
         'Draft a reply about alpha bravo charlie delta echo foxtrot golf hotel approved saying thanks')
     assert 'did not find an exact match' in reply and not tools.created and not model.prompts
-    assert tools.queries == ['alpha bravo charlie delta echo foxtrot golf hotel -in:sent -in:drafts']
+    assert tools.queries == [headed(*'alpha bravo charlie delta echo foxtrot golf hotel'.split()) + ' -in:sent -in:drafts']
 
 
 @pytest.mark.asyncio
@@ -394,7 +401,7 @@ async def test_wording_the_user_did_not_type_is_never_used_as_reply_content():
     tools, model = DraftTools(), InventingModel()
     reply = await make_agent(tools, model).reply('reader', lambda: True, 'Draft a reply to Taylor about the interview')
     assert 'What should the reply say?' in reply and not tools.created and not model.prompts
-    assert tools.queries == ['taylor interview -in:sent -in:drafts']
+    assert tools.queries == [headed('taylor', 'interview') + ' -in:sent -in:drafts']
 
 
 @pytest.mark.asyncio
@@ -410,3 +417,55 @@ async def test_any_text_seen_while_inactive_drops_the_pending_draft(while_inacti
     model.action = 'chat'
     await agent.reply('reader', lambda: active[0], 'Friday works')
     assert not tools.created and not model.prompts
+
+
+@pytest.mark.asyncio
+async def test_sender_or_subject_match_beats_a_newer_email_that_only_mentions_the_word():
+    def matches(query):
+        if query.startswith('{from:aws subject:aws} after:'):
+            return [{'id': 'email-1'}]
+        return [{'id': 'newsletter'}, {'id': 'email-1'}]
+    tools = DraftTools(matches)
+    agent = make_agent(tools, DraftModel())
+    reply = await agent.reply('paired-agent', lambda: True, 'Draft a reply to the AWS email from yesterday')
+    assert reply.startswith('Replying to') and 'several' not in reply
+    assert len(tools.queries) == 1 and [call[3] for call in tools.calls if call[2] == 'read'] == [{'message_id': 'email-1'}]
+
+
+@pytest.mark.asyncio
+async def test_words_found_only_in_the_body_still_match_exactly():
+    tools = DraftTools(lambda query: [] if query.startswith('{') else [{'id': 'email-1'}])
+    agent = make_agent(tools, DraftModel())
+    reply = await agent.reply('paired-agent', lambda: True, 'Draft a reply to the email about parking')
+    assert reply.startswith('Replying to')
+    assert tools.queries == [headed('parking') + ' -in:sent -in:drafts', 'parking -in:sent -in:drafts']
+
+
+@pytest.mark.asyncio
+async def test_one_text_with_the_request_on_three_lines_finds_the_email_and_drafts():
+    tools, model = DraftTools(), DraftModel()
+    reply = await make_agent(tools, model).reply(
+        'paired-agent', lambda: True, 'Draft a reply\nthe AWS email from yesterday\ntell them I already submitted the form')
+    first = int(dt.datetime(2026, 11, 10, tzinfo=EASTERN).timestamp())
+    assert tools.queries == [f'{headed("aws")} after:{first - 1} before:{first + 86400} -in:sent -in:drafts']
+    assert 'Draft saved' in reply and len(tools.created) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_date_alone_is_searched_once_and_needs_confirmation():
+    tools = DraftTools()
+    reply = await make_agent(tools, DraftModel()).reply('paired-agent', lambda: True, 'Draft a reply to the email from yesterday')
+    assert 'did not find an exact match' in reply and len(tools.queries) == 1
+    assert tools.queries[0].startswith('after:')
+
+
+@pytest.mark.asyncio
+async def test_more_pages_of_results_count_as_several_matches():
+    class Paged(DraftTools):
+        async def execute(self, agent, resource, operation, *, identity_guard, **args):
+            result = await super().execute(agent, resource, operation, identity_guard=identity_guard, **args)
+            if operation == 'search':
+                result['data']['nextPageToken'] = 'more'
+            return result
+    reply = await make_agent(Paged(), DraftModel()).reply('paired-agent', lambda: True, 'Draft a reply to Taylor')
+    assert 'newest of several matches' in reply

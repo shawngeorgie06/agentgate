@@ -941,6 +941,15 @@ def test_command_request_is_the_trimmed_remainder():
     assert svc._parse_command(event, SELF_CHAT)[3] == 'check mail'
 
 
+def test_prefix_repeated_on_each_line_of_one_text_is_not_part_of_the_request():
+    text = '/agent Draft a reply\n/agent the AWS email from yesterday\n /agent tell them I sent the /agent form'
+    event = {'chat_id': SELF_CHAT, 'is_group': False, 'is_from_me': True, 'text': text, 'guid': 'g', 'rowid': 1, 'date': T0}
+    assert svc._parse_command(event, SELF_CHAT)[3] == (
+        'Draft a reply\nthe AWS email from yesterday\ntell them I sent the /agent form')
+    event['text'] = '/agent /agent help'
+    assert svc._parse_command(event, SELF_CHAT)[3] == '/agent help'
+
+
 @pytest.mark.parametrize('error_code', ['send_blocked', 'send_uncertain'])
 async def test_poisoned_send_marks_failed_then_restarts_loop_at_tail(tmp_path, registry, error_code):
     world, clock = FakeWorld(), Clock()

@@ -543,7 +543,7 @@ class MessageAgent:
     async def _find_email(self, agent, guard, words, days):
         """(message id, exact, several) for the newest matching email, else None.
 
-        The user's keywords must all match first. If nothing does, trailing keywords and then the date
+        The user's keywords must all match first, in the sender or subject before anywhere. If nothing does, trailing keywords and then the date
         are dropped; such a looser match is not exact and needs the user's confirmation.
         """
         attempts = [(words, days)]
@@ -551,21 +551,24 @@ class MessageAgent:
         if days is not None and words:
             attempts.append((words, None))
         for index, (terms, period) in enumerate(attempts):
-            parts = list(terms)
+            dated = []
             if period is not None:
                 first, after_last = (_day_start(day, self._zone) for day in period)
-                parts += [f'after:{first - 1}', f'before:{after_last}']
-            listing = await self._call(self._gmail, agent, 'gmail:read', 'search', guard,
-                                       query=' '.join(parts + ['-in:sent', '-in:drafts']), limit=2)
-            matches = listing.get('messages', []) if isinstance(listing, dict) else []
-            if not matches:
-                continue
-            message_id = matches[0].get('id') if isinstance(matches[0], dict) else None
-            if not isinstance(message_id, str) or not _MESSAGE_ID.fullmatch(message_id):
-                raise _Malformed('message_id')
-            several = len(matches) > 1 or bool(listing.get('nextPageToken'))
-            # A date alone says when, not which, so it is never an exact match.
-            return message_id, index == 0 and bool(words), several
+                dated = [f'after:{first - 1}', f'before:{after_last}']
+            # An email whose sender or subject has the words beats a newer one that only mentions them.
+            searches = [[f'{{from:{term} subject:{term}}}' for term in terms], list(terms)] if terms else [[]]
+            for parts in searches:
+                listing = await self._call(self._gmail, agent, 'gmail:read', 'search', guard,
+                                           query=' '.join(parts + dated + ['-in:sent', '-in:drafts']), limit=2)
+                matches = listing.get('messages', []) if isinstance(listing, dict) else []
+                if not matches:
+                    continue
+                message_id = matches[0].get('id') if isinstance(matches[0], dict) else None
+                if not isinstance(message_id, str) or not _MESSAGE_ID.fullmatch(message_id):
+                    raise _Malformed('message_id')
+                several = len(matches) > 1 or bool(listing.get('nextPageToken'))
+                # A date alone says when, not which, so it is never an exact match.
+                return message_id, index == 0 and bool(words), several
         return None
 
     async def _read_email(self, agent, guard, message_id):

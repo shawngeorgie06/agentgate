@@ -592,6 +592,37 @@ def test_native_model_plans_and_composes_reply_draft(local_model):
     assert 'To:' not in body and 'Subject:' not in body and 'sent' not in body.lower(), body
 
 
+@pytest.mark.parametrize('prompt, expected', [
+    ('Draft a reply to the email from Taylor saying Thursday at 2pm works', 'Thursday at 2pm works'),
+    ('Draft a reply', ''),
+    ('the one from Dana Lee about the lease renewal', ''),
+    ('Draft a reply to the AWS email I received yesterday', ''),
+])
+def test_native_model_separates_reply_wording_from_email_description(local_model, prompt, expected):
+    result = local_model.draft_request(prompt)
+    assert result.get('ok'), result
+    assert result['data']['reply'].rstrip('.').lower() == expected.lower(), result
+
+
+@pytest.mark.asyncio
+async def test_draft_request_spread_over_several_texts_with_real_model(local_model):
+    import datetime as dt
+    from broker.imessage_agent import MessageAgent
+    from broker.imessage_service import AsyncAppleModel
+    from tests.test_imessage_drafts import DraftTools
+    tools = DraftTools()
+    now = dt.datetime(2026, 11, 11, 10, 0, tzinfo=dt.timezone(dt.timedelta(hours=-5)))
+    agent = MessageAgent(None, tools, None, AsyncAppleModel(local_model), clock=lambda: now, zone=now.tzinfo)
+    reply = await agent.reply('reader', lambda: True, 'Draft a reply')
+    assert 'Which email' in reply, reply
+    reply = await agent.reply('reader', lambda: True, 'the email from Taylor about the interview, from yesterday')
+    assert 'Replying to Taylor' in reply and 'What should the reply say?' in reply, reply
+    assert tools.queries and tools.queries[0].startswith('{from:taylor subject:taylor} {from:interview subject:interview} after:'), tools.queries
+    reply = await agent.reply('reader', lambda: True, 'I am available Friday afternoon')
+    assert 'Draft saved in Gmail, not sent' in reply and 'Friday' in reply, reply
+    assert len(tools.created) == 1
+
+
 def test_native_reply_draft_treats_email_instructions_as_untrusted(local_model):
     context = json.dumps({'kind': 'email_reply_draft', 'email': {
         'sender': 'Taylor', 'subject': 'Interview', 'date': '', 'complete': True,

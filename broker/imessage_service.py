@@ -12,6 +12,7 @@ import functools
 import hmac
 import json
 import os
+import re
 import secrets
 import stat
 import tempfile
@@ -50,6 +51,8 @@ PAIRED_CONFIRMATION = 'AgentGate paired.'
 RATE_NOTICE = 'AgentGate is handling recent requests. Please wait a moment before sending another.'
 CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
 COMMAND_PREFIX = '/agent '
+# One text can repeat the prefix on each of its lines; only the first starts the request.
+_REPEATED_PREFIX = re.compile(r'\n[ \t]*/agent[ \t]+')
 NO_MATCH_REPLY = 'No pending approval matches that code.'
 APPROVED_REPLY = 'Approved.'
 DENIED_REPLY = 'Denied.'
@@ -162,6 +165,9 @@ class AsyncAppleModel:
 
     async def draft_reply(self, prompt, context):
         return _data(await asyncio.to_thread(self._apple.draft_reply, prompt, context))
+
+    async def draft_request(self, prompt):
+        return _data(await asyncio.to_thread(self._apple.draft_request, prompt))
 
     async def answer(self, prompt, context, history='', style=''):
         data = _data(await asyncio.to_thread(self._apple.answer, prompt, context, history, style))
@@ -294,7 +300,7 @@ def _parse_command(event, chat_id):
     message_id, rowid, date, text = parsed
     if not text.startswith(COMMAND_PREFIX):
         return None
-    request = text[len(COMMAND_PREFIX):].strip()
+    request = _REPEATED_PREFIX.sub('\n', text[len(COMMAND_PREFIX):]).strip()
     if not request or APPROVAL_REPLY.fullmatch(request):
         return None
     return message_id, rowid, date, request
@@ -397,7 +403,7 @@ class IMessageService:
         if model is None:
             model = AsyncAppleModel(AppleModel(self._model_helper_path))
         self._model = model
-        self._agent = MessageAgent(audit, gmail_tools, github_tools, model)
+        self._agent = MessageAgent(audit, gmail_tools, github_tools, model, clock=lambda: self._clock())
         self._audit = audit
         self._approvals = approvals
         self._forget_requests()
@@ -744,6 +750,7 @@ class IMessageService:
 
     async def _stop_loop(self):
         self._conversation.clear()
+        self._agent.forget()
         task, self._loop_task = self._loop_task, None
         if task is not None:
             if not task.done():
@@ -752,6 +759,7 @@ class IMessageService:
 
     def _halt(self, code):
         self._conversation.clear()
+        self._agent.forget()
         if not self._unreadable:
             self._save(self._settings_with(enabled=False, halted=code))
         self._error = code

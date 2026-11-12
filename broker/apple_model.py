@@ -42,6 +42,10 @@ class AppleModel:
     def draft_reply(self, prompt, context):
         return self._call({'mode': 'draft_reply', 'prompt': prompt, 'context': context})
 
+    def draft_request(self, prompt):
+        """The part of a draft request that says what the reply should say, or '' when it says nothing."""
+        return self._call({'mode': 'draft_request', 'prompt': prompt})
+
     def _call(self, request):
         mode = request['mode']
         for field, limit in [('prompt', 2000), ('history', 4000), ('context', 6000), ('style', 500)]:
@@ -88,6 +92,10 @@ class AppleModel:
                         or len(data['body']) > 1000 or len(data['clarification']) > 300
                         or '\x00' in data['body'] + data['clarification']
                         or bool(data['body'].strip()) == bool(data['clarification'].strip())):
+                    return _error('model_failed')
+            elif mode == 'draft_request':
+                reply = data.get('reply')
+                if set(data) != {'reply'} or not isinstance(reply, str) or len(reply) > 1000 or '\x00' in reply:
                     return _error('model_failed')
             elif (set(data) != {'available', 'reason'} or type(data.get('available')) is not bool
                   or not isinstance(data.get('reason'), str) or len(data['reason']) > 200):

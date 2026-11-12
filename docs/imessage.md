@@ -43,7 +43,7 @@ The assistant plans one action for each request:
 | Unread email | Up to 3 unread Gmail messages |
 | Email search | Up to 3 Gmail messages matching a Gmail query |
 | Read one email | A single Gmail message by ID |
-| Draft an email reply | One uniquely matched email; saves a new reply draft without sending |
+| Draft an email reply | The newest matching email, named back to you; saves a new reply draft without sending |
 | GitHub repos | Up to 20 repositories, with names and descriptions |
 | GitHub issues | Up to 10 open issues in one repository |
 | GitHub file | One file from a repository, optionally at a ref |
@@ -62,17 +62,31 @@ AgentGate accepts at most one message every 5 seconds and 30 per hour. Questions
 
 ## Drafting email replies
 
-Start with an explicit draft command and identify the original email and what to say:
+Start with an explicit draft command. You can identify the original email and say what to reply in one text:
 
 ```text
 /agent Draft a reply to Taylor about the interview saying I am available Friday afternoon.
 ```
 
-The selected agent needs both `gmail:read` and `gmail:draft` permission. Normal ask/deny rules and temporary grants still apply. The assistant excludes Sent and Drafts, searches for up to two matches, and proceeds only when there is exactly one. Sent messages, existing drafts, and replies addressed back to your own account are also rejected at the provider boundary. If the sender has several matching messages, narrow the subject or date. Prior conversation can help the planner form a search, but it never chooses arbitrarily among multiple matches.
+The selected agent needs both `gmail:read` and `gmail:draft` permission. Normal ask/deny rules and temporary grants still apply. Sent messages, existing drafts, and replies addressed back to your own account are rejected at the provider boundary.
+
+You do not have to say everything at once. After a draft command, the assistant remembers the request and asks for whatever is missing, so a draft can be built over several texts:
+
+```text
+/agent Draft a reply
+/agent the AWS email from yesterday
+/agent tell them I already submitted the form
+```
+
+Only a text of yours that starts with “draft a reply” (also “write” or “compose”, “response”, and a leading “please” or “can you”) opens a draft; the model can never open one. While a draft is open, your next texts continue it, except a request the assistant recognises as another email or GitHub lookup, which is answered as usual. Text `cancel` to stop. The open request is kept in memory only, is forgotten after 15 minutes without a text, and is dropped when the assistant is disabled, unpaired, or restarted, or when the agent is revoked.
+
+The email is found by searching Gmail, outside Sent and Drafts, for the identifying words you typed, such as a sender, an address, or subject words. The search never uses operators written by the model. Dates you mention — `today`, `yesterday`, `nov 10`, `11/10`, `on monday`, `this week`, `last week` — become a date filter in your Mac's time zone instead of search words. A date without a year means the most recent such day.
+
+Emails with your words in the sender or subject are preferred over ones that only mention them in the body. If one text repeats `/agent` at the start of each line, only the first counts and the rest are ignored. When several emails match, the assistant uses the newest one and tells you which email it picked (sender, subject, and day) and that there were others; cancel or start again with more detail if it is the wrong one. When nothing matches all of your words, it retries with fewer words and then without the date, and a match found that way, or by a date alone, is only used after you answer `yes`.
 
 The reply goes to the source email's single Reply-To address, or its From address when no Reply-To is present. The model cannot choose recipients or add CC/BCC. The draft uses the source subject, Message-ID, and Gmail thread, following [Gmail’s thread requirements](https://developers.google.com/workspace/gmail/api/guides/threads). Missing or ambiguous reply headers prevent creation. No attachments are copied.
 
-The text response confirms that a draft was saved, shows the recipient, subject, and a bounded body preview, and directs you to **AgentGate → Drafts** to review the full message. If the model asks for missing information, no draft is created. Replies containing numbers absent from both your request and the source body are rejected before saving. Generated prose still needs your review; these checks do not prove every statement is correct. Validation and permission rejections explain that no draft was created. If creation cannot be confirmed, check Gmail Drafts before repeating the command; AgentGate never retries creation automatically.
+The text response confirms that a draft was saved, shows the recipient, subject, and a bounded body preview, and directs you to **AgentGate → Drafts** to review the full message. If the model asks for missing information, no draft is created and your next text supplies it. Replies containing numbers absent from both your texts and the source body are rejected before saving, and the draft stays open so you can give the exact figures. Generated prose still needs your review; these checks do not prove every statement is correct. Validation and permission rejections explain that no draft was created. If creation cannot be confirmed, check Gmail Drafts before repeating the command; AgentGate never retries creation automatically.
 
 Open the dashboard to initiate sending. The existing exact-message preview and explicit approval still apply. Reply drafts carry thread headers, so their send approval must be given in the dashboard. An assistant command such as “send it” never sends a draft.
 

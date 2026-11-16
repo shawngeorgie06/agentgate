@@ -514,6 +514,11 @@ class _PendingDraft:
         self.expires = None
 
 
+def _line(value, limit: int) -> str:
+    """Untrusted text as one sendable line: control characters and line breaks become single spaces."""
+    return ' '.join(re.sub(r'[\x00-\x1f\x7f-\x9f\u2028\u2029]', ' ', _text(value, limit)).split())
+
+
 def _listing(header, lines) -> str:
     """A header and as many whole lines as fit in one reply."""
     text = header
@@ -847,8 +852,8 @@ class MessageAgent:
             lines = []
             for repo in (data if isinstance(data, list) else [])[:REPO_LIMIT]:
                 if isinstance(repo, dict):
-                    about = _text(repo.get('description'), 120)
-                    lines.append(f'- {_text(repo.get("full_name"), 200)}' + (f': {about}' if about else ''))
+                    about = _line(repo.get('description'), 120)
+                    lines.append(f'- {_line(repo.get("full_name"), 200)}' + (f': {about}' if about else ''))
             if not lines:
                 return 'I found no GitHub repositories for this account.'
             count = f'first {len(lines)}' if len(lines) == REPO_LIMIT else str(len(lines))
@@ -861,7 +866,7 @@ class MessageAgent:
             for issue in (data if isinstance(data, list) else [])[:ISSUE_LIMIT]:
                 if isinstance(issue, dict):
                     number = issue.get('number') if isinstance(issue.get('number'), int) else ''
-                    lines.append(f'- #{number} {_text(issue.get("title"), 200)}')
+                    lines.append(f'- #{number} {_line(issue.get("title"), 200)}')
             name = f'{args["owner"]}/{args["repo"]}'
             if not lines:
                 return f'There are no open issues in {name}.'

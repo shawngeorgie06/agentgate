@@ -135,6 +135,79 @@ _OTHER_REQUEST = re.compile(_ASIDE_LEAD + '(?:' + '|'.join((
     r'(?:what can you do(?: for me)?|what are your (?:commands|capabilities)|help)\s*[.!?]*\s*$',
 )) + ')', re.IGNORECASE)
 
+# A GitHub read that names what it wants is recognised from the text itself: the on-device model often refuses these
+# requests or splits owner/name wrongly. A text that mentions changing anything is left to the model.
+_GITHUB_CHANGE = re.compile(
+    r'\b(?:send|forward|repl(?:y|ies|ying)|respond|write|compose|draft|create|make|add|edit|change|update|rename|close'
+    r'|reopen|delete|remove|merge|push|commit|comment|assign|label|run|execute|approve|deny|grant|revoke|tokens?'
+    r'|secrets?|passwords?|credentials?|permissions?|share|post|upload|open\s+(?:an?|new))\b', re.IGNORECASE)
+# Email requests are the model's to plan, even when they mention a repository.
+_ABOUT_EMAIL = re.compile(r'\b(?:e-?mails?|inbox|gmail|mail|messages?)\b', re.IGNORECASE)
+_REPO_NAMED = re.compile(r'[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}')
+_FILE_NAMED = re.compile(r'(?:[\w.-]+/)+[\w.-]+|[\w-][\w.-]*\.[A-Za-z0-9]+')
+_REPO_BEFORE = frozenset({'in', 'from', 'of', 'on', 'for'})
+_REPO_FILLER = frozenset({'the', 'my', 'github', 'repo', 'repository'})
+_REPOS_ASKED = re.compile(_ASIDE_LEAD + r'(?:(?:list|show(?: me)?|what|which|how many|count|get|give me|check|see)\b'
+                          r'[^.!?\n]*\b(?:repos|repositories)\b[^.!?\n]*|(?:my\s+)?(?:github\s+)?(?:repos|repositories))'
+                          r'\s*[.!?]*\s*', re.IGNORECASE)
+_ISSUES_ASKED = re.compile(_ASIDE_LEAD + r'(?:list|show(?: me)?|what|which|any|are there|how many|count|get|give me'
+                           r'|check|see|open issues)\b', re.IGNORECASE)
+_FILE_ASKED = re.compile(_ASIDE_LEAD + r'(?:read|show(?: me)?|open|get|give me|what does|what is in|what[\'’]s in'
+                         r'|summari[sz]e|check|see|look at|print)\b', re.IGNORECASE)
+_REF_ASKED = re.compile(r'\b(?:on|at)\s+(?:the\s+)?(?:branch\s+)?([\w.-]+(?:/[\w.-]+)*?)(?:\s+branch)?\s*[.!?]*\s*$', re.IGNORECASE)
+
+
+def _github_names(prompt):
+    """The repositories and file paths a text names, as ([(owner, repo)], [path])."""
+    words = [word.strip('"\'“”‘’`()[]<>,;:!?').rstrip('.') for word in prompt.split()]
+    repos, paths = [], []
+    for index, word in enumerate(words):
+        if not word or '@' in word or '://' in word:
+            continue
+        before = index - 1
+        while before >= 0 and words[before].lower() in _REPO_FILLER:
+            before -= 1
+        located = before >= 0 and words[before].lower() in _REPO_BEFORE
+        if _REPO_NAMED.fullmatch(word) and re.search('[A-Za-z]', word.split('/')[0]) and (located or not re.search(r'\.[A-Za-z0-9]+$', word)):
+            repos.append(tuple(word.split('/')))
+        elif _FILE_NAMED.fullmatch(word):
+            paths.append(word)
+    return repos, paths
+
+
+def _github_plan(prompt, plan):
+    """The plan for a text that plainly asks for a GitHub read, or the model's plan with its repository corrected."""
+    def planned(action, **fields):
+        return {**dict.fromkeys(PLAN_FIELDS - {'action'}, ''), 'action': action, **fields}
+
+    if _GITHUB_CHANGE.search(prompt) or _ABOUT_EMAIL.search(prompt):
+        return plan
+    repos, paths = _github_names(prompt)
+    lowered = prompt.lower()
+    if not repos:
+        mine = re.search(r'\b(?:my|i)\b', lowered) or len(lowered.split()) <= 3
+        if _REPOS_ASKED.fullmatch(prompt) and mine and 'issue' not in lowered and not paths:
+            return planned('github_repos')
+        return plan
+    if len(repos) > 1:
+        return plan
+    owner, repo = repos[0]
+    if re.search(r'\bissues\b', lowered) and not paths and _ISSUES_ASKED.match(prompt):
+        return planned('github_issues', owner=owner, repo=repo)
+    readme = re.search(r'\breadme\b', lowered)
+    path = paths[0] if len(paths) == 1 else 'README.md' if readme and not paths else ''
+    if path and _FILE_ASKED.match(prompt):
+        ref = _REF_ASKED.search(prompt)
+        ref = ref.group(1) if ref and ref.group(1) not in (path, f'{owner}/{repo}') else ''
+        return planned('github_file', owner=owner, repo=repo, path=path, ref=ref)
+    if plan.get('action') in ('github_issues', 'github_file'):
+        # The model picked the read; the text says which repository.
+        fixed = {**plan, 'owner': owner, 'repo': repo}
+        if plan['action'] == 'github_file' and path and str(plan.get('path', '')).lower() in ('', 'readme'):
+            fixed['path'] = path
+        return fixed
+    return plan
+
 
 class _Malformed(Exception):
     pass
@@ -516,6 +589,7 @@ class MessageAgent:
             return INACTIVE_MESSAGE, 'denied', None
         if not isinstance(plan, dict) or not isinstance(plan.get('action'), str):
             return MALFORMED_MESSAGE, 'denied', None
+        plan = _github_plan(prompt, plan)
         action = plan['action']
         # While a draft is being gathered, the next text continues it unless it is clearly another request.
         if draft is not None:

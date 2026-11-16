@@ -48,6 +48,8 @@ The assistant plans one action for each request:
 | GitHub issues | Up to 10 open issues in one repository |
 | GitHub file | One file from a repository, optionally at a ref |
 
+For GitHub issues and files, name the repository as `owner/name`, for example “list open issues in octocat/hello-world” or “read the README in octocat/hello-world”. A plain request like these, or “list my GitHub repos”, is recognised from your words and does not depend on the model choosing the right action; the repository, file path, and an optional “on <branch>” are taken exactly as you typed them. A text that also asks to change something, such as creating, closing, or deleting, is not treated this way and is refused as before. Recognised requests go through the same permission checks as any other read.
+
 Other questions get a plain chat reply. Requests for unsupported actions get a short explanation of the available capabilities. Replies are capped at 1,200 characters. The last 6 exchanges are kept in memory and cleared 30 minutes after the last one, so follow-up questions work. At most 2,000 characters of them are sent as context.
 
 Email reviews state how many messages were checked and give each sender a separate summary. When you ask about replying or responding, the summary also includes a reply recommendation and reason. A review covers up to three messages from the first search page, not the entire inbox. HTML-only email is converted to text locally without loading external content.

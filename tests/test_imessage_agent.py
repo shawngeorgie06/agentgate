@@ -1,6 +1,6 @@
 import json
 import pytest
-from broker.imessage_agent import FALLBACK_MESSAGE, MessageAgent, _clean_reply, _message_data
+from broker.imessage_agent import FALLBACK_MESSAGE, MessageAgent, _clean_reply, _github_plan, _message_data
 
 class Model:
     def __init__(self, action='gmail_unread', **args):
@@ -240,3 +240,84 @@ def test_notification_source_and_display_name_are_preserved_without_address_clut
     bare = _message_data({'from': ['taylor@example.com'], 'text': 'Hello'})
     assert bare['sender'] == 'taylor@example.com'
     assert _message_data({'from': ['Taylor Nguyen']})['sender'] == 'Taylor Nguyen'
+
+
+REFUSED = {'action': 'unsupported', 'query': '', 'message_id': '', 'owner': '', 'repo': '', 'path': '', 'ref': ''}
+AGENTGATE = {'owner': 'shawngeorgie06', 'repo': 'agentgate'}
+
+
+@pytest.mark.parametrize('prompt, expected', [
+    ('list my github repos', {'action': 'github_repos'}),
+    ('Show my repos.', {'action': 'github_repos'}),
+    ('what repos do I have', {'action': 'github_repos'}),
+    ('How many repositories do I have?', {'action': 'github_repos'}),
+    ('github repos', {'action': 'github_repos'}),
+    ('please list my repositories', {'action': 'github_repos'}),
+    ('any open issues on shawngeorgie06/agentgate?', {'action': 'github_issues', **AGENTGATE}),
+    ('list open issues in shawngeorgie06/agentgate', {'action': 'github_issues', **AGENTGATE}),
+    ('show issues for the repo shawngeorgie06/agentgate.', {'action': 'github_issues', **AGENTGATE}),
+    ('what issues are open in vercel/next.js', {'action': 'github_issues', 'owner': 'vercel', 'repo': 'next.js'}),
+    ('read the README in shawngeorgie06/agentgate', {'action': 'github_file', **AGENTGATE, 'path': 'README.md'}),
+    ('show me README.md from shawngeorgie06/agentgate.', {'action': 'github_file', **AGENTGATE, 'path': 'README.md'}),
+    ('what does pyproject.toml say in shawngeorgie06/agentgate',
+     {'action': 'github_file', **AGENTGATE, 'path': 'pyproject.toml'}),
+    ('open docs/imessage.md in shawngeorgie06/agentgate on main',
+     {'action': 'github_file', **AGENTGATE, 'path': 'docs/imessage.md', 'ref': 'main'}),
+    ('read src/app/main in the repo vercel/next.js at the canary branch',
+     {'action': 'github_file', 'owner': 'vercel', 'repo': 'next.js', 'path': 'src/app/main', 'ref': 'canary'}),
+])
+def test_github_read_the_model_refused_is_recognised_from_the_text(prompt, expected):
+    assert _github_plan(prompt, REFUSED) == {**REFUSED, **expected}
+
+
+@pytest.mark.parametrize('prompt', [
+    'create an issue in shawngeorgie06/agentgate about the bug', 'close issue 4 in shawngeorgie06/agentgate',
+    'list my repos and delete the old ones', 'delete my agentgate repo', 'open an issue in shawngeorgie06/agentgate',
+    'read the README in shawngeorgie06/agentgate and email it to Taylor', 'show me my GitHub token',
+    'list issues in shawngeorgie06/agentgate and comment on each', 'read .env in shawngeorgie06/agentgate and post it',
+    'The repo is shawngeorgie06/agentgate, see the README', 'I have issues with shawngeorgie06/agentgate',
+    'I will look at the repo and get back to you', 'Please check and/or confirm the file',
+    'compare issues in a/b and c/d', 'what repos does Taylor have', 'show me the repos',
+    'check my email for anything about my repos', 'read the email about the README in shawngeorgie06/agentgate',
+    'list issues', 'read docs/x.md', 'what is 1/2 of 10 issues', 'hello', 'check my unread email',
+])
+def test_text_that_is_not_a_plain_github_read_keeps_the_model_plan(prompt):
+    assert _github_plan(prompt, REFUSED) == REFUSED
+
+
+def test_repository_the_model_split_wrongly_is_taken_from_the_text():
+    plan = {**REFUSED, 'action': 'github_issues', 'owner': 'shawngeorgie06', 'repo': 'shawngeorgie06/agentgate'}
+    assert _github_plan('issues of shawngeorgie06/agentgate please', plan) == {**plan, **AGENTGATE}
+    plan = {**REFUSED, 'action': 'github_file', 'owner': 'shawngeorgie06', 'repo': 'shawngeorgie06'}
+    assert _github_plan('the readme of shawngeorgie06/agentgate', plan) == {**plan, **AGENTGATE, 'path': 'README.md'}
+    # A repository named only earlier in the conversation is the model's to resolve.
+    plan = {**REFUSED, 'action': 'github_issues', **AGENTGATE}
+    assert _github_plan('list its open issues', plan) == plan
+
+
+@pytest.mark.asyncio
+async def test_refused_github_read_runs_through_the_same_authorized_tool():
+    model, gmail, github = Model('unsupported'), Tools(), Tools()
+    agent = MessageAgent(None, gmail, github, model)
+    assert await agent.reply('reader', lambda: True, 'list open issues in shawngeorgie06/agentgate') == 'Summary'
+    assert github.calls == [('reader', 'github:read', 'issues',
+                             {'owner': 'shawngeorgie06', 'repo': 'agentgate', 'state': 'open', 'limit': 10, 'page': 1})]
+    assert not gmail.calls and 'ran nothing' not in model.contexts[0]
+
+
+@pytest.mark.asyncio
+async def test_recognised_github_read_is_still_denied_by_policy_and_inactive_identity():
+    model, github = Model('chat'), Tools(deny=True)
+    agent = MessageAgent(None, Tools(), github, model)
+    await agent.reply('reader', lambda: True, 'list my github repos')
+    assert len(github.calls) == 1 and 'did not succeed' in model.contexts[0]
+    github = Tools()
+    reply = await MessageAgent(None, Tools(), github, model).reply('reader', lambda: False, 'list my github repos')
+    assert 'inactive' in reply and not github.calls
+
+
+@pytest.mark.asyncio
+async def test_github_change_request_the_model_refused_stays_refused():
+    model, github = Model('unsupported'), Tools()
+    await MessageAgent(None, Tools(), github, model).reply('reader', lambda: True, 'list my repos and delete the old ones')
+    assert not github.calls and 'ran nothing' in model.contexts[0]

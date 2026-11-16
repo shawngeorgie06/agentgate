@@ -366,6 +366,16 @@ async def test_control_characters_in_listed_text_do_not_make_the_reply_unsendabl
 
 
 @pytest.mark.asyncio
+async def test_long_description_is_cut_between_words_with_an_ellipsis():
+    about = 'AI-native workflow automation platform. Describe automations in plain English, FlowAI builds and runs them. Discord, Email, Webhook'
+    repos = ListTools([{'full_name': 'octocat/flowai', 'description': about}])
+    reply = await MessageAgent(None, Tools(), repos, Model('unsupported')).reply('reader', lambda: True, 'list my repos')
+    line = reply.splitlines()[1]
+    assert line == '- octocat/flowai: AI-native workflow automation platform. Describe automations in plain English, FlowAI builds and runs them. Discord…'
+    assert len(line) - len('- octocat/flowai: ') <= 120
+
+
+@pytest.mark.asyncio
 async def test_long_repo_list_is_cut_at_a_whole_line_within_one_reply():
     repos = ListTools([{'full_name': f'octocat/repo-{n}', 'description': 'x' * 120} for n in range(20)])
     reply = await MessageAgent(None, Tools(), repos, Model('unsupported')).reply('reader', lambda: True, 'list my repos')

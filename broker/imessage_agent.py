@@ -515,8 +515,13 @@ class _PendingDraft:
 
 
 def _line(value, limit: int) -> str:
-    """Untrusted text as one sendable line: control characters and line breaks become single spaces."""
-    return ' '.join(re.sub(r'[\x00-\x1f\x7f-\x9f\u2028\u2029]', ' ', _text(value, limit)).split())
+    """Untrusted text as one sendable line: control characters and line breaks become single spaces, and a cut
+    falls between words with an ellipsis."""
+    text = ' '.join(re.sub(r'[\x00-\x1f\x7f-\x9f\u2028\u2029]', ' ', _text(value, limit * 4)).split())
+    if len(text) <= limit:
+        return text
+    cut = text[:limit - 1]
+    return (cut.rsplit(' ', 1)[0] if ' ' in cut else cut).rstrip(' ,;:-–—') + '…'
 
 
 def _listing(header, lines) -> str:

@@ -514,6 +514,17 @@ class _PendingDraft:
         self.expires = None
 
 
+def _listing(header, lines) -> str:
+    """A header and as many whole lines as fit in one reply."""
+    text = header
+    for index, line in enumerate(lines):
+        more = '\n…' if index < len(lines) - 1 else ''
+        if len(text) + 1 + len(line) + len(more) > REPLY_LIMIT:
+            return text + '\n…'
+        text += '\n' + line
+    return text
+
+
 def _clean_reply(answer) -> str:
     text = answer.strip() if isinstance(answer, str) else ''
     # A reply sent from the self-chat would read back as an approval decision, so never send one.
@@ -613,6 +624,9 @@ class MessageAgent:
 
         if not _active(identity_guard):
             return INACTIVE_MESSAGE, 'denied', action
+        if action in ('github_repos', 'github_issues'):
+            # A list is reported as GitHub returned it; the model would only add commentary.
+            return _clean_reply(context), 'completed', action
         try:
             answer = await self._model.answer(prompt, context, history, style)
         except Exception:
@@ -833,8 +847,12 @@ class MessageAgent:
             lines = []
             for repo in (data if isinstance(data, list) else [])[:REPO_LIMIT]:
                 if isinstance(repo, dict):
-                    lines.append(f'- {_text(repo.get("full_name"), 200)}: {_text(repo.get("description"), 200)}')
-            return '\n'.join(lines)[:CONTEXT_LIMIT] or NO_RESULTS
+                    about = _text(repo.get('description'), 120)
+                    lines.append(f'- {_text(repo.get("full_name"), 200)}' + (f': {about}' if about else ''))
+            if not lines:
+                return 'I found no GitHub repositories for this account.'
+            count = f'first {len(lines)}' if len(lines) == REPO_LIMIT else str(len(lines))
+            return _listing(f'Your GitHub repositories ({count}):', lines)
         if action == 'github_issues':
             data = await self._call(self._github, agent_name, 'github:read', 'issues', guard,
                                     owner=args['owner'], repo=args['repo'], state='open',
@@ -843,9 +861,12 @@ class MessageAgent:
             for issue in (data if isinstance(data, list) else [])[:ISSUE_LIMIT]:
                 if isinstance(issue, dict):
                     number = issue.get('number') if isinstance(issue.get('number'), int) else ''
-                    lines.append(f'- #{number} [{_text(issue.get("state"), 20)}] '
-                                 f'{_text(issue.get("title"), 200)}: {_text(issue.get("body"), 300)}')
-            return '\n'.join(lines)[:CONTEXT_LIMIT] or NO_RESULTS
+                    lines.append(f'- #{number} {_text(issue.get("title"), 200)}')
+            name = f'{args["owner"]}/{args["repo"]}'
+            if not lines:
+                return f'There are no open issues in {name}.'
+            count = f'first {len(lines)}' if len(lines) == ISSUE_LIMIT else str(len(lines))
+            return _listing(f'Open issues in {name} ({count}):', lines)
         # github_file
         data = await self._call(self._github, agent_name, 'github:read', 'read_file', guard,
                                 owner=args['owner'], repo=args['repo'], path=args['path'],

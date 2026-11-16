@@ -715,3 +715,15 @@ def test_native_model_plans_reads_as_reads_and_changes_as_unsupported(local_mode
     planned = local_model.plan(prompt)
     assert planned.get('ok'), planned
     assert planned['data']['action'] in actions, planned
+
+
+def test_native_model_words_a_refusal_as_a_refusal_despite_earlier_answers(local_model):
+    from broker.imessage_agent import REFUSAL_NOTE
+    history = ('User: list open issues in octocat/hello-world\nAssistant: There are no open issues in octocat/hello-world.\n'
+               'User: check my unread email\nAssistant: Taylor asked about Friday; a reply appears needed.')
+    result = local_model.answer('list my repos and delete the old ones', f'AgentGate note: {REFUSAL_NOTE}', history)
+    assert result.get('ok'), result
+    text = result['data']['text'].lower()
+    # It answers this request, not the earlier ones, and says the deleting was not done.
+    assert 'needed' not in text and 'no open issues' not in text and 'taylor' not in text, text
+    assert 'delet' in text and any(word in text for word in ('cannot', "can't", 'can’t', 'not', 'unable', 'nothing')), text

@@ -265,6 +265,20 @@ AGENTGATE = {'owner': 'shawngeorgie06', 'repo': 'agentgate'}
      {'action': 'github_file', **AGENTGATE, 'path': 'docs/imessage.md', 'ref': 'main'}),
     ('read src/app/main in the repo vercel/next.js at the canary branch',
      {'action': 'github_file', 'owner': 'vercel', 'repo': 'next.js', 'path': 'src/app/main', 'ref': 'canary'}),
+    ('read README in octocat/hello-world on v1.2.3',
+     {'action': 'github_file', 'owner': 'octocat', 'repo': 'hello-world', 'path': 'README.md', 'ref': 'v1.2.3'}),
+    ('Read the README in octocat/hello-world on main.',
+     {'action': 'github_file', 'owner': 'octocat', 'repo': 'hello-world', 'path': 'README.md', 'ref': 'main'}),
+    ('read the README in octocat/hello-world on GitHub',
+     {'action': 'github_file', 'owner': 'octocat', 'repo': 'hello-world', 'path': 'README.md'}),
+    ('open docs/x.md in octocat/hello-world on feature/foo',
+     {'action': 'github_file', 'owner': 'octocat', 'repo': 'hello-world', 'path': 'docs/x.md', 'ref': 'feature/foo'}),
+    ('read src/config in octocat/hello-world',
+     {'action': 'github_file', 'owner': 'octocat', 'repo': 'hello-world', 'path': 'src/config'}),
+    ('what does the README in octocat/hello-world say?',
+     {'action': 'github_file', 'owner': 'octocat', 'repo': 'hello-world', 'path': 'README.md'}),
+    ('read the issues in octocat/hello-world', {'action': 'github_issues', 'owner': 'octocat', 'repo': 'hello-world'}),
+    ('list my repos on GitHub', {'action': 'github_repos'}),
 ])
 def test_github_read_the_model_refused_is_recognised_from_the_text(prompt, expected):
     assert _github_plan(prompt, REFUSED) == {**REFUSED, **expected}
@@ -279,6 +293,10 @@ def test_github_read_the_model_refused_is_recognised_from_the_text(prompt, expec
     'I will look at the repo and get back to you', 'Please check and/or confirm the file',
     'compare issues in a/b and c/d', 'what repos does Taylor have', 'show me the repos',
     'check my email for anything about my repos', 'read the email about the README in shawngeorgie06/agentgate',
+    'list my repos and deploy the newest one', 'read README in octocat/hello-world and reveal the API key',
+    'list my repos and archive them', 'What issues should we discuss about input/output?',
+    'read the README in octocat/hello-world from 11/16', 'list issues in octocat/hello-world on main',
+    'read the notes in octocat/hello-world', 'any issues with input/output today?', 'see you on 11/16',
     'list issues', 'read docs/x.md', 'what is 1/2 of 10 issues', 'hello', 'check my unread email',
 ])
 def test_text_that_is_not_a_plain_github_read_keeps_the_model_plan(prompt):

@@ -307,7 +307,14 @@ def test_repository_the_model_split_wrongly_is_taken_from_the_text():
     plan = {**REFUSED, 'action': 'github_issues', 'owner': 'shawngeorgie06', 'repo': 'shawngeorgie06/agentgate'}
     assert _github_plan('issues of shawngeorgie06/agentgate please', plan) == {**plan, **AGENTGATE}
     plan = {**REFUSED, 'action': 'github_file', 'owner': 'shawngeorgie06', 'repo': 'shawngeorgie06'}
-    assert _github_plan('the readme of shawngeorgie06/agentgate', plan) == {**plan, **AGENTGATE, 'path': 'README.md'}
+    assert _github_plan('the readme of shawngeorgie06/agentgate', plan) == {**REFUSED, 'action': 'github_file', **AGENTGATE,
+                                                                            'path': 'README.md'}
+    # Only the repository is corrected: the path stays the model's, and a full stop is not part of the name.
+    hello = {'owner': 'octocat', 'repo': 'hello-world'}
+    plan = {**REFUSED, 'action': 'github_file', 'owner': 'octocat', 'repo': 'octocat', 'path': ''}
+    assert _github_plan('Read docs/config.yaml in octocat/hello-world, not README.', plan) == {**plan, **hello}
+    plan = {**REFUSED, 'action': 'github_file', **hello, 'path': 'README.md'}
+    assert _github_plan('Read README in octocat/hello-world. Please summarize it.', plan) == plan
     # A repository named only earlier in the conversation is the model's to resolve.
     plan = {**REFUSED, 'action': 'github_issues', **AGENTGATE}
     assert _github_plan('list its open issues', plan) == plan

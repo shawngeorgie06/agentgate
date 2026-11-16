@@ -166,6 +166,7 @@ _ISSUES_ASKED = _github_form(
 _FILE_ASKED = _github_form(
     r'(?:read|show(?:\s+me)?|open|get|give\s+me|summari[sz]e|check|see|look\s+at|print|what\s+is\s+in|what[\'’]s\s+in)\s+'
     + _GH_PATH + r'\s+' + _GH_IN + _GH_REF + _GH_SITE,
+    r'(?:the\s+)?(?P<readme>readme)(?P<path>)(?:\s+file)?\s+' + _GH_IN + _GH_REF + _GH_SITE,
     r'what\s+does\s+' + _GH_PATH + r'\s+say\s+' + _GH_IN + _GH_REF + _GH_SITE,
     r'what\s+does\s+' + _GH_PATH + r'\s+' + _GH_IN + _GH_REF + r'\s+say' + _GH_SITE)
 _REPO_LOCATED = re.compile(r'\b' + _GH_IN + r'(?![\w/-])', re.IGNORECASE)
@@ -188,13 +189,9 @@ def _github_plan(prompt, plan):
         return planned('github_file', owner=asked['owner'], repo=asked['repo'],
                        path='README.md' if asked['readme'] else asked['path'], ref=asked['ref'] or '')
     located = _REPO_LOCATED.findall(text)
-    if plan.get('action') in ('github_issues', 'github_file') and len(located) == 1:
-        # The model picked the read; the text says which repository.
-        fixed = {**plan, 'owner': located[0][0], 'repo': located[0][1]}
-        if plan['action'] == 'github_file' and str(plan.get('path', '')).lower() in ('', 'readme') \
-                and re.search(r'\breadme\b', text, re.IGNORECASE):
-            fixed['path'] = 'README.md'
-        return fixed
+    if plan.get('action') in ('github_issues', 'github_file') and len(located) == 1 and located[0][1].rstrip('.'):
+        # The model picked the read; the text says which repository. A sentence's full stop is not part of the name.
+        return {**plan, 'owner': located[0][0], 'repo': located[0][1].rstrip('.')}
     return plan
 
 

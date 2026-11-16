@@ -601,6 +601,16 @@ async def test_request_the_model_did_not_recognise_does_not_become_the_reply(act
 
 
 @pytest.mark.asyncio
+async def test_reply_wording_that_mentions_issues_and_a_slash_pair_stays_the_reply():
+    tools, model = DraftTools(), DraftModel(action='chat')
+    agent = make_agent(tools, model)
+    await agent.reply('reader', lambda: True, 'Draft a reply to Taylor')
+    wording = 'What issues should we discuss about input/output?'
+    assert 'Draft saved' in await agent.reply('reader', lambda: True, wording)
+    assert model.prompts == [wording]
+
+
+@pytest.mark.asyncio
 async def test_search_request_while_naming_the_email_is_answered_instead_of_matched():
     tools, model = DraftTools(matches=[]), DraftModel(action='gmail_search')
     agent = make_agent(tools, model)

@@ -135,6 +135,65 @@ _OTHER_REQUEST = re.compile(_ASIDE_LEAD + '(?:' + '|'.join((
     r'(?:what can you do(?: for me)?|what are your (?:commands|capabilities)|help)\s*[.!?]*\s*$',
 )) + ')', re.IGNORECASE)
 
+# A GitHub read that names what it wants is recognised from the text itself: the on-device model often refuses these
+# requests or splits owner/name wrongly. A text that mentions changing anything is left to the model.
+# A GitHub read is taken from the user's words only when the whole text is one of these closed forms, so a text that
+# also asks for anything else, or merely mentions a slash pair, stays with the model's plan. A file is a README or a
+# name with a dot or a slash.
+_GH_REPO = r'(?P<owner>(?=[0-9-]*[A-Za-z])[A-Za-z0-9][A-Za-z0-9-]{0,38})/(?P<repo>[A-Za-z0-9._-]{1,100})'
+_GH_IN = r'(?:in|from|of|on|for)\s+(?:the\s+|my\s+)?(?:github\s+)?(?:repo(?:sitory)?\s+)?' + _GH_REPO
+_GH_SITE = r'(?:\s+on\s+github)?'
+_GH_REPOS = r'(?:github\s+)?(?:repos|repositories)'
+_GH_VERB = r'(?:list|show(?:\s+me)?|get|give\s+me|check|see|count)'
+_GH_NAME = r'(?!github\b)[\w.-]+(?:/[\w.-]+)*'
+_GH_PATH = r'(?:the\s+)?(?:(?P<readme>readme)|(?P<path>(?=[\w-]*[./])' + _GH_NAME + r'))(?:\s+file)?'
+_GH_REF = r'(?:\s+(?:on|at)\s+(?:the\s+)?(?:branch\s+)?(?P<ref>' + _GH_NAME + r')(?:\s+branch)?)?'
+
+
+def _github_form(*forms):
+    return tuple(re.compile(_ASIDE_LEAD + form + r'\s*', re.IGNORECASE) for form in forms)
+
+
+_REPOS_ASKED = _github_form(
+    _GH_VERB + r'\s+(?:all\s+(?:of\s+)?)?my\s+' + _GH_REPOS + _GH_SITE,
+    r'(?:what|which|how\s+many)\s+' + _GH_REPOS + r'\s+do\s+i\s+have' + _GH_SITE,
+    r'what\s+are\s+my\s+' + _GH_REPOS, r'(?:my\s+)?' + _GH_REPOS)
+_ISSUES = r'(?:(?:the|all|any)\s+)?(?:open\s+)?issues'
+_ISSUES_ASKED = _github_form(
+    r'(?:' + _GH_VERB + r'|read|look\s+at|any|are\s+there(?:\s+any)?)\s+' + _ISSUES + r'\s+(?:open\s+)?' + _GH_IN + _GH_SITE,
+    r'(?:what|which)\s+(?:are\s+)?' + _ISSUES + r'\s+(?:are\s+)?(?:open\s+)?' + _GH_IN + _GH_SITE,
+    r'how\s+many\s+(?:open\s+)?issues\s+(?:are\s+)?(?:there\s+)?(?:open\s+)?' + _GH_IN + _GH_SITE)
+_FILE_ASKED = _github_form(
+    r'(?:read|show(?:\s+me)?|open|get|give\s+me|summari[sz]e|check|see|look\s+at|print|what\s+is\s+in|what[\'’]s\s+in)\s+'
+    + _GH_PATH + r'\s+' + _GH_IN + _GH_REF + _GH_SITE,
+    r'(?:the\s+)?(?P<readme>readme)(?P<path>)(?:\s+file)?\s+' + _GH_IN + _GH_REF + _GH_SITE,
+    r'what\s+does\s+' + _GH_PATH + r'\s+say\s+' + _GH_IN + _GH_REF + _GH_SITE,
+    r'what\s+does\s+' + _GH_PATH + r'\s+' + _GH_IN + _GH_REF + r'\s+say' + _GH_SITE)
+_REPO_LOCATED = re.compile(r'\b' + _GH_IN + r'(?![\w/-])', re.IGNORECASE)
+
+
+def _github_plan(prompt, plan):
+    """The plan for a text that is exactly a plain GitHub read, or the model's plan with its repository corrected."""
+    def planned(action, **fields):
+        return {**dict.fromkeys(PLAN_FIELDS - {'action'}, ''), 'action': action, **fields}
+    text = prompt.strip().rstrip('.!?').rstrip()
+    def asked(forms):
+        return next(filter(None, (form.fullmatch(text) for form in forms)), None)
+    if asked(_REPOS_ASKED):
+        return planned('github_repos')
+    issues, file = asked(_ISSUES_ASKED), asked(_FILE_ASKED)
+    if issues:
+        return planned('github_issues', owner=issues['owner'], repo=issues['repo'])
+    if file:
+        asked = file
+        return planned('github_file', owner=asked['owner'], repo=asked['repo'],
+                       path='README.md' if asked['readme'] else asked['path'], ref=asked['ref'] or '')
+    located = _REPO_LOCATED.findall(text)
+    if plan.get('action') in ('github_issues', 'github_file') and len(located) == 1 and located[0][1].rstrip('.'):
+        # The model picked the read; the text says which repository. A sentence's full stop is not part of the name.
+        return {**plan, 'owner': located[0][0], 'repo': located[0][1].rstrip('.')}
+    return plan
+
 
 class _Malformed(Exception):
     pass
@@ -455,6 +514,27 @@ class _PendingDraft:
         self.expires = None
 
 
+def _line(value, limit: int) -> str:
+    """Untrusted text as one sendable line: control characters and line breaks become single spaces, and a cut
+    falls between words with an ellipsis."""
+    text = ' '.join(re.sub(r'[\x00-\x1f\x7f-\x9f\u2028\u2029]', ' ', _text(value, limit * 4)).split())
+    if len(text) <= limit:
+        return text
+    cut = text[:limit - 1]
+    return (cut.rsplit(' ', 1)[0] if ' ' in cut else cut).rstrip(' ,;:-–—') + '…'
+
+
+def _listing(header, lines) -> str:
+    """A header and as many whole lines as fit in one reply."""
+    text = header
+    for index, line in enumerate(lines):
+        more = '\n…' if index < len(lines) - 1 else ''
+        if len(text) + 1 + len(line) + len(more) > REPLY_LIMIT:
+            return text + '\n…'
+        text += '\n' + line
+    return text
+
+
 def _clean_reply(answer) -> str:
     text = answer.strip() if isinstance(answer, str) else ''
     # A reply sent from the self-chat would read back as an approval decision, so never send one.
@@ -516,6 +596,7 @@ class MessageAgent:
             return INACTIVE_MESSAGE, 'denied', None
         if not isinstance(plan, dict) or not isinstance(plan.get('action'), str):
             return MALFORMED_MESSAGE, 'denied', None
+        plan = _github_plan(prompt, plan)
         action = plan['action']
         # While a draft is being gathered, the next text continues it unless it is clearly another request.
         if draft is not None:
@@ -553,6 +634,9 @@ class MessageAgent:
 
         if not _active(identity_guard):
             return INACTIVE_MESSAGE, 'denied', action
+        if action in ('github_repos', 'github_issues'):
+            # A list is reported as GitHub returned it; the model would only add commentary.
+            return _clean_reply(context), 'completed', action
         try:
             answer = await self._model.answer(prompt, context, history, style)
         except Exception:
@@ -773,8 +857,12 @@ class MessageAgent:
             lines = []
             for repo in (data if isinstance(data, list) else [])[:REPO_LIMIT]:
                 if isinstance(repo, dict):
-                    lines.append(f'- {_text(repo.get("full_name"), 200)}: {_text(repo.get("description"), 200)}')
-            return '\n'.join(lines)[:CONTEXT_LIMIT] or NO_RESULTS
+                    about = _line(repo.get('description'), 120)
+                    lines.append(f'- {_line(repo.get("full_name"), 200)}' + (f': {about}' if about else ''))
+            if not lines:
+                return 'I found no GitHub repositories for this account.'
+            count = f'first {len(lines)}' if len(lines) == REPO_LIMIT else str(len(lines))
+            return _listing(f'Your GitHub repositories ({count}):', lines)
         if action == 'github_issues':
             data = await self._call(self._github, agent_name, 'github:read', 'issues', guard,
                                     owner=args['owner'], repo=args['repo'], state='open',
@@ -783,9 +871,12 @@ class MessageAgent:
             for issue in (data if isinstance(data, list) else [])[:ISSUE_LIMIT]:
                 if isinstance(issue, dict):
                     number = issue.get('number') if isinstance(issue.get('number'), int) else ''
-                    lines.append(f'- #{number} [{_text(issue.get("state"), 20)}] '
-                                 f'{_text(issue.get("title"), 200)}: {_text(issue.get("body"), 300)}')
-            return '\n'.join(lines)[:CONTEXT_LIMIT] or NO_RESULTS
+                    lines.append(f'- #{number} {_line(issue.get("title"), 200)}')
+            name = f'{args["owner"]}/{args["repo"]}'
+            if not lines:
+                return f'There are no open issues in {name}.'
+            count = f'first {len(lines)}' if len(lines) == ISSUE_LIMIT else str(len(lines))
+            return _listing(f'Open issues in {name} ({count}):', lines)
         # github_file
         data = await self._call(self._github, agent_name, 'github:read', 'read_file', guard,
                                 owner=args['owner'], repo=args['repo'], path=args['path'],

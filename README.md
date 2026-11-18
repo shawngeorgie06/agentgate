@@ -1,252 +1,223 @@
 # AgentGate
 
-AgentGate is a prototype credential broker and approval engine for AI agents. It enforces time-based policy gates on API key access, provides two-tier approval workflows (AUTO for trusted policies, MANUAL for escalations), and audits credential decisions with append-only file logging.
+AgentGate is a local credential broker and approval gate for AI agents. Agents connect to it over MCP and ask it to use your credentials, such as API keys, Gmail and GitHub. AgentGate checks each request against your policies and per-agent permissions. Anything risky waits for you to approve it in a local web app, by text over iMessage, or in the terminal. Every decision goes into an append-only audit log.
 
-## V1 Scope
+It runs on your own machine. On macOS it can run in the background as a login service.
 
-- **Credential Storage**: Argon2id + AES-256-GCM encrypted credential storage with per-credential salts and nonces
-- **Policy Engine**: YAML-based declarative policies with time windows and auto-approval rules
-- **Two-Tier Approval**: Automatic approval for trusted agent/credential pairs; escalation to the operator app or terminal for others
-- **Audit Logging**: Append-only JSON audit trail (no credential values logged)
-- **FastMCP Server**: Built-in Model Context Protocol server exposing credential, policy, and Gmail MCP tools for agent integration
-- **Runtime Mode Toggle**: Interactive CLI toggle between AUTO and MANUAL approval modes (state persisted to JSON)
-- **Async CLI**: Command-line interface for credential management and policy administration
-- **Docker Ready**: Docker Compose configuration with mounted state volumes for ECS migration
+## What it does
+
+- **Encrypted credential store:** Argon2id key derivation and AES-256-GCM encryption, with a per-credential salt and nonce. Gmail and GitHub tokens never leave the broker.
+- **Agent identities:** each agent gets its own bearer credential, which can expire or be revoked without a restart. A caller can't claim a different identity by passing another agent name.
+- **Policies and permissions:** YAML policies with time windows and auto-approval rules for API keys. Per-agent allow, ask or deny rules for Gmail and GitHub, plus temporary grants of 1–1440 minutes.
+- **Approvals:** sending email, creating GitHub issues and adding policies always need your approval. Everything else follows the current mode (AUTO or MANUAL) and the matching policy.
+- **Gmail:** search, read and create drafts. Sending a draft needs approval.
+- **GitHub:** list repositories and issues and read files. Creating an issue needs approval.
+- **Operator app:** a local browser UI at `http://127.0.0.1:8765/app` for agents, connections, permissions, temporary access, inbox and drafts, approvals and recent activity.
+- **iMessage assistant:** ask about your email and GitHub, draft email replies, and approve requests by texting yourself. It uses Apple's on-device model.
+- **macOS background service:** a per-user LaunchAgent with the vault unlock saved in your Keychain, plus a small native `AgentGate.app` opener.
+- **Audit log:** one JSON line per decision. It never records credential values or tokens.
+
+## Documentation
+
+| Guide | Covers |
+| --- | --- |
+| [Operator app](docs/app.md) | Setup, screens, local security boundary, sample-data preview |
+| [Agent identities](docs/agents.md) | Registering, revoking, enforcement, migration |
+| [Permissions](docs/permissions.md) | Per-agent Gmail and GitHub rules, temporary grants |
+| [Gmail](docs/gmail.md) | Google OAuth setup, tools, agent commands |
+| [iMessage](docs/imessage.md) | Pairing, questions, reply drafts, approvals by text, privacy |
+| [Background service](docs/background.md) | macOS LaunchAgent, Keychain unlock, install and uninstall |
 
 ## Quickstart
 
-### Local Development
+### Install
 
-**Install dependencies:**
 ```bash
 uv venv --python 3.12 .venv
 uv pip install --python .venv/bin/python -r requirements.txt
 source .venv/bin/activate
-```
-
-**Set up environment:**
-```bash
 cp .env.example .env
 ```
 
-**Set master password:**
-Set `AGENTGATE_MASTER_PASSWORD` in your shell environment (or the interactive broker will prompt via `getpass`). The application does not automatically load `.env`; Docker Compose loads it via `env_file`.
+The application doesn't load `.env` itself; export the variables in your shell or launcher (Docker Compose loads it through `env_file`). Set `AGENTGATE_MASTER_PASSWORD`, or the broker will prompt for it with `getpass` at startup.
 
-**Seed a credential:**
-The credential value is read from stdin or the `AGENTGATE_CRED_VALUE` env var (never passed as a command-line argument, so it won't leak into process listings):
+### Store an API key
+
+The value is read from stdin or `AGENTGATE_CRED_VALUE`, never from a command-line argument, so it doesn't show up in process listings:
+
 ```bash
-# value piped via stdin
 echo "<your-api-key>" | python -m cli.commands cred-store anthropic-api-key
-
-# or via env var
-AGENTGATE_CRED_VALUE="<your-api-key>" python -m cli.commands cred-store anthropic-api-key
 ```
 
-**Run the broker:**
+Other operator commands are `cred-list`, `cred-delete`, `policy-validate`, `status`, `gmail-connect`, `gmail-disconnect` and `mcp-token-create`.
+
+### Try it without real credentials
+
 ```bash
-python -m broker.main
+python -m examples.demo                # terminal approvals with temporary dummy credentials
+.venv/bin/python examples/app_demo.py  # operator app with sample data
 ```
 
-The broker starts a FastMCP server over stdin/stdout. An MCP client launches this command and owns those streams. Operator approvals use `/dev/tty`, the controlling terminal, and startup diagnostics go to stderr. Interactive approvals on macOS/Linux require the server process to retain a controlling terminal. Clients that detach their subprocesses (including FastMCP’s stdio client), and desktop clients without a terminal, use headless mode even if the client was launched from a shell. The terminal shows requests as they arrive; answer `y` or `n`, press `s` then Enter to toggle modes, or `q` then Enter to stop.
+### Run the broker
 
-For a safe standalone walkthrough with temporary dummy credentials:
+AgentGate runs one broker process per credential store and holds a lock to enforce that. Pick one way to run it:
+
+**Operator app (recommended).** This serves authenticated MCP at `http://127.0.0.1:8765/mcp` and opens the app at `/app`. Create the agent token and a separate operator token once:
+
 ```bash
-python -m examples.demo
+python -m cli.commands mcp-token-create --path ~/.config/agentgate/mcp-token
+python -m cli.commands mcp-token-create --path ~/.config/agentgate/operator-token
+python -m broker.main --app \
+  --token-file ~/.config/agentgate/mcp-token \
+  --operator-token-file ~/.config/agentgate/operator-token
 ```
-Approve the first request with `y`, then deny the second with `n`. This demo exercises the MCP tools in process; it does not modify your real credentials, policies, or audit log.
 
-Without a controlling terminal, the broker requires `AGENTGATE_MASTER_PASSWORD` and a positive `ESCALATION_TIMEOUT_SECONDS`. Automatic policies still work; requests needing an operator time out and are denied.
+On first launch, the `--token-file` credential is enrolled as the `agentgate-local` identity. Register more agents in the app's **Agents** screen. Approvals happen in the app, so terminal approvals are turned off in this mode. Pass `--no-open` to stop it opening a browser, or `--port` to change the port.
 
-**Request credentials from agents:**
-Agents connect to AgentGate via MCP and call `credential.request(credential)`; identity comes from authentication or trusted launcher configuration. The broker consults policies and audit state to approve or escalate the request.
+**HTTP without the app.** Run `python -m broker.main --http --token-file …`. This serves the same MCP endpoint, and approvals happen in the terminal.
 
-**Toggle approval mode:**
-Once the CLI is running, press `s` then Enter to toggle between AUTO and MANUAL approval modes. The decision is persisted to `state/mode.json` and read on every request (never cached).
+**STDIO.** Run `python -m broker.main`. An MCP client launches this command and owns stdin and stdout. Requests run as the `--stdio-agent` identity (default `agentgate-local`). Approvals use `/dev/tty`: answer `y` or `n`, enter `s` to switch between AUTO and MANUAL, or `q` to stop. Clients that detach their subprocesses, and desktop clients without a terminal, run headless. In that case the broker needs `AGENTGATE_MASTER_PASSWORD` and a positive `ESCALATION_TIMEOUT_SECONDS`, and requests that need an operator time out and are denied.
 
-### Docker Compose
+**Background on macOS.** See [docs/background.md](docs/background.md) to build `AgentGate.app` and install the login service. It runs the broker in app mode.
 
-**Build and run:**
+### Connect services
+
+- **Gmail:** run `python -m cli.commands gmail-connect` or use **Connections** in the app. See [docs/gmail.md](docs/gmail.md).
+- **GitHub:** create a fine-grained personal access token limited to the repositories agents should see. Give it Metadata and Contents read access, Issues read access to list issues, and Issues write access only if you want issue creation (which needs approval). Enter the token in the app's **Connections** form. It is encrypted and never returned to agents.
+
+Disconnecting only removes the local credential. To revoke access at Google or GitHub, do that on their side too.
+
+## Agent access
+
+### MCP tools
+
+| Tool | Purpose |
+| --- | --- |
+| `credential.request` | Request an API key by name as the authenticated identity |
+| `policy.list`, `policy.validate` | Inspect or check policies |
+| `policy.add` | Propose a policy; always needs operator approval |
+| `broker.status` | Mode, policy count, request and escalation counts, uptime |
+| `gmail.search`, `gmail.read`, `gmail.draft` | Search, read and create unsent drafts |
+| `gmail.send_draft` | Send an existing draft; always needs approval |
+| `github.account`, `github.repos`, `github.repo` | Connected account and repositories |
+| `github.read_file`, `github.issues` | Read a UTF-8 file of up to 1 MiB; list issues |
+| `github.create_issue` | Create one issue; always needs approval of the exact repository, title and body |
+
+Identity comes from the bearer credential (HTTP) or the launcher's configured identity (STDIO). An optional agent-name argument is only an assertion, and it must match.
+
+### JSON command-line client
+
+Agents that don't speak MCP can use `cli.agent` against the running broker:
+
+```bash
+.venv/bin/python -m cli.agent --token-file /private/path/agent.token status
+.venv/bin/python -m cli.agent --token-file /private/path/agent.token search 'is:unread'
+.venv/bin/python -m cli.agent --token-file /private/path/agent.token github repos
+.venv/bin/python -m cli.agent --token-file /private/path/agent.token github read-file OWNER REPO README.md
+```
+
+The commands are `status`, `search`, `read`, `draft`, `send-draft` and `github {account,repos,repo,read-file,issues,create-issue}`. Issue creation needs a stable `--request-id`. Reuse that same ID when you check on an uncertain request: an encrypted ledger blocks a second dispatch, even across restarts. AgentGate never retries a send or an issue creation automatically.
+
+## iMessage assistant
+
+After pairing in the app, text yourself in Messages:
+
+```text
+/agent do I have unread email?
+/agent draft a reply to the AWS email
+/agent list open issues in OWNER/REPO
+```
+
+The assistant plans one read-only action per request. It can check unread email, search or read an email, list repositories or issues, read a file, or save a new Gmail reply draft. Then it answers with Apple's on-device model. It can't send email, create issues, edit existing drafts or delete anything. It can also announce pending approvals and accept your reply by text. Sending a threaded reply draft still needs approval in the app.
+
+It needs a Mac with Apple Intelligence, Full Disk Access and Automation permission for Messages, and two helpers (`bin/imsg` and `bin/agentgate-model`). See [docs/imessage.md](docs/imessage.md) for setup, rate limits and privacy.
+
+## Policies
+
+API-key access is decided by `policies/policies.yaml`. Policies are checked in order, and the first match wins:
+
+```yaml
+policies:
+  - name: claude-code-anthropic
+    agent: claude-code          # or "*"
+    credential: anthropic-api-key  # or "*"
+    access: read
+    time_window:                # optional; omit for 24/7
+      start: "09:00"
+      end: "23:00"
+    auto_approve: true
+  - name: default-deny
+    agent: "*"
+    credential: "*"
+    auto_approve: false
+    escalate: true              # ask the operator instead of denying outright
+```
+
+Gmail and GitHub access for each agent is set in the app's **Permissions** screen. Those rules are stored by the broker and applied immediately. A temporary grant overrides one saved rule, even an explicit deny, until it expires or you revoke it. Access is checked again just before each call to Gmail or GitHub, so expiry or revocation stops queued work. See [docs/permissions.md](docs/permissions.md).
+
+## Approval modes
+
+- **AUTO:** policies with `auto_approve: true` are granted immediately. Everything else escalates.
+- **MANUAL:** every API-key request escalates, and so do Gmail and GitHub reads and drafts.
+
+Sends, issue creation and policy changes always ask, whatever the mode. Switch modes in the app, or by entering `s` in terminal mode. The mode is saved to `state/mode.json` and read fresh on every request.
+
+`ESCALATION_TIMEOUT_SECONDS` limits how long a request waits for you. When it runs out, the request is denied and audited as `expired`. The default of `0` waits forever, which suits interactive use. Headless setups should set a positive value so pending requests don't pile up in memory.
+
+## Audit log
+
+`logs/audit.log` holds one JSON object per line:
+
+```json
+{"timestamp": "2026-06-24T14:32:05", "agent": "claude-code", "credential_requested": "anthropic-api-key", "policy_matched": "claude-code-anthropic", "decision": "approved", "mode": "auto", "token_expiry": "2026-06-24T15:32:05"}
+```
+
+`decision` is one of `approved`, `denied`, `escalated`, `expired`, `completed` or `failed`. The last two record the outcome of an operation that was carried out, such as a Gmail send, an issue creation or a policy change. For entries that aren't API-key requests, `credential_requested` holds the resource instead, such as `github:write` or `imessage:gmail_search`. Credential values and issued tokens are never written.
+
+## Configuration
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `AGENTGATE_MASTER_PASSWORD` | prompt | Vault password (the background service reads it from Keychain instead) |
+| `CREDENTIALS_PATH` | `./data/credentials.json` | Encrypted credential store |
+| `AGENTS_PATH` | next to the store | Agent identity registry |
+| `POLICIES_PATH` | `./policies/policies.yaml` | Policy file |
+| `STATE_PATH` | `./state/mode.json` | Approval mode |
+| `LOGS_PATH` | `./logs/audit.log` | Audit log |
+| `TOKEN_TTL_MINUTES` | `60` | `token_expiry` on granted API keys. This is metadata only: the raw key is returned and not revoked at expiry |
+| `ESCALATION_TIMEOUT_SECONDS` | `0` | Approval wait before denying; `0` waits forever |
+| `GMAIL_CLIENT_PATH` | `oauth-client.json` next to the store | Google OAuth client file |
+| `AGENTGATE_IMSG_PATH`, `AGENTGATE_MODEL_HELPER` | `bin/` in the config directory | iMessage helpers |
+
+Invalid values stop startup with a clear error.
+
+## Docker
+
 ```bash
 docker compose build
 docker compose up
 ```
 
-The container mounts all state directories (`policies`, `state`, `logs`, `data`) from the host, making it suitable for ECS task definitions that mount external state volumes.
+The container runs the STDIO broker with `policies`, `state`, `logs` and `data` mounted from the host. Writes are atomic, but there's no locking between instances, so run only one container per store. The operator app, iMessage and background service are local macOS features and aren't part of the image.
 
-## Gmail
+## Project layout
 
-Connect Gmail once using Google OAuth, then let local agents search, read, and create drafts. Every email send requires operator approval. Tokens stay inside the encrypted broker store. Agents can use `.venv/bin/python -m cli.agent` for JSON commands (`status`, `search`, `read`, `draft`, `send-draft`) through the authenticated local broker. See the [Gmail setup guide](docs/gmail.md) for Google setup, policies, tools, and current terminal requirements.
-
-## Policy Schema
-
-Policies are defined in `policies/policies.yaml`. Each policy specifies:
-
-```yaml
-policies:
-  - name: <policy-name>
-    agent: <agent-name or "*" for wildcard>
-    credential: <credential-name or "*" for wildcard>
-    access: read|write         # access level (for future expansion)
-    time_window:               # optional; omit for 24/7
-      start: "HH:MM"
-      end: "HH:MM"
-    auto_approve: true|false   # auto-approve if time window matches
-    escalate: true             # if true, failed auto-approval escalates to the operator app or terminal
-```
-
-**Example:**
-```yaml
-- name: claude-code-anthropic
-  agent: claude-code
-  credential: anthropic-api-key
-  access: read
-  time_window:
-    start: "09:00"
-    end: "23:00"
-  auto_approve: true
-
-- name: default-deny
-  agent: "*"
-  credential: "*"
-  auto_approve: false
-  escalate: true
-```
-
-The first matching policy wins. Policies are evaluated in order.
-
-## MCP Tools
-
-AgentGate exposes these core MCP tools for agent integration:
-
-1. **`credential.request`** — Request a credential by name as the authenticated identity; an optional agent-name assertion must match. Returns `{granted: bool, token: str, token_expiry: int, value: str, reason: str}`.
-
-2. **`policy.list`** — List all policies and their current status. Returns `{policies: [{name, agent, credential, auto_approve, escalate, ...}]}`.
-
-3. **`policy.validate`** — Validate the policy file without applying it. Returns `{valid: bool, errors: [str]}`.
-
-4. **`policy.add`** — Add a new policy. **Always escalates to the operator app or terminal for approval, regardless of mode.** Once approved, the policy is persisted to `policies/policies.yaml`.
-
-5. **`broker.status`** — Get current broker status: mode, policy count, request/escalation counts, and uptime. Returns `{mode: str, policies: int, requests: int, escalated: int, uptime_seconds: int}`.
-
-## Approval Modes
-
-AgentGate runs in two modes:
-
-- **AUTO**: Policies with `auto_approve: true` grant credentials immediately. Policies with `auto_approve: false` still escalate to the operator.
-- **MANUAL**: All requests (even auto-approval policies) escalate to the operator app or terminal for approval or denial.
-
-Toggle modes by pressing `s` while the CLI is running. The mode is persisted to `state/mode.json`.
-
-## Audit Log
-
-All credential decisions are logged to `logs/audit.log`, one JSON object per line. Each entry includes:
-- `timestamp` — ISO-8601, local time
-- `agent` — requesting agent name
-- `credential_requested` — credential name (never the value)
-- `policy_matched` — the policy that decided the request
-- `decision` — one of `approved`, `denied`, `escalated`, `expired`, `completed`, `failed` (`completed` and `failed` record Gmail operation outcomes; `expired` = escalated request that timed out waiting for the operator and was auto-denied)
-- `mode` — the broker mode at decision time (`auto` or `manual`)
-- `token_expiry` — expiry of the issued token, or `null` when no token was issued
-
-The credential value and the issued token are never written to the audit log.
-
-Example:
-```
-{"timestamp": "2026-06-24T14:32:05", "agent": "claude-code", "credential_requested": "anthropic-api-key", "policy_matched": "claude-code-anthropic", "decision": "approved", "mode": "auto", "token_expiry": "2026-06-24T15:32:05"}
-```
-
-## ECS Migration
-
-All runtime state is stored in environment-configured mounted volumes:
-
-- `POLICIES_PATH` → `policies/policies.yaml` (policy definitions)
-- `STATE_PATH` → `state/mode.json` (current approval mode)
-- `LOGS_PATH` → `logs/audit.log` (audit trail)
-- `CREDENTIALS_PATH` → `data/credentials.json` (encrypted credentials)
-
-In ECS, mount these volumes as external storage (e.g., EFS or S3-backed volumes) and inject the paths via environment variables. AgentGate will read and write state atomically, but atomic replacement alone does not prevent concurrent writers from losing updates. Multi-instance use requires additional locking or transactional storage.
-
-## Credential Storage
-
-Credentials are encrypted at rest using:
-
-- **Key Derivation**: Argon2id (RFC 9106) with user-configured master password
-- **Encryption**: AES-256-GCM with per-credential salts and nonces
-- **Audit**: Credential decisions logged without credential values
-
-HTTP MCP callers authenticate as registered agent identities; caller-supplied names cannot override that identity. Credentials can expire or be revoked without restarting the broker. STDIO clients use an operator-selected launcher identity. See [agent identities](docs/agents.md) for setup, migration, enforcement, and local filesystem boundaries. Legacy API-key values are still returned to approved callers; Gmail credentials remain broker-only.
-
-## Token TTL
-
-Granted credentials include a `token_expiry` timestamp (configurable via `TOKEN_TTL_MINUTES` in `.env`, default 60 minutes). This expiry is metadata only: the broker returns the underlying API key and does not enforce token redemption or revoke the key at expiry.
-
-## Escalation Timeout
-
-Set `ESCALATION_TIMEOUT_SECONDS` in `.env` to limit how long the broker waits for operator approval before failing closed. When the timeout elapses with no operator response, the request is denied immediately and audited as `decision="expired"`. A value of `0` (the default) disables the timeout and waits forever — suitable for interactive use. Set a positive integer (e.g. `30`) for headless or unattended deployments where a hung approval queue should not block agents indefinitely. Note: while the timeout is disabled by default, pending approvals with no operator answer accumulate in memory—headless deployments should set a positive timeout to prevent unbounded memory growth.
-
-## Architecture
-
-**Broker** (`broker/main.py`):
-- FastMCP server (stdin/stdout transport)
-- Credential store (encrypted JSON)
-- Policy engine (YAML parser + time-window evaluator)
-- Approval queue (pending requests awaiting operator decision)
-- Audit logger (append-only file log)
-
-**CLI** (`cli/commands.py`):
-- Credential management (`cred-store`, `cred-delete`, `cred-list`)
-- Policy administration (`policy-validate`)
-- Broker status (`status`)
-- Approval prompt (interactive decision queue)
-- Mode toggle (`s` key)
-
-**Config** (`broker/config.py`):
-- Environment variable parsing
-- Master password resolution (env or `getpass`)
-- Path initialization and validation
+| Path | Contents |
+| --- | --- |
+| `broker/main.py` | Entry point, startup modes, process lock |
+| `broker/mcp_server.py`, `gmail_tools.py`, `github_tools.py` | MCP tools |
+| `broker/credential_store.py`, `agent_registry.py`, `http_auth.py` | Vault, identities, bearer auth |
+| `broker/policy_engine.py`, `permissions.py`, `grants.py`, `access.py`, `approval.py` | Access decisions and the approval queue |
+| `broker/dashboard.py`, `grants_dashboard.py`, `connections.py`, `web/` | Operator app |
+| `broker/imessage_*.py`, `apple_model.py` | iMessage bridge, assistant and on-device model |
+| `broker/mac_install.py`, `mac_service.py`, `mac_keychain.py`, `native/` | macOS app, LaunchAgent, Keychain helper |
+| `cli/commands.py`, `cli/agent.py` | Operator and agent command-line tools |
+| `examples/` | Demos and smoke checks with sample data |
 
 ## Testing
 
-Run the full test suite:
 ```bash
-python -m pytest -v
+python -m pytest
 ```
 
-Tests cover:
-- Credential encryption/decryption
-- Policy evaluation and time-window matching
-- Two-tier approval workflows
-- Audit logging (values never logged)
-- MCP tool interface
-
-### Local operator app
-
-Use the [AgentGate app](docs/app.md) to register and revoke [agent identities](docs/agents.md), inspect activity, and approve requests. Gmail reading and draft creation/previews remain available. Agent commands continue to work while approvals move out of the terminal. Try the sample-data preview with `.venv/bin/python examples/app_demo.py`.
-
-### Agent permissions
-
-Set per-agent Gmail access in the app’s **Permissions** screen: allow/ask/deny for reading and drafting, and ask/deny for sending. Saves are persisted and applied immediately with conflict detection. See the [permissions guide](docs/permissions.md) for schedules, approval invalidation, and scope.
-
-### Connections, GitHub, and temporary access
-
-The operator app now includes **Connections** and **Temporary access**. Connections shows the Gmail account address and the GitHub login. Disconnect removes the broker's local credential; revoke the Google app authorization or GitHub token separately if you also want to revoke it at the provider. Reconnecting can change the account used by agents that already have service permissions.
-
-Gmail reconnect uses the private `oauth-client.json` beside the credential store (or `GMAIL_CLIENT_PATH`) and opens Google's consent flow. Failed reconnect keeps the previous connection. Do not share the client JSON or account tokens in chat.
-
-For GitHub, create a fine-grained personal access token limited to the repositories you want agents to use. Give it Metadata and Contents read access; add Issues read access for issue listing and Issues write access only if you want approval-required issue creation. Enter it in the local Connections form. AgentGate encrypts the token and never returns it to agents. The GitHub tools read repository metadata, UTF-8 files up to 1 MiB, and issues; they can create an issue only after an operator approves the exact repository, title, and body. Repository permissions at GitHub still apply.
-
-Set each agent's Gmail and GitHub rules separately in **Permissions**. New GitHub permissions do not alter Gmail rules. Temporary grants override one saved permission for 1–1440 minutes, including an explicit saved deny. After expiry or revocation, saved rules apply again. Manual mode still asks for reads and drafts; email sends and issue creation always ask. Access is checked again immediately before provider dispatch, so expiry or revocation invalidates queued work.
-
-Agent commands (replace the example identity path with your own private credential file):
-
-```sh
-.venv/bin/python -m cli.agent --token-file /private/path/agent.token github repos
-.venv/bin/python -m cli.agent --token-file /private/path/agent.token github read-file OWNER REPO README.md
-.venv/bin/python -m cli.agent --token-file /private/path/agent.token github issues OWNER REPO
-```
-
-Issue creation requires a stable `--request-id` for each logical issue. Reuse that same ID when checking an uncertain request; the encrypted attempt ledger blocks repeated dispatch across broker restarts. Do not generate a new ID to retry a request whose outcome is unknown. No non-idempotent provider action is automatically retried.
-
-### macOS background app
-
-Use the native **AgentGate.app** to save the existing vault unlock in macOS Keychain and open the local web interface. A per-user LaunchAgent runs the broker quietly at login, supervises restarts, and keeps it available after the browser or native opener closes. The app menu can enable/disable automatic startup or forget the saved unlock. See [background setup and lifecycle](docs/background.md). This runs on your Mac; it does not host AgentGate in the cloud.
+Tests that use the native Keychain helper or the real on-device model skip themselves on machines where those aren't available.

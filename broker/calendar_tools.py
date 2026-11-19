@@ -84,7 +84,11 @@ class CalendarTools:
                     raise CalendarError('This event request already has an attempt. Check Google Calendar before retrying.')
                 self._attempts.add(attempt_key)
                 self.broker.store.store(self._ledger_name, json.dumps(sorted(self._attempts)))
-                dispatch_started = True
+            # The encrypted ledger write can block; access may change meanwhile.
+            # The attempt stays recorded, so a retry is refused rather than duplicated.
+            if not guard():
+                raise AccessError('Agent access is no longer active, or permissions changed or expired.')
+            dispatch_started = True
 
         try:
             data = await asyncio.to_thread(

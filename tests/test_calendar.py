@@ -422,3 +422,27 @@ def test_calendar_grants_allow_reads_and_only_ask_for_writes(tmp_path):
     assert grants.create('worker', 'calendar:write', 'ask', 5)['permission'] == 'ask'
     with pytest.raises(GrantError):
         grants.create('worker', 'calendar:write', 'allow', 5)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('change', ['revoke', 'disconnect'])
+async def test_access_change_during_ledger_write_stops_dispatch(tmp_path, change):
+    broker, calendar, _, tools = broker_tools(tmp_path, [Response(data={'id': 'created'})])
+    active = {'value': True}
+    store = broker.store.store
+
+    def slow_store(name, value):
+        store(name, value)
+        if name == '__agentgate:calendar-attempts':
+            if change == 'revoke':
+                active['value'] = False
+            else:
+                calendar._suspended = True
+    broker.store.store = slow_store
+    task = asyncio.create_task(tools.create_event('agent-a', **REQUEST, identity_guard=lambda: active['value']))
+    broker.approvals.resolve(await pending(broker), True)
+    result = await task
+    assert result['ok'] is False
+    assert calendar._session.calls == []
+    again = await tools.create_event('agent-a', **REQUEST)
+    assert again['ok'] is False and 'already has an attempt' in again['reason']

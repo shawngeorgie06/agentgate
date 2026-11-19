@@ -375,6 +375,8 @@ class Calendar:
         self._refresh()
         if before_dispatch is not None:
             before_dispatch()
+        if self._suspended:
+            raise CalendarError(NOT_CONNECTED)
         # httplib2 can replay POSTs after response loss. A plain request with
         # redirects disabled dispatches once; the fixed event ID makes Google
         # reject any duplicate insert with HTTP 409.

@@ -17,10 +17,11 @@ from starlette.responses import FileResponse, JSONResponse
 from starlette.routing import Mount, Route
 
 from broker import state
-from broker.connections import GmailConnection
+from broker.connections import CalendarConnection, GmailConnection
 from broker.credential_store import CredentialDecryptionError
 from broker.gmail_tools import GmailTools
 from broker.integrations.gmail import GmailError, TOKEN_NAME
+from broker.integrations.calendar import Calendar, CalendarError
 from broker.integrations.github import GitHub, GitHubError
 from broker.imessage_style import MIN_MESSAGES
 from broker.grants_dashboard import create_grant, get_grants, revoke_grant
@@ -70,16 +71,21 @@ async def _settled_to_thread(function, *args):
     return result
 
 
-def create_dashboard(mcp_app, broker, tools: GmailTools, operator_token: str, *, github=None):
+def create_dashboard(mcp_app, broker, tools: GmailTools, operator_token: str, *, github=None, calendar=None):
     permissions = Permissions(broker)
     gmail_mutation_lock = asyncio.Lock()
     github_mutation_lock = asyncio.Lock()
+    calendar_mutation_lock = asyncio.Lock()
     client_file = os.environ.get(
         'GMAIL_CLIENT_PATH',
         str(Path(broker.config.credentials_path).expanduser().parent / 'oauth-client.json'),
     )
     gmail_connection = GmailConnection(broker, tools.gmail, client_file)
     github = github or GitHub(broker.store)
+    # Calendar has its own Google sign-in and token; the OAuth client file is shared with Gmail.
+    calendar_connection = CalendarConnection(broker, calendar or Calendar(broker.store), client_file)
+    google_connections = {'gmail': (gmail_connection, gmail_mutation_lock),
+                          'calendar': (calendar_connection, calendar_mutation_lock)}
 
     async def asset(request):
         names = {'app': 'index.html', 'app.js': 'app.js', 'app.css': 'app.css',
@@ -113,16 +119,17 @@ def create_dashboard(mcp_app, broker, tools: GmailTools, operator_token: str, *,
                 data = {'agents': registry.list_agents() if registry is not None else [],
                         'available': registry is not None}
             elif request.method == 'GET' and action == 'connections':
-                gmail_info, github_info = await asyncio.gather(
+                gmail_info, github_info, calendar_info = await asyncio.gather(
                     asyncio.to_thread(gmail_connection.info),
                     asyncio.to_thread(github.info),
+                    asyncio.to_thread(calendar_connection.info),
                 )
                 registry = getattr(broker, 'agent_registry', None)
                 active_agents = [agent for agent in registry.list_agents()
                                  if agent.get('status') == 'active'] if registry is not None else []
                 grants_store = getattr(broker, 'temporary_grants', None)
                 live_grants = grants_store.list_grants() if grants_store is not None else []
-                for service_info in (gmail_info, github_info):
+                for service_info in (gmail_info, github_info, calendar_info):
                     service = service_info['service']
                     prefix = service + ':'
                     service_agents = []
@@ -142,9 +149,12 @@ def create_dashboard(mcp_app, broker, tools: GmailTools, operator_token: str, *,
                             'temporary_grants': temporary,
                         })
                     service_info['agents'] = service_agents
-                data = {'services': [gmail_info, github_info]}
+                data = {'services': [gmail_info, github_info, calendar_info]}
             elif request.method == 'GET' and action == 'reconnect-status':
-                data = gmail_connection.reconnect_status()
+                service = request.query_params.get('service', 'gmail')
+                if service not in google_connections:
+                    raise ValueError()
+                data = google_connections[service][0].reconnect_status()
             elif request.method == 'GET' and action == 'grants':
                 data = get_grants(broker)
             elif request.method == 'GET' and action == 'imessage':
@@ -199,16 +209,17 @@ def create_dashboard(mcp_app, broker, tools: GmailTools, operator_token: str, *,
                     raise ValueError()
                 if action == 'connection-disconnect':
                     service = payload.get('service')
-                    if service not in ('gmail', 'github'):
+                    if service not in ('gmail', 'github', 'calendar'):
                         raise ValueError()
-                    if service == 'gmail':
-                        async with gmail_mutation_lock:
+                    if service in google_connections:
+                        connection, lock = google_connections[service]
+                        async with lock:
                             # Gate queued provider calls before canceling approvals
                             # and deleting credentials in a worker.
-                            tools.gmail._suspended = True
+                            connection.provider._suspended = True
                             broker.invalidate_agent_requests()
                             try:
-                                await _settled_to_thread(gmail_connection.disconnect)
+                                await _settled_to_thread(connection.disconnect)
                             finally:
                                 broker.invalidate_agent_requests()
                     else:
@@ -220,11 +231,12 @@ def create_dashboard(mcp_app, broker, tools: GmailTools, operator_token: str, *,
                             finally:
                                 broker.invalidate_agent_requests()
                     data = {'service': service, 'status': 'disconnected'}
-                elif action == 'gmail-reconnect':
-                    async with gmail_mutation_lock:
+                elif action in ('gmail-reconnect', 'calendar-reconnect'):
+                    connection, lock = google_connections[action.removesuffix('-reconnect')]
+                    async with lock:
                         broker.invalidate_agent_requests()
                         try:
-                            data = gmail_connection.begin_reconnect()
+                            data = connection.begin_reconnect()
                         finally:
                             broker.invalidate_agent_requests()
                 elif action == 'github-connect':
@@ -399,7 +411,7 @@ def create_dashboard(mcp_app, broker, tools: GmailTools, operator_token: str, *,
             return JSONResponse({'ok': False, 'reason': str(exc)}, status_code=409, headers=headers)
         except PolicyError:
             return JSONResponse({'ok': False, 'reason': 'The policy file is invalid. Repair it before editing permissions.'}, status_code=400, headers=headers)
-        except (GmailError, GitHubError) as exc:
+        except (GmailError, GitHubError, CalendarError) as exc:
             return JSONResponse({'ok': False, 'reason': str(exc)}, status_code=400, headers=headers)
         except GrantError as exc:
             return JSONResponse({'ok': False, 'reason': str(exc)}, status_code=400, headers=headers)
@@ -417,6 +429,7 @@ def create_dashboard(mcp_app, broker, tools: GmailTools, operator_token: str, *,
                 yield
         finally:
             await gmail_connection.close()
+            await calendar_connection.close()
 
     return Starlette(routes=[Route('/app', asset), Route('/app/{asset}', asset),
                              Route('/api/{action}', api, methods=['GET', 'POST']), Mount('/', mcp_app)],

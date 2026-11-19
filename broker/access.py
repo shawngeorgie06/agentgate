@@ -11,7 +11,7 @@ class AccessError(Exception):
     """A captured authorization is no longer valid at the provider boundary."""
 
 
-_ALWAYS_MANUAL = {"gmail:send", "github:write"}
+_ALWAYS_MANUAL = {"gmail:send", "github:write", "calendar:write"}
 
 
 class AccessController:

@@ -275,7 +275,8 @@ class Broker:
         }
 
 
-def build_mcp(broker: Broker, *, auth=None, gmail_tools=None, github_tools=None, trusted_agent: str = "agentgate-local") -> FastMCP:
+def build_mcp(broker: Broker, *, auth=None, gmail_tools=None, github_tools=None, calendar_tools=None,
+              trusted_agent: str = "agentgate-local") -> FastMCP:
     mcp = FastMCP("AgentGate", auth=auth, mask_error_details=True)
 
     def identity(supplied: str | None):
@@ -345,4 +346,6 @@ def build_mcp(broker: Broker, *, auth=None, gmail_tools=None, github_tools=None,
         register_gmail_tools(mcp, broker, tools=gmail_tools, identity_resolver=identity)
     from broker.github_tools import register_github_tools
     register_github_tools(mcp, broker, tools=github_tools, identity_resolver=identity)
+    from broker.calendar_tools import register_calendar_tools
+    register_calendar_tools(mcp, broker, tools=calendar_tools, identity_resolver=identity)
     return mcp

@@ -1,6 +1,6 @@
 # Agent permissions in the app
 
-Open **Permissions**, select an active enrolled agent, and select Gmail or GitHub, and review its access. This version manages one account per service; it does not edit legacy API-key access or provide multiple-account selection.
+Open **Permissions**, select an active enrolled agent, and select Gmail, GitHub or Google Calendar, and review its access. This version manages one account per service; it does not edit legacy API-key access or provide multiple-account selection.
 
 - **Read:** allow searches and reading without asking in AUTO mode, ask for each operation, or deny.
 - **Draft:** allow creating/inspecting drafts without asking in AUTO mode, ask each time, or deny.
@@ -14,7 +14,7 @@ The initial selections reflect policy evaluation at the current time. Saving cre
 
 If matching time-window rules exist, the app lists them and leaves all new choices unselected. Choose each setting explicitly and acknowledge replacing time-window restrictions with all-time rules. The save API also requires that acknowledgement. The review dialog describes the all-time effect. This editor does not create schedules; keep scheduled access in YAML if needed instead of saving all-time replacements.
 
-AUTO mode follows the saved choices. MANUAL mode still asks for allowed reading and drafting; Deny stays denied. Every send and GitHub issue creation requires approval in both modes.
+AUTO mode follows the saved choices. MANUAL mode still asks for allowed reading and drafting; Deny stays denied. Every send, GitHub issue creation and calendar event creation requires approval in both modes.
 
 ## Changes take effect immediately
 
@@ -28,8 +28,8 @@ Settings persist as marked rules in the existing `POLICIES_PATH` YAML file. Savi
 
 Only the independent operator credential can inspect or modify permissions. Agent credentials cannot call these endpoints, and client-supplied agent names do not change authenticated identity. Successful and failed permission updates appear in Activity without credential values or email content.
 
-## GitHub and temporary grants
+## GitHub, Google Calendar and temporary grants
 
-GitHub Read permits repository metadata, files, and issues; Write permits issue creation only after approval or denies it. Saving GitHub rules preserves Gmail rules and vice versa.
+GitHub Read permits repository metadata, files, and issues; Write permits issue creation only after approval or denies it. Google Calendar Read permits listing calendars, events and free/busy times; Write permits event creation only after approval or denies it. Saving one service's rules preserves the other services' rules.
 
-An explicit operator grant in Temporary access overrides one baseline permission, including Deny, until its expiry or revocation. Sends and GitHub writes offer Ask only. The private identity database stores grant history and UTC expiry; grants never rewrite policy YAML. Dispatch checks identity, policy revision, access mode, current time-window eligibility, and captured grant expiry again. Requests whose access changed must be submitted anew.
+An explicit operator grant in Temporary access overrides one baseline permission, including Deny, until its expiry or revocation. Sends, GitHub writes and calendar writes offer Ask only. The private identity database stores grant history and UTC expiry; grants never rewrite policy YAML. Dispatch checks identity, policy revision, access mode, current time-window eligibility, and captured grant expiry again. Requests whose access changed must be submitted anew.

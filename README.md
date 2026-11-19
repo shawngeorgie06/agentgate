@@ -1,17 +1,18 @@
 # AgentGate
 
-AgentGate is a local credential broker and approval gate for AI agents. Agents connect to it over MCP and ask it to use your credentials, such as API keys, Gmail and GitHub. AgentGate checks each request against your policies and per-agent permissions. Anything risky waits for you to approve it in a local web app, by text over iMessage, or in the terminal. Every decision goes into an append-only audit log.
+AgentGate is a local credential broker and approval gate for AI agents. Agents connect to it over MCP and ask it to use your credentials, such as API keys, Gmail, GitHub and Google Calendar. AgentGate checks each request against your policies and per-agent permissions. Anything risky waits for you to approve it in a local web app, by text over iMessage, or in the terminal. Every decision goes into an append-only audit log.
 
 It runs on your own machine. On macOS it can run in the background as a login service.
 
 ## What it does
 
-- **Encrypted credential store:** Argon2id key derivation and AES-256-GCM encryption, with a per-credential salt and nonce. Gmail and GitHub tokens never leave the broker.
+- **Encrypted credential store:** Argon2id key derivation and AES-256-GCM encryption, with a per-credential salt and nonce. Gmail, GitHub and Google Calendar tokens never leave the broker.
 - **Agent identities:** each agent gets its own bearer credential, which can expire or be revoked without a restart. A caller can't claim a different identity by passing another agent name.
-- **Policies and permissions:** YAML policies with time windows and auto-approval rules for API keys. Per-agent allow, ask or deny rules for Gmail and GitHub, plus temporary grants of 1–1440 minutes.
-- **Approvals:** sending email, creating GitHub issues and adding policies always need your approval. Everything else follows the current mode (AUTO or MANUAL) and the matching policy.
+- **Policies and permissions:** YAML policies with time windows and auto-approval rules for API keys. Per-agent allow, ask or deny rules for Gmail, GitHub and Google Calendar, plus temporary grants of 1–1440 minutes.
+- **Approvals:** sending email, creating GitHub issues, creating calendar events and adding policies always need your approval. Everything else follows the current mode (AUTO or MANUAL) and the matching policy.
 - **Gmail:** search, read and create drafts. Sending a draft needs approval.
 - **GitHub:** list repositories and issues and read files. Creating an issue needs approval.
+- **Google Calendar:** list calendars and events and check free/busy times. Creating an event needs approval, and no invitations are sent.
 - **Operator app:** a local browser UI at `http://127.0.0.1:8765/app` for agents, connections, permissions, temporary access, inbox and drafts, approvals and recent activity.
 - **iMessage assistant:** ask about your email and GitHub, draft email replies, and approve requests by texting yourself. It uses Apple's on-device model.
 - **macOS background service:** a per-user LaunchAgent with the vault unlock saved in your Keychain, plus a small native `AgentGate.app` opener.
@@ -23,8 +24,9 @@ It runs on your own machine. On macOS it can run in the background as a login se
 | --- | --- |
 | [Operator app](docs/app.md) | Setup, screens, local security boundary, sample-data preview |
 | [Agent identities](docs/agents.md) | Registering, revoking, enforcement, migration |
-| [Permissions](docs/permissions.md) | Per-agent Gmail and GitHub rules, temporary grants |
+| [Permissions](docs/permissions.md) | Per-agent Gmail, GitHub and Calendar rules, temporary grants |
 | [Gmail](docs/gmail.md) | Google OAuth setup, tools, agent commands |
+| [Google Calendar](docs/calendar.md) | Calendar API setup, tools, event approval, agent commands |
 | [iMessage](docs/imessage.md) | Pairing, questions, reply drafts, approvals by text, privacy |
 | [Background service](docs/background.md) | macOS LaunchAgent, Keychain unlock, install and uninstall |
 
@@ -84,6 +86,7 @@ On first launch, the `--token-file` credential is enrolled as the `agentgate-loc
 
 - **Gmail:** run `python -m cli.commands gmail-connect` or use **Connections** in the app. See [docs/gmail.md](docs/gmail.md).
 - **GitHub:** create a fine-grained personal access token limited to the repositories agents should see. Give it Metadata and Contents read access, Issues read access to list issues, and Issues write access only if you want issue creation (which needs approval). Enter the token in the app's **Connections** form. It is encrypted and never returned to agents.
+- **Google Calendar:** enable the Google Calendar API in the same Google Cloud project as your OAuth client, then use **Connections** in the app. Calendar has its own sign-in. See [docs/calendar.md](docs/calendar.md).
 
 Disconnecting only removes the local credential. To revoke access at Google or GitHub, do that on their side too.
 
@@ -102,6 +105,8 @@ Disconnecting only removes the local credential. To revoke access at Google or G
 | `github.account`, `github.repos`, `github.repo` | Connected account and repositories |
 | `github.read_file`, `github.issues` | Read a UTF-8 file of up to 1 MiB; list issues |
 | `github.create_issue` | Create one issue; always needs approval of the exact repository, title and body |
+| `calendar.calendars`, `calendar.events`, `calendar.freebusy` | Calendars, events in a time range, busy intervals |
+| `calendar.create_event` | Create one event with no attendees; always needs approval of the exact event |
 
 Identity comes from the bearer credential (HTTP) or the launcher's configured identity (STDIO). An optional agent-name argument is only an assertion, and it must match.
 
@@ -116,7 +121,7 @@ Agents that don't speak MCP can use `cli.agent` against the running broker:
 .venv/bin/python -m cli.agent --token-file /private/path/agent.token github read-file OWNER REPO README.md
 ```
 
-The commands are `status`, `search`, `read`, `draft`, `send-draft` and `github {account,repos,repo,read-file,issues,create-issue}`. Issue creation needs a stable `--request-id`. Reuse that same ID when you check on an uncertain request: an encrypted ledger blocks a second dispatch, even across restarts. AgentGate never retries a send or an issue creation automatically.
+The commands are `status`, `search`, `read`, `draft`, `send-draft`, `github {account,repos,repo,read-file,issues,create-issue}` and `calendar {calendars,events,freebusy,create-event}`. Issue and event creation need a stable `--request-id`. Reuse that same ID when you check on an uncertain request: an encrypted ledger blocks a second dispatch, even across restarts. AgentGate never retries a send, an issue creation or an event creation automatically.
 
 ## iMessage assistant
 
@@ -153,14 +158,14 @@ policies:
     escalate: true              # ask the operator instead of denying outright
 ```
 
-Gmail and GitHub access for each agent is set in the app's **Permissions** screen. Those rules are stored by the broker and applied immediately. A temporary grant overrides one saved rule, even an explicit deny, until it expires or you revoke it. Access is checked again just before each call to Gmail or GitHub, so expiry or revocation stops queued work. See [docs/permissions.md](docs/permissions.md).
+Gmail, GitHub and Google Calendar access for each agent is set in the app's **Permissions** screen. Those rules are stored by the broker and applied immediately. A temporary grant overrides one saved rule, even an explicit deny, until it expires or you revoke it. Access is checked again just before each call to Gmail, GitHub or Google Calendar, so expiry or revocation stops queued work. See [docs/permissions.md](docs/permissions.md).
 
 ## Approval modes
 
 - **AUTO:** policies with `auto_approve: true` are granted immediately. Everything else escalates.
-- **MANUAL:** every API-key request escalates, and so do Gmail and GitHub reads and drafts.
+- **MANUAL:** every API-key request escalates, and so do Gmail, GitHub and Google Calendar reads and drafts.
 
-Sends, issue creation and policy changes always ask, whatever the mode. Switch modes in the app, or by entering `s` in terminal mode. The mode is saved to `state/mode.json` and read fresh on every request.
+Sends, issue creation, event creation and policy changes always ask, whatever the mode. Switch modes in the app, or by entering `s` in terminal mode. The mode is saved to `state/mode.json` and read fresh on every request.
 
 `ESCALATION_TIMEOUT_SECONDS` limits how long a request waits for you. When it runs out, the request is denied and audited as `expired`. The default of `0` waits forever, which suits interactive use. Headless setups should set a positive value so pending requests don't pile up in memory.
 
@@ -172,7 +177,7 @@ Sends, issue creation and policy changes always ask, whatever the mode. Switch m
 {"timestamp": "2026-06-24T14:32:05", "agent": "claude-code", "credential_requested": "anthropic-api-key", "policy_matched": "claude-code-anthropic", "decision": "approved", "mode": "auto", "token_expiry": "2026-06-24T15:32:05"}
 ```
 
-`decision` is one of `approved`, `denied`, `escalated`, `expired`, `completed` or `failed`. The last two record the outcome of an operation that was carried out, such as a Gmail send, an issue creation or a policy change. For entries that aren't API-key requests, `credential_requested` holds the resource instead, such as `github:write` or `imessage:gmail_search`. Credential values and issued tokens are never written.
+`decision` is one of `approved`, `denied`, `escalated`, `expired`, `completed` or `failed`. The last two record the outcome of an operation that was carried out, such as a Gmail send, an issue creation, an event creation or a policy change. For entries that aren't API-key requests, `credential_requested` holds the resource instead, such as `github:write` or `imessage:gmail_search`. Credential values and issued tokens are never written.
 
 ## Configuration
 
@@ -186,7 +191,7 @@ Sends, issue creation and policy changes always ask, whatever the mode. Switch m
 | `LOGS_PATH` | `./logs/audit.log` | Audit log |
 | `TOKEN_TTL_MINUTES` | `60` | `token_expiry` on granted API keys. This is metadata only: the raw key is returned and not revoked at expiry |
 | `ESCALATION_TIMEOUT_SECONDS` | `0` | Approval wait before denying; `0` waits forever |
-| `GMAIL_CLIENT_PATH` | `oauth-client.json` next to the store | Google OAuth client file |
+| `GMAIL_CLIENT_PATH` | `oauth-client.json` next to the store | Google OAuth client file, shared by Gmail and Google Calendar |
 | `AGENTGATE_IMSG_PATH`, `AGENTGATE_MODEL_HELPER` | `bin/` in the config directory | iMessage helpers |
 
 Invalid values stop startup with a clear error.
@@ -205,7 +210,7 @@ The container runs the STDIO broker with `policies`, `state`, `logs` and `data` 
 | Path | Contents |
 | --- | --- |
 | `broker/main.py` | Entry point, startup modes, process lock |
-| `broker/mcp_server.py`, `gmail_tools.py`, `github_tools.py` | MCP tools |
+| `broker/mcp_server.py`, `gmail_tools.py`, `github_tools.py`, `calendar_tools.py` | MCP tools |
 | `broker/credential_store.py`, `agent_registry.py`, `http_auth.py` | Vault, identities, bearer auth |
 | `broker/policy_engine.py`, `permissions.py`, `grants.py`, `access.py`, `approval.py` | Access decisions and the approval queue |
 | `broker/dashboard.py`, `grants_dashboard.py`, `connections.py`, `web/` | Operator app |

@@ -15,6 +15,8 @@ function button(text, className, handler) {
 }
 
 const mounted = new WeakMap();
+const LABELS = {gmail: 'Gmail', github: 'GitHub', calendar: 'Google Calendar'};
+const GOOGLE = new Set(['gmail', 'calendar']);
 
 export async function renderConnections(container, api) {
   mounted.get(container)?.();
@@ -40,7 +42,8 @@ export async function renderConnections(container, api) {
     const card = element('article', undefined, 'card connection-card');
     const account = service.account?.email || service.account?.login || '';
     const header = element('div', undefined, 'card-head');
-    header.append(element('h3', service.service === 'gmail' ? 'Gmail' : 'GitHub'));
+    const name = LABELS[service.service] || service.service;
+    header.append(element('h3', name));
     header.append(element('span', service.reconnecting ? 'Reconnecting' : service.status.replaceAll('_', ' '), 'pill'));
     card.append(header);
     card.append(element('p', account ? `Connected as ${account}` : (service.error || 'No account connected.')));
@@ -63,15 +66,16 @@ export async function renderConnections(container, api) {
     }
     card.append(access);
 
-    if (service.service === 'gmail') {
+    if (GOOGLE.has(service.service)) {
       const form = element('form', undefined, 'connection-form');
-      const warning = element('p', 'Reconnecting may switch the Gmail account used by every agent on this broker.');
+      const warning = element('p', `Reconnecting may switch the ${name} account used by every agent on this broker.` +
+        (service.service === 'calendar' ? ' Calendar uses its own Google sign-in, separate from Gmail.' : ''));
       warning.className = 'hint';
       const acknowledgeLabel = element('label');
       const acknowledge = element('input');
       acknowledge.type = 'checkbox';
       acknowledgeLabel.append(acknowledge, document.createTextNode(' I understand this may change the account used by all agents.'));
-      const connect = element('button', 'Connect Gmail', 'primary');
+      const connect = element('button', `Connect ${name}`, 'primary');
       connect.type = 'submit';
       connect.disabled = true;
       acknowledge.addEventListener('change', () => { connect.disabled = !acknowledge.checked; });
@@ -81,9 +85,9 @@ export async function renderConnections(container, api) {
         connect.disabled = true;
         setMessage('Opening Google sign-in…');
         try {
-          await post('gmail-reconnect');
+          await post(`${service.service}-reconnect`);
           setMessage('Google sign-in started. This page will show the result when it finishes.');
-          pollReconnect();
+          pollReconnect(service.service);
         } catch (error) {
           setMessage(error.message, true);
           connect.disabled = !acknowledge.checked;
@@ -91,7 +95,7 @@ export async function renderConnections(container, api) {
       });
       card.append(form);
       if (service.status !== 'disconnected') {
-        card.append(button('Disconnect Gmail', 'danger', async event => disconnect('gmail', event)));
+        card.append(button(`Disconnect ${name}`, 'danger', async event => disconnect(service.service, event)));
       }
     } else {
       const form = element('form', undefined, 'connection-form');
@@ -143,7 +147,7 @@ export async function renderConnections(container, api) {
   }
 
   async function disconnect(service, event) {
-    const label = service === 'gmail' ? 'Gmail' : 'GitHub';
+    const label = LABELS[service] || service;
     if (!window.confirm(`Remove the ${label} credentials from this broker? This is local only; it does not revoke the authorization at ${label}.`)) return;
     const control = event.currentTarget;
     control.disabled = true;
@@ -158,14 +162,15 @@ export async function renderConnections(container, api) {
     }
   }
 
-  async function pollReconnect() {
+  async function pollReconnect(service) {
     if (stopPolling) return;
+    const label = LABELS[service] || service;
     try {
-      const job = await api('reconnect-status');
+      const job = await api('reconnect-status?' + new URLSearchParams({service}));
       if (job.active) {
-        setTimeout(pollReconnect, 700);
+        setTimeout(() => pollReconnect(service), 700);
       } else {
-        setMessage(job.state === 'completed' ? 'Gmail connected.' : (job.error || 'Gmail reconnect finished.'));
+        setMessage(job.state === 'completed' ? `${label} connected.` : (job.error || `${label} reconnect finished.`));
         await refresh();
       }
     } catch (error) {

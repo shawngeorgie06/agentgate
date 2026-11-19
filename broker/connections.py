@@ -3,10 +3,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-import threading
 from typing import Any
 
+from broker.integrations import calendar as calendar_provider
 from broker.integrations import gmail as gmail_provider
+from broker.integrations.calendar import Calendar, CalendarError
 from broker.integrations.gmail import Gmail, GmailError, INTERNAL_PREFIX, TOKEN_NAME
 
 
@@ -23,12 +24,18 @@ class _CaptureStore:
         self.values[name] = value
 
 
-class GmailConnection:
-    """Manage one Gmail provider's encrypted credentials and reconnect job."""
+class GoogleConnection:
+    """Manage one Google provider's encrypted OAuth credentials and reconnect job."""
 
-    def __init__(self, broker, gmail: Gmail, client_file: str):
+    service = 'gmail'
+    label = 'Gmail'
+    token_name = TOKEN_NAME
+    account_name = ACCOUNT_NAME
+    provider_error: type[Exception] = GmailError
+
+    def __init__(self, broker, provider, client_file: str):
         self.broker = broker
-        self.gmail = gmail
+        self.provider = provider
         self.client_file = client_file
         self._generation = 0
         self._job_generation = 0
@@ -39,9 +46,17 @@ class GmailConnection:
         self._committed_job_generation: int | None = None
         self._committed_account: dict | None = None
 
+    @property
+    def gmail(self):
+        return self.provider
+
+    def _connect(self, client_file: str, capture: _CaptureStore) -> str:
+        # Resolved at call time so tests can replace the provider's OAuth flow.
+        return gmail_provider.connect(client_file, capture)
+
     def _cached_account(self) -> dict | None:
         try:
-            value = json.loads(self.broker.store.retrieve(ACCOUNT_NAME))
+            value = json.loads(self.broker.store.retrieve(self.account_name))
         except (KeyError, ValueError, TypeError):
             return None
         email = value.get('email') if isinstance(value, dict) else None
@@ -49,33 +64,33 @@ class GmailConnection:
 
     def info(self) -> dict:
         # Keep profile metadata and credential removal ordered together.
-        with self.gmail._lock:
+        with self.provider._lock:
             return self._info_locked()
 
     def _info_locked(self) -> dict:
         names = self.broker.store.list_names()
-        if TOKEN_NAME not in names or self._disconnected:
-            return {'service': 'gmail', 'status': 'disconnected', 'account': None,
+        if self.token_name not in names or self._disconnected:
+            return {'service': self.service, 'status': 'disconnected', 'account': None,
                     'reconnecting': bool(self._job['active'])}
         try:
-            account = self.gmail.call('account')
+            account = self.provider.call('account')
             # Keep account metadata encrypted in the broker's credential store.
-            self.broker.store.store(ACCOUNT_NAME, json.dumps(account, separators=(',', ':')))
+            self.broker.store.store(self.account_name, json.dumps(account, separators=(',', ':')))
             status = 'connected'
             error = None
-        except GmailError as exc:
+        except self.provider_error as exc:
             account = self._cached_account()
             message = str(exc)
             if 'authorization' in message.lower() or 'reconnect' in message.lower():
                 status = 'needs_reconnect'
-                error = 'Google authorization needs renewal. Reconnect Gmail.'
+                error = f'Google authorization needs renewal. Reconnect {self.label}.'
             elif 'not connected' in message.lower():
                 status = 'disconnected'
                 error = None
             else:
                 status = 'unavailable'
-                error = 'Gmail account status could not be checked.'
-        result = {'service': 'gmail', 'status': status, 'account': account,
+                error = f'{self.label} account status could not be checked.'
+        result = {'service': self.service, 'status': status, 'account': account,
                   'reconnecting': bool(self._job['active'])}
         if error:
             result['error'] = error
@@ -83,16 +98,16 @@ class GmailConnection:
 
     def disconnect(self) -> None:
         """Delete local OAuth and account metadata; never contact Google's revoke API."""
-        with self.gmail._lock:
+        with self.provider._lock:
             self._generation += 1
             self._disconnected = True
-            self.gmail._suspended = True
+            self.provider._suspended = True
             names = set(self.broker.store.list_names())
-            remove = tuple(name for name in (TOKEN_NAME, ACCOUNT_NAME) if name in names)
+            remove = tuple(name for name in (self.token_name, self.account_name) if name in names)
             if remove:
                 self.broker.store.update({}, delete=remove)
-            self.gmail._credentials = None
-            self.gmail._service = None
+            self.provider._credentials = None
+            self.provider._service = None
         self._cancel_job()
         self._job_generation += 1
         self._job = {'active': False, 'state': 'failed', 'error': 'Reconnect was canceled.'}
@@ -128,14 +143,12 @@ class GmailConnection:
     async def _reconnect(self, generation: int, job_generation: int) -> None:
         capture = _CaptureStore()
         try:
-            account_email = await asyncio.to_thread(
-                gmail_provider.connect, self.client_file, capture
-            )
+            account_email = await asyncio.to_thread(self._connect, self.client_file, capture)
             if not isinstance(account_email, str) or not account_email:
-                raise GmailError('Gmail did not return an account address.')
-            staged_token = capture.values.get(TOKEN_NAME)
+                raise self.provider_error(f'{self.label} did not return an account address.')
+            staged_token = capture.values.get(self.token_name)
             if not staged_token:
-                raise GmailError('Google did not issue offline access; reconnect Gmail.')
+                raise self.provider_error(f'Google did not issue offline access; reconnect {self.label}.')
 
             # Suspend new calls while installing staged credentials. Advancing the
             # broker revision rejects approvals that were waiting across reconnect.
@@ -157,7 +170,7 @@ class GmailConnection:
             # OAuth and provider exception text can contain account or secret data.
             if job_generation == self._job_generation:
                 self._job = {'active': False, 'state': 'failed',
-                             'error': 'Gmail reconnect failed. Try again.'}
+                             'error': f'{self.label} reconnect failed. Try again.'}
             await asyncio.to_thread(self._restore_after_failure, generation, job_generation)
         finally:
             if self._task is asyncio.current_task():
@@ -165,33 +178,33 @@ class GmailConnection:
 
     def _commit_staged(self, generation: int, job_generation: int,
                        token_json: str, account_email: str) -> None:
-        with self.gmail._lock:
+        with self.provider._lock:
             if generation != self._generation or self._disconnected:
                 raise RuntimeError('reconnect was canceled')
             staged = {
-                TOKEN_NAME: token_json,
-                ACCOUNT_NAME: json.dumps({'email': account_email}, separators=(',', ':')),
+                self.token_name: token_json,
+                self.account_name: json.dumps({'email': account_email}, separators=(',', ':')),
             }
             self.broker.store.update(staged)
-            self.gmail._credentials = None
-            self.gmail._service = None
+            self.provider._credentials = None
+            self.provider._service = None
             self._disconnected = False
-            self.gmail._suspended = False
+            self.provider._suspended = False
             self._committed_job_generation = job_generation
             self._committed_account = {'email': account_email}
 
     def _prepare_staged(self, generation: int) -> bool:
-        with self.gmail._lock:
+        with self.provider._lock:
             if generation != self._generation or self._disconnected:
                 return False
-            self.gmail._suspended = True
+            self.provider._suspended = True
             return True
 
     def _restore_after_failure(self, generation: int, job_generation: int) -> None:
-        with self.gmail._lock:
+        with self.provider._lock:
             if (generation == self._generation and job_generation == self._job_generation
                     and not self._disconnected):
-                self.gmail._suspended = False
+                self.provider._suspended = False
 
     async def close(self) -> None:
         task = self._task
@@ -215,6 +228,25 @@ class GmailConnection:
                 pass
 
     def _close_fence(self) -> int | None:
-        with self.gmail._lock:
+        with self.provider._lock:
             self._generation += 1
             return self._committed_job_generation
+
+
+class GmailConnection(GoogleConnection):
+    def __init__(self, broker, gmail: Gmail, client_file: str):
+        super().__init__(broker, gmail, client_file)
+
+
+class CalendarConnection(GoogleConnection):
+    service = 'calendar'
+    label = 'Google Calendar'
+    token_name = calendar_provider.TOKEN_NAME
+    account_name = calendar_provider.ACCOUNT_NAME
+    provider_error = CalendarError
+
+    def __init__(self, broker, calendar: Calendar, client_file: str):
+        super().__init__(broker, calendar, client_file)
+
+    def _connect(self, client_file: str, capture: _CaptureStore) -> str:
+        return calendar_provider.connect(client_file, capture)

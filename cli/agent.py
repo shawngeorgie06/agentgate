@@ -89,6 +89,31 @@ def build_parser() -> argparse.ArgumentParser:
     create_issue.add_argument('title')
     create_issue.add_argument('--body-file', default='-', help='UTF-8 file, or - to read stdin (default)')
     create_issue.add_argument('--request-id', required=True, help='stable URL-safe ID reused for retries of this logical issue')
+    calendar = commands.add_parser('calendar', help='read Google Calendar, or request event creation')
+    calendar_commands = calendar.add_subparsers(dest='calendar_command', required=True)
+    calendars = calendar_commands.add_parser('calendars', help='list calendars visible to the connected account')
+    calendars.add_argument('--limit', type=int, default=50)
+    calendars.add_argument('--page-token')
+    events = calendar_commands.add_parser('events', help='list events between two RFC 3339 times with offsets')
+    events.add_argument('time_min')
+    events.add_argument('time_max')
+    events.add_argument('--calendar-id', default='primary')
+    events.add_argument('--query', default='')
+    events.add_argument('--limit', type=int, default=25)
+    events.add_argument('--page-token')
+    freebusy = calendar_commands.add_parser('freebusy', help='show busy times between two RFC 3339 times with offsets')
+    freebusy.add_argument('time_min')
+    freebusy.add_argument('time_max')
+    freebusy.add_argument('--calendar-id', action='append', dest='calendar_ids', help='repeat for several calendars (default: primary)')
+    create_event = calendar_commands.add_parser('create-event', help='request operator approval to create one event; no attendees are invited')
+    create_event.add_argument('summary')
+    create_event.add_argument('start', help='RFC 3339 time with offset, or YYYY-MM-DD for an all-day event')
+    create_event.add_argument('end', help='RFC 3339 time with offset, or YYYY-MM-DD (exclusive) for an all-day event')
+    create_event.add_argument('--time-zone', default='')
+    create_event.add_argument('--location', default='')
+    create_event.add_argument('--description-file', help='UTF-8 file with the event description')
+    create_event.add_argument('--calendar-id', default='primary')
+    create_event.add_argument('--request-id', required=True, help='stable URL-safe ID reused for retries of this logical event')
     return parser
 
 
@@ -132,6 +157,28 @@ async def execute(args: argparse.Namespace) -> dict:
             except (OSError, UnicodeError):
                 raise AgentClientError('Cannot read the issue body. Supply an existing UTF-8 file with --body-file, or provide the body on stdin.') from None
             values.update(owner=args.owner, repo=args.repo, title=args.title, body=body, request_id=args.request_id)
+    elif args.command == 'calendar':
+        if args.calendar_command == 'calendars':
+            tool = 'calendar.calendars'
+            values.update(limit=args.limit, page_token=args.page_token)
+        elif args.calendar_command == 'events':
+            tool = 'calendar.events'
+            values.update(time_min=args.time_min, time_max=args.time_max, calendar_id=args.calendar_id,
+                          query=args.query, limit=args.limit, page_token=args.page_token)
+        elif args.calendar_command == 'freebusy':
+            tool = 'calendar.freebusy'
+            values.update(time_min=args.time_min, time_max=args.time_max, calendar_ids=args.calendar_ids)
+        else:
+            tool = 'calendar.create_event'
+            description = ''
+            if args.description_file:
+                try:
+                    description = Path(args.description_file).expanduser().read_text(encoding='utf-8')
+                except (OSError, UnicodeError):
+                    raise AgentClientError('Cannot read the event description. Supply an existing UTF-8 file with --description-file.') from None
+            values.update(summary=args.summary, start=args.start, end=args.end, time_zone=args.time_zone,
+                          location=args.location, description=description, calendar_id=args.calendar_id,
+                          request_id=args.request_id)
     else:
         tool = 'gmail.send_draft'
         values.update(draft_id=args.draft_id)
@@ -164,6 +211,11 @@ def run(argv: list[str]) -> int:
                 parser.error('--limit must be between 1 and 100')
             if not 1 <= args.page <= 10000:
                 parser.error('--page must be between 1 and 10000')
+    if args.command == 'calendar':
+        if args.calendar_command == 'calendars' and not 1 <= args.limit <= 250:
+            parser.error('--limit must be between 1 and 250')
+        if args.calendar_command == 'events' and not 1 <= args.limit <= 100:
+            parser.error('--limit must be between 1 and 100')
     uncertain = False
     try:
         result = asyncio.run(execute(args))
@@ -186,6 +238,8 @@ def run(argv: list[str]) -> int:
         result['notice'] = 'Check Gmail and the broker terminal before another attempt. Do not automatically retry; the operation may have completed.'
     if uncertain and args.command == 'github' and args.github_command == 'create-issue':
         result['notice'] = 'Check GitHub and the broker terminal before retrying. Reuse the same request ID; the issue may have been created.'
+    if uncertain and args.command == 'calendar' and args.calendar_command == 'create-event':
+        result['notice'] = 'Check Google Calendar and the broker terminal before retrying. Reuse the same request ID; the event may have been created.'
     print(json.dumps(result, ensure_ascii=True))
     return 0 if result.get('ok') else 1
 

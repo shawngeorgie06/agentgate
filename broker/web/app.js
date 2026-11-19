@@ -114,7 +114,8 @@ function renderApproval(pending) {
   const isSend = pending.credential === 'gmail:send';
   const isPolicyChange = typeof pending.credential === 'string' && pending.credential.startsWith('policy.add:');
   const card = node('article', undefined, 'card');
-  const title = isPolicyChange ? 'Policy change' : (isSend && pending.preview ? pending.preview.subject || '(No subject)' : 'Access request');
+  const isEvent = pending.credential === 'calendar:write' && typeof pending.preview?.event?.summary === 'string';
+  const title = isPolicyChange ? 'Policy change' : (isSend && pending.preview ? pending.preview.subject || '(No subject)' : (isEvent ? 'New event: ' + pending.preview.event.summary : 'Access request'));
   const head = node('div', undefined, 'card-head'); head.append(node('h2', title), node('span', 'Needs your approval', 'pill')); card.append(head);
   detail(card, 'Requested by', pending.agent); detail(card, 'Access', pending.credential);
   if (isSend && pending.preview) {
@@ -126,7 +127,7 @@ function renderApproval(pending) {
   }
   const actions = node('div', undefined, 'actions');
   for (const approved of [true, false]) {
-    const label = approved ? (isSend ? 'Approve send' : (isPolicyChange ? 'Approve policy change' : 'Approve access')) : 'Reject';
+    const label = approved ? (isSend ? 'Approve send' : (isPolicyChange ? 'Approve policy change' : (isEvent ? 'Approve event' : 'Approve access'))) : 'Reject';
     const button = node('button', label, approved ? 'primary' : 'danger');
     const id = pending.id;
     button.addEventListener('click', async () => {
@@ -147,6 +148,14 @@ async function loadActivity() {
     item.append(description, node('b', row.decision)); list.append(item);
   }
 }
+const SERVICE_TEXT = {
+  gmail: {label: 'Gmail', read: 'Search and read emails', write: 'Send email', ask: 'Ask before every send', writeResource: 'gmail:send',
+    rows: [['Read emails','gmail:read'],['Create and inspect drafts','gmail:draft'],['Send email','gmail:send']]},
+  github: {label: 'GitHub', read: 'Read repositories, files, and issues', write: 'Create GitHub issues', ask: 'Ask before every issue creation', writeResource: 'github:write',
+    rows: [['Read repositories and issues','github:read'],['Create issues','github:write']]},
+  calendar: {label: 'Google Calendar', read: 'Read calendars, events, and free/busy', write: 'Create calendar events', ask: 'Ask before every event creation', writeResource: 'calendar:write',
+    rows: [['Read calendars and events','calendar:read'],['Create events','calendar:write']]},
+};
 async function loadAgents() {
   const list = $('agent-list'); empty(list, 'Loading enrolled identities…');
   const data = await api('agents'); list.replaceChildren();
@@ -247,12 +256,12 @@ async function loadPermissions() {
   $('permission-window-ack').checked = false; $('permission-window-ack').required = !!permissionWindows.length;
   $('permission-draft-label').hidden = service !== 'gmail';
   $('permission-draft').required = service === 'gmail';
-  $('permission-read-label').textContent = service === 'gmail' ? 'Search and read emails' : 'Read repositories, files, and issues';
-  $('permission-send-label').textContent = service === 'gmail' ? 'Send email' : 'Create GitHub issues';
-  $('permission-send').querySelector('option[value=ask]').textContent = service === 'gmail' ? 'Ask before every send' : 'Ask before every issue creation';
+  $('permission-read-label').textContent = SERVICE_TEXT[service].read;
+  $('permission-send-label').textContent = SERVICE_TEXT[service].write;
+  $('permission-send').querySelector('option[value=ask]').textContent = SERVICE_TEXT[service].ask;
   $('permission-read').value = permissionWindows.length ? '' : data.permissions[service + ':read'];
   $('permission-draft').value = service === 'gmail' ? (permissionWindows.length ? '' : data.permissions['gmail:draft']) : 'deny';
-  $('permission-send').value = permissionWindows.length ? '' : data.permissions[service === 'gmail' ? 'gmail:send' : 'github:write'];
+  $('permission-send').value = permissionWindows.length ? '' : data.permissions[SERVICE_TEXT[service].writeResource];
   permissionRevision = data.revision; $('permissions-save').disabled = data.agent.status !== 'active';
 }
 $('permission-service').addEventListener('change', () => loadPermissions().catch(e => notice(e.message,true)));
@@ -261,12 +270,12 @@ $('permissions-refresh').addEventListener('click', () => loadPermissionAgents().
 $('permissions-form').addEventListener('submit', event => {
   event.preventDefault(); if (!permissionRevision) return;
   const service = $('permission-service').value;
-  const permissions = {[service + ':read']:$('permission-read').value, [service === 'gmail' ? 'gmail:send' : 'github:write']:$('permission-send').value};
+  const permissions = {[service + ':read']:$('permission-read').value, [SERVICE_TEXT[service].writeResource]:$('permission-send').value};
   if (service === 'gmail') permissions['gmail:draft'] = $('permission-draft').value;
   permissionProposal = {agent_id:$('permission-agent').value, service, permissions, revision:permissionRevision, acknowledge_time_windows:$('permission-window-ack').checked};
   const labels = {allow:'Allow without asking in AUTO mode',ask:'Ask me each time',deny:'Deny'};
-  const rows = service === 'gmail' ? [['Read emails','gmail:read'],['Create and inspect drafts','gmail:draft'],['Send email','gmail:send']] : [['Read repositories and issues','github:read'],['Create issues','github:write']];
-  $('permissions-review').textContent = 'Agent: ' + permissionProposal.agent_id + '\nService: ' + (service === 'gmail' ? 'Gmail' : 'GitHub') + '\nRules apply at all times and override earlier rules for this service.\n\n' + rows.map(([label,key]) => label + ': ' + labels[permissions[key]]).join('\n') + (permissionWindows.length ? '\nExisting time restrictions explicitly acknowledged.' : '');
+  const rows = SERVICE_TEXT[service].rows;
+  $('permissions-review').textContent = 'Agent: ' + permissionProposal.agent_id + '\nService: ' + SERVICE_TEXT[service].label + '\nRules apply at all times and override earlier rules for this service.\n\n' + rows.map(([label,key]) => label + ': ' + labels[permissions[key]]).join('\n') + (permissionWindows.length ? '\nExisting time restrictions explicitly acknowledged.' : '');
   $('permissions-dialog').showModal();
 });
 $('permissions-cancel').addEventListener('click', () => {permissionProposal = null; $('permissions-dialog').close();});

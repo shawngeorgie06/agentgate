@@ -130,7 +130,11 @@ async def _run_locked(
         from broker.github_tools import GitHubTools
         from broker.integrations.github import GitHub
         github_tools = GitHubTools(broker, GitHub(broker.store))
-        mcp = build_mcp(broker, auth=auth, gmail_tools=gmail_tools, github_tools=github_tools, trusted_agent=stdio_agent) if gmail_tools else build_mcp(broker, auth=auth, github_tools=github_tools, trusted_agent=stdio_agent)
+        from broker.calendar_tools import CalendarTools
+        from broker.integrations.calendar import Calendar
+        calendar_tools = CalendarTools(broker, Calendar(broker.store))
+        mcp = build_mcp(broker, auth=auth, gmail_tools=gmail_tools, github_tools=github_tools,
+                        calendar_tools=calendar_tools, trusted_agent=stdio_agent)
         print(format_status_line(broker), file=sys.stderr)
         if http:
             print(f'[AgentGate] authenticated MCP endpoint: http://127.0.0.1:{port}/mcp', file=sys.stderr)
@@ -143,7 +147,8 @@ async def _run_locked(
                 imessage_service = build_imessage_service(config, registry, broker, gmail_tools, github_tools)
                 broker.imessage_service = imessage_service
                 await imessage_service.start()
-                app = create_dashboard(app, broker, gmail_tools, operator_token, github=github_tools.github)
+                app = create_dashboard(app, broker, gmail_tools, operator_token, github=github_tools.github,
+                                       calendar=calendar_tools.calendar)
             http_server = uvicorn.Server(uvicorn.Config(
                 app, host='127.0.0.1', port=port, lifespan='on',
                 access_log=not bool(keychain_helper),

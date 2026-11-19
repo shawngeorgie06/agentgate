@@ -31,6 +31,7 @@ export async function renderGrants(container, api) {
   for (const [value, label] of [
     ['gmail:read', 'Gmail · Read'], ['gmail:draft', 'Gmail · Draft'], ['gmail:send', 'Gmail · Send'],
     ['github:read', 'GitHub · Read'], ['github:write', 'GitHub · Write'],
+    ['calendar:read', 'Google Calendar · Read'], ['calendar:write', 'Google Calendar · Create events'],
   ]) {
     const option = make('option', label); option.value = value; resource.append(option);
   }
@@ -39,7 +40,7 @@ export async function renderGrants(container, api) {
   const reason = document.createElement('input'); reason.type = 'text'; reason.maxLength = 500; reason.name = 'reason'; reason.placeholder = 'Optional';
   const permissionChoices = () => {
     permission.replaceChildren();
-    const write = resource.value === 'gmail:send' || resource.value === 'github:write';
+    const write = ['gmail:send', 'github:write', 'calendar:write'].includes(resource.value);
     for (const [value, label] of write ? [['ask', 'Ask me each time']] : [['allow', 'Allow in AUTO mode'], ['ask', 'Ask me each time']]) {
       const option = make('option', label); option.value = value; permission.append(option);
     }

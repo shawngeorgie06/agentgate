@@ -72,6 +72,8 @@ async def test_connections_endpoints_require_operator_auth_and_return_safe_metad
             {'service': 'gmail', 'status': 'disconnected', 'account': None,
              'reconnecting': False, 'agents': []},
             {'service': 'github', 'status': 'disconnected', 'account': None, 'agents': []},
+            {'service': 'calendar', 'status': 'disconnected', 'account': None,
+             'reconnecting': False, 'agents': []},
         ]
         assert (await client.post('/api/connection-disconnect', json={'service':'github'},
                                   headers={'Authorization':''})).status_code == 401
@@ -90,7 +92,7 @@ async def test_connections_show_active_agents_baseline_permissions_and_temporary
         grant = broker.temporary_grants.create(active['id'], 'gmail:read', 'allow', 20)
 
         result = (await client.get('/api/connections')).json()['data']['services']
-        gmail, github_info = result
+        gmail, github_info, calendar_info = result
         assert len(gmail['agents']) == 1
         assert gmail['agents'][0]['id'] == active['id']
         assert gmail['agents'][0]['name'] == 'researcher'
@@ -228,3 +230,21 @@ async def test_credential_unlock_failure_has_safe_actionable_error(tmp_path, mon
         assert data['code'] == 'credentials_locked'
         assert 'master password' in data['reason']
         assert 'private-credential-name-and-secret' not in response.text
+
+
+@pytest.mark.asyncio
+async def test_calendar_disconnect_and_reconnect_status_are_separate_from_gmail(tmp_path):
+    from broker.integrations.calendar import ACCOUNT_NAME as CALENDAR_ACCOUNT, TOKEN_NAME as CALENDAR_TOKEN
+    async with dashboard(tmp_path) as (client, broker, github, tools):
+        broker.store.store(GMAIL_TOKEN, '{"refresh_token":"gmail-private"}')
+        broker.store.store(CALENDAR_TOKEN, '{"refresh_token":"calendar-private"}')
+        broker.store.store(CALENDAR_ACCOUNT, '{"email":"owner@example.test"}')
+        status = (await client.get('/api/reconnect-status?service=calendar')).json()
+        assert status['data'] == {'active': False, 'state': 'idle'}
+        assert (await client.get('/api/reconnect-status?service=github')).status_code == 400
+        response = await client.post('/api/connection-disconnect', json={'service': 'calendar'})
+        assert response.json()['data'] == {'service': 'calendar', 'status': 'disconnected'}
+        assert CALENDAR_TOKEN not in broker.store.list_names()
+        assert CALENDAR_ACCOUNT not in broker.store.list_names()
+        assert GMAIL_TOKEN in broker.store.list_names()
+        assert 'calendar-private' not in json.dumps((await client.get('/api/activity')).json())

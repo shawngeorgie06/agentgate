@@ -14,9 +14,12 @@ RESOURCES = ('gmail:read', 'gmail:draft', 'gmail:send')
 SERVICE_RESOURCES = {
     'gmail': RESOURCES,
     'github': ('github:read', 'github:write'),
+    'calendar': ('calendar:read', 'calendar:write'),
 }
+WRITE_RESOURCES = frozenset({'gmail:send', 'github:write', 'calendar:write'})
+SERVICE_LABELS = {'gmail': 'three Gmail', 'github': 'two GitHub', 'calendar': 'two Google Calendar'}
 MARKER = 'agentgate-permissions'
-SERVICE_MARKERS = {'gmail': MARKER, 'github': MARKER + ':github'}
+SERVICE_MARKERS = {'gmail': MARKER, 'github': MARKER + ':github', 'calendar': MARKER + ':calendar'}
 
 
 class PermissionConflict(ValueError):
@@ -51,7 +54,7 @@ class Permissions:
     @staticmethod
     def _service(service):
         if service not in SERVICE_RESOURCES:
-            raise ValueError('Choose Gmail or GitHub.')
+            raise ValueError('Choose Gmail, GitHub, or Google Calendar.')
         return service
 
     @staticmethod
@@ -75,7 +78,7 @@ class Permissions:
         permissions = {}
         for resource in resources:
             decision = engine.evaluate(agent_id, resource)
-            write = resource in ('gmail:send', 'github:write')
+            write = resource in WRITE_RESOURCES
             permissions[resource] = ('ask' if write else 'allow') if decision.auto_approve else ('ask' if decision.escalate else 'deny')
         return {'agent': agent, 'connection': service, 'permissions': permissions, 'revision': revision,
                 'time_windows': self._time_windows(doc, agent_id, service)}
@@ -87,10 +90,9 @@ class Permissions:
         if agent['status'] != 'active':
             raise ValueError('Only active agents can have their permissions changed.')
         if not isinstance(permissions, dict) or set(permissions) != set(resources):
-            count = 'three Gmail' if service == 'gmail' else 'two GitHub'
-            raise ValueError(f'Choose access for all {count} operations.')
+            raise ValueError(f'Choose access for all {SERVICE_LABELS[service]} operations.')
         for resource, value in permissions.items():
-            choices = ('ask', 'deny') if resource in ('gmail:send', 'github:write') else ('allow', 'ask', 'deny')
+            choices = ('ask', 'deny') if resource in WRITE_RESOURCES else ('allow', 'ask', 'deny')
             if not isinstance(value, str) or value not in choices:
                 message = 'Sending must require approval or be denied.' if resource == 'gmail:send' else 'Write operations must require approval or be denied.'
                 raise ValueError('Invalid permission selection. ' + message)

@@ -17,6 +17,8 @@ _PERMISSIONS = {
     "gmail:send": {"ask"},
     "github:read": {"allow", "ask"},
     "github:write": {"ask"},
+    "calendar:read": {"allow", "ask"},
+    "calendar:write": {"ask"},
 }
 
 
